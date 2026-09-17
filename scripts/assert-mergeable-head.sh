@@ -57,12 +57,35 @@ pr="$2"
 # so the deferral surfaces as `deferred-ci` or `<caller-job> / deferred-ci`, and
 # a matrix value is appended in parentheses. A commit-status context uses the
 # conventional `prefix/deferred-ci` form with no space, so both separators are
-# accepted on each side; the name is trimmed before matching.
+# accepted on each side. Names are matched as reported, never trimmed: Gate A's
+# exact-name comparison must stay whitespace-sensitive, so a padded name reports
+# `absent` and fails closed rather than silently satisfying a required context.
 readonly DEFERRED_JOB_PATTERN='(^|[/ ])deferred-ci([ (/]|$)'
 readonly DEFERRED_ANNOTATION_PATTERN='^CI deferred$'
 readonly PASSING='["SUCCESS","NEUTRAL","SKIPPED"]'
 
 fault() { echo "::error::$2" >&2; exit "$1"; }
+
+# Both inventory endpoints state how many entries exist. Reconciling that claim
+# against what the page walk actually collected is what turns a truncated walk
+# into a fault instead of a short green inventory. Defaulting the CLAIM to the
+# OBSERVATION would make the check vacuous exactly when it matters — an empty
+# body, or a shape without `total_count`, would reconcile 0 against 0 and let the
+# gate reason over nothing at all. So the attestation is required, not optional.
+reconcile_pages() {
+  jq -se --arg field "$2" '
+    [.[]] as $pages
+    | if ($pages | length) == 0 then
+        error("\($field): the response carried no page at all")
+      elif ($pages[0].total_count | type) != "number" then
+        error("\($field): the response states no total_count, so the walk is unattested")
+      else . end
+    | ($pages | map(.[$field]? // []) | add // [] | length) as $got
+    | $pages[0].total_count as $claimed
+    | if $got == $claimed then true
+      else error("\($field): the page walk returned \($got) of \($claimed)") end' \
+    >/dev/null <<<"$1"
+}
 
 pr_json="$(gh pr view "$pr" --repo "$repo" --json headRefOid,baseRefName </dev/null)" \
   || fault 1 "failed to fetch pull request metadata for $repo#$pr"
@@ -87,13 +110,8 @@ base_ref_path="$(jq -rn --arg r "$base_ref" '$r | @uri' | sed 's|%2F|/|g')" \
 # reasons over a short inventory is the failure this script exists to prevent.
 check_runs_raw="$(gh api --paginate "repos/$repo/commits/$head_sha/check-runs?per_page=100" </dev/null)" \
   || fault 1 "failed to fetch check runs for $repo@$head_sha"
-jq -se '[.[]] as $pages
-        | ($pages | map(.check_runs? // []) | add // [] | length) as $got
-        | ($pages[0].total_count // $got) as $claimed
-        | if $got == $claimed then true
-          else error("check-run pagination returned \($got) of \($claimed)") end' \
-  >/dev/null <<<"$check_runs_raw" \
-  || fault 1 "check-run pagination for $repo@$head_sha was truncated; the inventory is incomplete"
+reconcile_pages "$check_runs_raw" check_runs \
+  || fault 1 "the check-run inventory for $repo@$head_sha is incomplete or unattested; it cannot be reasoned over"
 check_runs="$(jq -s '[ .[].check_runs[]? | {
       name: (.name // ""),
       status: ((.status // "completed") | ascii_upcase),
@@ -107,15 +125,18 @@ check_runs="$(jq -s '[ .[].check_runs[]? | {
 # `--paginate` matters here as much as on check runs: this endpoint returns 30
 # statuses per page by default, and a `failure` stranded on page 2 would be
 # invisible to Gate C, which is the gate that exists to see it.
-statuses="$(gh api --paginate "repos/$repo/commits/$head_sha/status?per_page=100" </dev/null \
-  | jq -s '[ .[] | .statuses[]? | {
+statuses_raw="$(gh api --paginate "repos/$repo/commits/$head_sha/status?per_page=100" </dev/null)" \
+  || fault 1 "failed to fetch commit statuses for $repo@$head_sha"
+reconcile_pages "$statuses_raw" statuses \
+  || fault 1 "the commit-status inventory for $repo@$head_sha is incomplete or unattested; it cannot be reasoned over"
+statuses="$(jq -s '[ .[] | .statuses[]? | {
       name: (.context // ""),
       status: (if ((.state // "") | ascii_upcase) == "PENDING" then "IN_PROGRESS" else "COMPLETED" end),
       conclusion: (((.state // "") | ascii_upcase) | if . == "PENDING" then "" elif . == "ERROR" then "FAILURE" else . end),
       app_id: null,
       id: null,
-      kind: "status" } ]')" \
-  || fault 1 "failed to fetch commit statuses for $repo@$head_sha"
+      kind: "status" } ]' <<<"$statuses_raw")" \
+  || fault 1 "failed to normalize commit statuses for $repo@$head_sha"
 
 checks="$(jq -n --argjson a "$check_runs" --argjson b "$statuses" '$a + $b')" \
   || fault 1 "failed to assemble the check inventory for $repo@$head_sha"
@@ -138,7 +159,9 @@ required="$(jq -c '
 ' <<<"$rules_json")" \
   || fault 1 "failed to parse branch rules for $repo@$base_ref"
 
-[ "$(jq 'length' <<<"$required")" -gt 0 ] 2>/dev/null \
+required_count="$(jq 'length' <<<"$required")" \
+  || fault 1 "failed to count the required contexts of $repo@$base_ref"
+[ "$required_count" -gt 0 ] \
   || fault 3 "$repo@$base_ref declares no required status checks, so a green rollup proves nothing about it; this assertion cannot gate an ungoverned ref"
 
 # A required context is matched by EXACT name — the form branch protection
@@ -174,7 +197,8 @@ gate_a="$(jq -r --argjson pass "$PASSING" --argjson required "$required" '
 # because refusing every unbound context would refuse rulesets that are
 # currently correct, including this organization's own hub.
 unbound="$(jq -r --argjson required "$required" -n '
-  [ $required[] | select(.integration_id == null) | .context ] | join(", ")')"
+  [ $required[] | select(.integration_id == null) | .context ] | join(", ")')" \
+  || fault 1 "failed to evaluate unbound required contexts for $repo#$pr"
 [ -z "$unbound" ] \
   || echo "::warning::Gate A matched these required contexts on display name alone, because $base_ref binds them to no app: $unbound" >&2
 

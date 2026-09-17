@@ -54,7 +54,14 @@ check_run() { # id name status conclusion app-id
   printf '{"id":%s,"name":"%s","status":"%s","conclusion":%s,"app":{"id":%s}}' \
     "$1" "$2" "$3" "$(if [ -z "$4" ]; then echo null; else echo "\"$4\""; fi)" "$5"
 }
-runs() { printf '{"check_runs":[%s]}' "$1"; }
+# Both fixture builders stamp `total_count`, because both real endpoints always
+# do -- verified against a live commit, including the empty-status case, which
+# returns `total_count: 0` rather than omitting the field. A fixture without it
+# would model a response GitHub does not send and would quietly exempt itself
+# from the page-walk reconciliation.
+runs() { printf '{"total_count":%s,"check_runs":[%s]}' "$(entry_count "$1")" "$1"; }
+stat_page() { printf '{"total_count":%s,"statuses":[%s]}' "$(entry_count "$1")" "$1"; }
+entry_count() { jq 'length' <<<"[$1]"; }
 
 green_runs="$(check_run 1 'ci / build-test' completed success "$APP_ID"),$(check_run 2 'changelog / validate' completed success "$APP_ID")"
 
@@ -93,7 +100,7 @@ reset_env() {
   PR_JSON_FIXTURE="$(printf '{"headRefOid":"%s","baseRefName":"main"}' "$HEAD_SHA")"
   export CHECK_RUNS_FIXTURE
   CHECK_RUNS_FIXTURE="$(runs "$green_runs")"
-  export STATUS_FIXTURE='{"statuses":[]}'
+  export STATUS_FIXTURE="$(stat_page '')"
   export ANNOTATIONS_FIXTURE='[]'
 }
 
@@ -128,21 +135,21 @@ expect "a required context published by an app the ruleset does not bind is refu
 # A legacy commit status carries no app id, so it cannot satisfy a bound context.
 reset_env
 CHECK_RUNS_FIXTURE="$(runs "$(check_run 2 'changelog / validate' completed success "$APP_ID")")"
-STATUS_FIXTURE='{"statuses":[{"context":"ci / build-test","state":"success"}]}'
+STATUS_FIXTURE="$(stat_page '{"context":"ci / build-test","state":"success"}')"
 run
 expect "an app-bound required context cannot be satisfied by a provenance-less commit status" 3 "wrong producer: ci / build-test"
 
 reset_env
 RULES_FIXTURE="$rules_unbound"
-CHECK_RUNS_FIXTURE='{"check_runs":[]}'
-STATUS_FIXTURE='{"statuses":[{"context":"ci / build-test","state":"success"},{"context":"changelog / validate","state":"success"}]}'
+CHECK_RUNS_FIXTURE="$(runs '')"
+STATUS_FIXTURE="$(stat_page '{"context":"ci / build-test","state":"success"},{"context":"changelog / validate","state":"success"}')"
 run
 expect_true_unbound "an unbound required context is satisfied by a legacy commit status, and says it matched on name alone"
 
 reset_env
 RULES_FIXTURE="$rules_unbound"
-CHECK_RUNS_FIXTURE='{"check_runs":[]}'
-STATUS_FIXTURE='{"statuses":[{"context":"ci / build-test","state":"error"},{"context":"changelog / validate","state":"success"}]}'
+CHECK_RUNS_FIXTURE="$(runs '')"
+STATUS_FIXTURE="$(stat_page '{"context":"ci / build-test","state":"error"},{"context":"changelog / validate","state":"success"}')"
 run
 expect "a commit status in the error state is not passing" 3 "not passing: ci / build-test"
 
@@ -198,7 +205,7 @@ expect "the deferral gate cannot be switched off from the environment" 4 "was DE
 # run may carry a trailing matrix separator. Both are deferrals.
 reset_env
 CHECK_RUNS_FIXTURE="$(runs "$green_runs")"
-STATUS_FIXTURE='{"statuses":[{"context":"ci / build-test","state":"success"},{"context":"changelog / validate","state":"success"},{"context":"continuous-integration/deferred-ci","state":"success"}]}'
+STATUS_FIXTURE="$(stat_page '{"context":"ci / build-test","state":"success"},{"context":"changelog / validate","state":"success"},{"context":"continuous-integration/deferred-ci","state":"success"}')"
 run
 expect "a slash-separated commit-status deferral blocks" 4 "was DEFERRED, not verified"
 
@@ -238,7 +245,39 @@ CHECK_RUNS_FIXTURE="$(jq -c --argjson runs "$(runs "$green_runs")" \
   '$runs + {total_count: 7}' <<<'{}')"
 run
 expect "a truncated check-run page walk is a fault, not a short green inventory" \
-  1 "was truncated"
+  1 "check-run inventory for"
+
+# Commit statuses are the other half of the same inventory, and the endpoint
+# Gate C reads a `failure` from. A short walk there hides exactly what Gate C
+# exists to see, so it is a fault on the same terms.
+reset_env
+STATUS_FIXTURE="$(jq -c '. + {total_count: 9}' \
+  <<<"$(stat_page '{"context":"ci / build-test","state":"success"}')")"
+run
+expect "a truncated commit-status page walk is a fault, not a short green inventory" \
+  1 "commit-status inventory for"
+
+# Defaulting the claim to the observation would make the reconciliation vacuous
+# precisely where it matters: a body that states no count reconciles nothing,
+# and an empty body reconciles zero against zero while the gate goes on to
+# reason over an inventory in which no check can be seen at all.
+reset_env
+CHECK_RUNS_FIXTURE='{"check_runs":[]}'
+run
+expect "a check-run response that states no total_count is unattested, not empty" \
+  1 "check-run inventory for"
+
+reset_env
+CHECK_RUNS_FIXTURE=''
+run
+expect "an empty check-run body is unattested, not a zero-length inventory" \
+  1 "check-run inventory for"
+
+reset_env
+STATUS_FIXTURE='{"statuses":[]}'
+run
+expect "a commit-status response that states no total_count is unattested, not empty" \
+  1 "commit-status inventory for"
 
 reset_env; FAIL_CHECK_RUNS=1 run
 expect "a check-runs failure is a fault, not a pass" 1 "failed to fetch check runs"
