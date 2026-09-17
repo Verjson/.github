@@ -74,6 +74,19 @@ fails closed with its own exit code and its own message.** The implementation is
   app, and a legacy commit status (which carries no app identity at all), are
   both refused as `wrong producer`.
 
+  **The provenance half is conditional on the ruleset binding the context.** A
+  ruleset may declare a required context with `integration_id: null`, and then
+  there is nothing to check provenance against: matching falls back to display
+  name alone, which is exactly the ADR 0024 class described above. This is not
+  hypothetical — `repos/Verjson/.github/rules/branches/main` returns
+  `[{"context":"shell-tests","integration_id":null}]`, so on this repository
+  today the binding never engages, while `Verjson/verjson-ai` and
+  `Verjson/verjson-cli` do bind an app id. The gate warns on every unbound
+  context rather than refusing it, because refusing would reject rulesets that
+  are currently correct, including this organization's own hub; a silent
+  fallback, though, would let the degradation disappear, so the warning is
+  asserted by the test suite.
+
   Because app identity is required, the check inventory is read from
   `commits/{sha}/check-runs` and `commits/{sha}/status` rather than from
   `gh pr view --json statusCheckRollup`: that projection carries no app id, so a
@@ -98,6 +111,11 @@ exposed the two deferral patterns as overridable variables. That made disabling
 Gate B a single-variable edit at the call site — strictly cheaper, and far less
 visible, than the allowlist widening this decision exists to prevent. A gate
 whose strictness is tunable by its caller is not a gate.
+
+This claim is mutation-tested rather than asserted: making the deferral pattern
+overridable again causes the suite to fail. An earlier version of that test
+named the *sibling* script's variables, which this gate never reads, so it would
+have passed against a build where the gate genuinely was overridable.
 
 ### Why three gates rather than a better single predicate
 
@@ -127,7 +145,9 @@ merge gated on a set the head itself chose.
   silently made stricter under an existing name.
 - The new script reads `repos/{repo}/rules/branches/{ref}`. Verified against the
   live endpoint with an ordinary repository-read token: it returns this
-  repository's `shell-tests` required context without `administration` scope. On a repository
+  repository's `shell-tests` required context without `administration` scope —
+  a context this same ruleset leaves unbound, so that verification exercised the
+  endpoint and not the app binding. On a repository
   with no ruleset on its default branch it will refuse to pass, by design. That
   is a real behavioral difference from the old predicate and the reason it ships
   as a new entry point rather than as an in-place upgrade.
