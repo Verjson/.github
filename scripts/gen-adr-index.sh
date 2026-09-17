@@ -78,6 +78,20 @@ validate_unique_numbers() {
 }
 
 gen_table() {
+  # A generated table is not the formatter's to own. prettier reformats every
+  # markdown table it is given — padding each cell to the column width, and
+  # inserting a blank line before the closing marker — so an adopter that runs
+  # both prettier and `--check` over docs/decisions/README.md can satisfy one or
+  # the other, never both (#1382). The padded form is not a fix either: it is
+  # what prettier emits only under the default `proseWrap`, and a `never`
+  # adopter gets a third, compact shape.
+  #
+  # `<!-- prettier-ignore -->` settles it inside the region this generator
+  # already owns, so the two authorities agree by construction: prettier leaves
+  # the block byte-identical under every proseWrap/printWidth setting, and no
+  # adopter has to carry a .prettierignore entry a later regeneration could
+  # drop. A repository that does not use prettier carries an inert comment.
+  printf '<!-- prettier-ignore -->\n'
   printf '| # | Date | Decision |\n'
   printf '|---|------|----------|\n'
   local d slug num readme title date
@@ -115,6 +129,10 @@ gen_table() {
     fi
     printf '| [%s](%s/README.md) | %s | %s |\n' "$num" "$slug" "$date" "$title"
   done < <(find "$dec_dir" -mindepth 1 -maxdepth 1 -type d -name '[0-9][0-9][0-9][0-9]-*' | LC_ALL=C sort -r)
+  # The one piece of spacing prettier still normalizes around an ignored block:
+  # it separates the table from the closing marker. Emitting it here keeps the
+  # generated region a fixed point of the formatter rather than a fight with it.
+  printf '\n'
 }
 
 render() {

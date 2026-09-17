@@ -9,8 +9,10 @@ Reverse-chronological index of org-level decisions.
 > ADR PRs from conflicting on a shared table.
 
 <!-- BEGIN ADR INDEX -->
+<!-- prettier-ignore -->
 | # | Date | Decision |
 |---|------|----------|
+| [0187](0187-provision-the-review-environment-before-the-caller/README.md) | 2026-09-17 | Provision the review environment before the review caller |
 | [0186](0186-required-checks-bind-through-repository-properties/README.md) | 2026-09-17 | Required status checks bind through repository properties, not per-repository rulesets |
 | [0185](0185-org-contract-distribution/README.md) | 2026-09-17 | Distribute the organization contract as a version, not a commit |
 | [0184](0184-merge-gates-assert-execution-not-absence-of-red/README.md) | 2026-09-17 | A merge gate asserts that verification executed, not that nothing is red |
@@ -196,6 +198,7 @@ Reverse-chronological index of org-level decisions.
 | [0003](0003-runner-groups-gcp-github-manish/README.md) | 2026-07-15 | Runner groups: GCP / GitHub (last resort) / manish |
 | [0002](0002-ai-review-graceful-budget-escalation/README.md) | 2026-07-15 | AI merge gate: escalate on budget exhaustion instead of failing |
 | [0001](0001-renovate-automerge-ai-review/README.md) | 2026-07-13 | Renovate auto-merge + org-wide advisory AI review |
+
 <!-- END ADR INDEX -->
 
 ## When to write an ADR (vs a GitHub issue)
