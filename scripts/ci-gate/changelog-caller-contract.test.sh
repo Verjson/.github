@@ -562,8 +562,11 @@ done
 # and `commit-tree` would otherwise leave dangling objects in the real
 # repository for a test that only needs them for the length of this block.
 mutated_objects="$tmproot/mutated-objects"
-mkdir -p "$mutated_objects"
 staged_fixture=true
+mkdir -p "$mutated_objects" || {
+  fail "could not create the scratch object store for the ADR-index refusal fixture"
+  staged_fixture=false
+}
 # Absolute: a relative alternate resolves against each child process's cwd, and
 # the generator runs git from its own directory. Assigning through `export` would
 # report export's own status rather than rev-parse's, leaving the bare path
@@ -574,9 +577,13 @@ common_git_dir="$(git -C "$repo_root" rev-parse --path-format=absolute --git-com
 if [ "$git_dir_status" -ne 0 ] || [ -z "$common_git_dir" ]; then
   fail "could not resolve the object store for the ADR-index refusal fixture"
   staged_fixture=false
+else
+  # Exported only once the path is known good: the empty-generator block below
+  # is not gated on $staged_fixture, so publishing a bare "/objects" here would
+  # starve it of every object rather than skip it.
+  export GIT_ALTERNATE_OBJECT_DIRECTORIES="$common_git_dir/objects"
+  export GIT_OBJECT_DIRECTORY="$mutated_objects"
 fi
-export GIT_ALTERNATE_OBJECT_DIRECTORIES="$common_git_dir/objects"
-export GIT_OBJECT_DIRECTORY="$mutated_objects"
 # A zero-length mktemp file is a deliberately empty index for read-tree to fill;
 # were read-tree to fail, the tree below would carry one path and quietly make
 # this whole block vacuous, so its status is checked.
@@ -592,12 +599,36 @@ fi
 # produce three misleading verdicts; the suite still runs its ~1800 sibling lines.
 if [ "$staged_fixture" = true ]; then
   mutated_suite="$(mktemp)"
+  # An unchecked `show | sed` is the worst of the construction faults: a path
+  # that no longer exists leaves an empty file, `hash-object` writes an empty
+  # blob, and the generator then refuses it with the very message this block
+  # asserts — a green run that tested nothing.
   git -C "$repo_root" show "$sha:scripts/ci-gate/gen-adr-index.test.sh" \
     | sed 's|^repo_root=.*|repo_root="$(git rev-parse --show-toplevel)"|' >"$mutated_suite"
-  mutated_blob="$(git -C "$repo_root" hash-object -w "$mutated_suite")"
-  GIT_INDEX_FILE="$mutated_index" git -C "$repo_root" update-index \
-    --cacheinfo 100644,"$mutated_blob",scripts/ci-gate/gen-adr-index.test.sh
-  mutated_tree="$(GIT_INDEX_FILE="$mutated_index" git -C "$repo_root" write-tree)"
+  show_status=${PIPESTATUS[0]}
+  mutated_tree=""
+  if [ "$show_status" -ne 0 ] || [ ! -s "$mutated_suite" ]; then
+    fail "could not read the canonical ADR-index suite for the refusal fixture"
+    staged_fixture=false
+  elif ! mutated_blob="$(git -C "$repo_root" hash-object -w "$mutated_suite")" \
+    || [ -z "$mutated_blob" ]; then
+    fail "could not write the mutated ADR-index suite blob"
+    staged_fixture=false
+  elif ! GIT_INDEX_FILE="$mutated_index" git -C "$repo_root" update-index \
+    --cacheinfo 100644,"$mutated_blob",scripts/ci-gate/gen-adr-index.test.sh; then
+    # Left unchecked this does not fail — it leaves the original blob in the
+    # index, so the fixture is simply not mutated and the assertions below
+    # report the branch under test as misbehaving.
+    fail "could not replace the ADR-index suite in the refusal fixture"
+    staged_fixture=false
+  elif ! mutated_tree="$(GIT_INDEX_FILE="$mutated_index" git -C "$repo_root" write-tree)" \
+    || [ -z "$mutated_tree" ]; then
+    fail "could not write the ADR-index refusal fixture tree"
+    staged_fixture=false
+  fi
+fi
+
+if [ "$staged_fixture" = true ]; then
   # commit-tree refuses without a committer identity, and a CI runner has none
   # configured: it dies with "unable to auto-detect email address". Supply one
   # through the environment rather than writing git config, so the fixture needs
@@ -609,7 +640,6 @@ if [ "$staged_fixture" = true ]; then
     GIT_COMMITTER_EMAIL='changelog-caller-contract@invalid' \
     git -C "$repo_root" commit-tree "$mutated_tree" -p "$sha" -m 'anchor removed'
   )"
-  rm -f "$mutated_index" "$mutated_suite"
   # Without this the block continues with an empty ref, the generator refuses it
   # on ref validation, and the assertions below report that refusal as though the
   # branch under test had misbehaved. Every verdict past here needs a real ref.
@@ -618,6 +648,7 @@ if [ "$staged_fixture" = true ]; then
     staged_fixture=false
   }
 fi
+rm -f "$mutated_index" "${mutated_suite:-}"
 
 if [ "$staged_fixture" = true ]; then
   # The scratch store stays exported until the last assertion below: the fixture
@@ -652,10 +683,19 @@ if [ "$staged_fixture" = true ]; then
     fail "an unresolvable ADR-index suite pinned an unexpected digest: $mutated_pin"
   fi
 fi
+unset GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
+
 # The other end of the same fault: a resolver can succeed and yield nothing — an
 # empty blob at the ref, or a 200 with an empty body. `printf` would turn that
 # into a lone newline, non-empty enough to satisfy every downstream guard while
 # pinning a real-looking digest over a one-byte generator.
+#
+# This fixture deliberately writes into the real object store rather than the
+# scratch one above. The assertions below require the generator to *emit* at the
+# fixture ref, not merely to refuse it, so the child process has to be able to
+# read the fixture back — and a refusal is indistinguishable from an unreadable
+# ref, which is how an assertion of this shape goes vacuously green. A handful of
+# unreferenced loose objects in a test checkout is the cheaper trade.
 newline_digest="$(printf '\n' | sha256sum | cut -d' ' -f1)"
 empty_sha=""
 empty_tree=""
@@ -691,19 +731,25 @@ if [ -n "$empty_sha" ]; then
   # unresolvable ref exits 1 from a much earlier guard — the very regression the
   # object-store fix above repaired. Anchor on a sibling mode that resolves the
   # same ref through the same plumbing, then require the refusal's own reason.
-  if ! bash "$gen" adr-index-test "$empty_sha" 2>/dev/null | grep -q .; then
-    fail "the empty-generator fixture is not resolvable, so its refusal proves nothing"
+  anchor_err="$tmproot/empty-generator-anchor.err"
+  if ! bash "$gen" adr-index-test "$empty_sha" 2>"$anchor_err" | grep -q .; then
+    # Carry the reason out: this fixture has now failed for three host-specific
+    # causes (a linked worktree's git dir, a runner's missing committer identity,
+    # a scratch object store the child could not read), and each time the verdict
+    # alone said nothing about which.
+    fail "the empty-generator fixture is not resolvable, so its refusal proves nothing: $(head -3 "$anchor_err")"
   else
     empty_refusal="$tmproot/empty-generator.err"
     if bash "$gen" adr-index-generator "$empty_sha" >/dev/null 2>"$empty_refusal"; then
       fail "adr-index-generator emitted a lone newline for an empty canonical generator"
-    elif grep -q 'cannot resolve gen-adr-index.sh at' "$empty_refusal"; then
+    elif grep -q 'the canonical scripts/gen-adr-index.sh is empty at' "$empty_refusal"; then
       pass "adr-index-generator refuses an empty canonical generator rather than emitting a newline"
     else
       fail "adr-index-generator refused the empty canonical generator for another reason: $(cat "$empty_refusal")"
     fi
     rm -f "$empty_refusal"
   fi
+  rm -f "$anchor_err"
 
   empty_contract="$(bash "$gen" contract-test "$empty_sha" 2>/dev/null)"
   empty_pin="$(grep -m1 '^ADR_INDEX_SHA256=' <<<"$empty_contract" | cut -d'"' -f2)"
@@ -718,7 +764,6 @@ if [ -n "$empty_sha" ]; then
   fi
 fi
 
-unset GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
 
 contract_validation="$(sed -n '/^  contract-test)/,/^    ;;/p' "$gen")"
 if grep -q 'bash -n <"$syntax_input"' <<<"$contract_validation" \

@@ -70,3 +70,20 @@ first proves the fixture resolves through a sibling mode and then requires the
 refusal's own stated reason. `digest_of_resolved` also now names the temporary
 file it could not create for a resolver's diagnostics, so that failure is no
 longer silent.
+
+Three further construction faults in the same fixture family are closed with it.
+The `git show | sed` that builds the mutated suite went unchecked, so a path that
+no longer resolved left an empty file whose blob the generator refused with the
+very message the block asserts — a green run that tested nothing. `hash-object`
+and `update-index` went unchecked too, so a failure there left the fixture simply
+unmutated and reported the branch under test as misbehaving. And the alternates
+path was exported even on its own failure branch, publishing a bare `/objects`
+to a later block that is not gated on the staging flag.
+
+The empty-generator fixture writes into the real object store rather than the
+scratch one, because its assertions require the generator to *emit* at the
+fixture ref rather than merely refuse it, and an unreadable ref is
+indistinguishable from a refusal — the shape that makes an assertion of this kind
+vacuous on a host whose object visibility differs. Its refusal check asserts the
+emitter's own distinct diagnostic, so "resolved, but empty" can no longer read as
+"never resolved", and carries the resolver's stderr into the failure message.

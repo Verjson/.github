@@ -571,8 +571,13 @@ emit_adr_index_generator() {
   # A resolver can succeed and still yield nothing — an empty blob at the ref, or
   # a 200 with an empty body. `printf` would turn that into a single newline,
   # which is non-empty enough to satisfy every downstream guard and would pin a
-  # real-looking digest over a one-byte generator.
-  [ -n "$canonical" ] || return 1
+  # real-looking digest over a one-byte generator. The diagnostic is distinct
+  # from the resolver's own failure so that "resolved, but empty" can never be
+  # mistaken for "never resolved" — by a reader or by a test.
+  [ -n "$canonical" ] || {
+    echo "$(basename "$0"): the canonical scripts/gen-adr-index.sh is empty at $ref" >&2
+    return 1
+  }
   printf '%s\n' "$canonical"
 }
 
