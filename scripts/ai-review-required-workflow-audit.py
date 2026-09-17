@@ -389,9 +389,10 @@ def verify_ruleset_exclusivity(contract: dict, read, state: str) -> dict[int, di
             recognized == [(named[0], contract["replacement_path"])],
             f"retired and replacement workflow identities are not exclusive: {recognized}",
         )
+        arm_mismatches = image_mismatches(normalize_ruleset(candidates[named[0]]), contract["arm_ruleset"])
         require(
-            normalize_ruleset(candidates[named[0]]) == contract["arm_ruleset"],
-            "arm ruleset drifted from its full reviewed image",
+            not arm_mismatches,
+            f"arm ruleset drifted from its full reviewed image: {concise_mismatches(arm_mismatches)}",
         )
     require(not conflicts, f"retired or App authorization status is also required: {conflicts}")
     return candidates
@@ -407,9 +408,11 @@ def verify_deterministic_ci(
     for declaration in contract["deterministic_rulesets"]:
         ruleset_id = declaration["id"]
         require(ruleset_id in candidates, f"deterministic ruleset {ruleset_id} is absent")
+        mismatches = image_mismatches(normalize_ruleset(candidates[ruleset_id]), declaration["image"])
         require(
-            normalize_ruleset(candidates[ruleset_id]) == declaration["image"],
-            f"deterministic ruleset {ruleset_id} drifted from its full reviewed image",
+            not mismatches,
+            f"deterministic ruleset {ruleset_id} drifted from its full reviewed image: "
+            f"{concise_mismatches(mismatches)}",
         )
         declarations[declaration["stack"]] = declaration
     property_rows = paginated_items(

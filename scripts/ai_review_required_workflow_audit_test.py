@@ -346,6 +346,33 @@ jobs:
         self.live_pull_request_parameters()["require_extra_approval_for_unattributed_changes"] = True
         self.assertEqual(AUDIT.audit(self.contract, self.read)["state"], "ready")
 
+    def test_the_arm_image_tolerates_a_vendor_key_but_not_a_changed_value(self):
+        # The live arm ruleset carries a `sha` GitHub resolves for the selected
+        # workflow, which no reviewed image can contain. The same comparison that
+        # ignores it must still reject a changed enforcement.
+        self.enter_split_state()
+        live_arm = self.fixture[f"orgs/Verjson/rulesets/{self.arm_id}"][0]
+        live_arm["rules"][0]["parameters"]["workflows"][0]["sha"] = "c597d69"
+        self.assertEqual(AUDIT.audit(self.contract, self.read)["state"], "split")
+        live_arm["enforcement"] = "evaluate"
+        self.assert_audit_error("arm ruleset drifted from its full reviewed image")
+
+    def test_the_deterministic_images_tolerate_a_vendor_key_but_not_a_changed_check(self):
+        # Live required status checks carry the resolving App's `integration_id`,
+        # which the reviewed images do not pin. Ignoring it must not extend to
+        # ignoring a context that is no longer required.
+        node = next(
+            declaration for declaration in self.contract["deterministic_rulesets"]
+            if declaration["stack"] == "node"
+        )
+        live_node = self.fixture[f"orgs/Verjson/rulesets/{node['id']}"][0]
+        checks = live_node["rules"][0]["parameters"]["required_status_checks"]
+        for check in checks:
+            check["integration_id"] = 15368
+        self.assertEqual(AUDIT.audit(self.contract, self.read)["state"], "ready")
+        checks[0]["context"] = "ci / something-else"
+        self.assert_audit_error(f"deterministic ruleset {node['id']} drifted from its full reviewed image")
+
     def test_rendered_payloads_are_verified_and_the_tool_has_no_mutation_path(self):
         self.assertEqual(
             AUDIT.render_payload(self.contract, "split", self.read),
