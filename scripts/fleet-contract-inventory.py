@@ -28,6 +28,20 @@ REPO_LIST_LIMIT = 500
 # in for a failed one.
 CONTENTS_DIR_LIMIT = 1000
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+# Anchored to `gh`'s own one-line error form, and the LAST match is taken. An
+# unanchored search over a multi-line stderr is order-dependent -- "404 then
+# 500" would read as absence -- and a bare `(HTTP nnn)` could be matched out of
+# prose rather than out of gh's verdict.
+HTTP_STATUS_RE = re.compile(r"^gh:.*\(HTTP (?P<code>\d{3})\)\s*$", re.MULTILINE)
+
+
+class _Absent:
+    """"The resource is not there" -- an observation, distinct from both "here
+    it is" and "the question could not be asked"."""
+    __slots__ = ()
+
+
+ABSENT = _Absent()
 # GitHub resolves owner/repo case-insensitively, so a lowercase adopter
 # reference is a real reference; a completeness sweep must not drop it.
 USES_RE = re.compile(
@@ -42,19 +56,83 @@ HEADER_RE = re.compile(
     re.IGNORECASE)
 
 
-def gh(*args: str) -> str | None:
-    """None means the call failed. A hung call must not stall a ~95-repo sweep."""
+def gh_run(*args: str) -> tuple[str | None, str]:
+    """(stdout or None on failure, stderr). A hung call must not stall a sweep."""
     try:
         p = subprocess.run(["gh", *args], capture_output=True, text=True,
                            timeout=120)
     except subprocess.TimeoutExpired:
         print(f"gh timed out: {' '.join(args)}", file=sys.stderr)
-        return None
+        # The second slot is stderr. A timeout produced none, and inventing
+        # a reason string here would be read as one.
+        return None, ""
     if p.returncode != 0:
         print(f"gh failed ({p.returncode}): {' '.join(args)}: "
               f"{p.stderr.strip()[:200]}", file=sys.stderr)
+        return None, p.stderr
+    return p.stdout, p.stderr
+
+
+def gh(*args: str) -> str | None:
+    """None means the call failed."""
+    return gh_run(*args)[0]
+
+
+def last_status(stderr: str) -> str | None:
+    """The HTTP status of gh's final verdict, or None if it stated none."""
+    found = HTTP_STATUS_RE.findall(stderr)
+    return found[-1] if found else None
+
+
+# Directories confirmed not to exist. Reported and counted like a gap kind so
+# the decision is auditable, but deliberately absent from the exit predicate:
+# it is a completed observation, not a hole in the sweep.
+absent_directories: list[str] = []
+
+
+def gh_listing(repo: str, path: str) -> str | None | _Absent:
+    """Directory text, ABSENT if it does not exist, None if the call failed.
+
+    A 404 here is not one condition. An empty repository and a repository with
+    no such directory both 404, and both are *complete observations*: there is
+    nothing to inventory. Counting them as unreachable inflates the gap tally
+    and exits the sweep nonzero for a benign reason -- the mirror image of the
+    fail-open this tool exists to close, and how a check earns itself a mute.
+
+    But a 404 is never *self*-explanatory, and "the enumeration listed it with
+    this token" does not carry the weight it looks like it carries. GitHub
+    answers 404 rather than 403 wherever admitting existence would itself leak,
+    the enumeration is one snapshot taken before a sweep of hundreds of calls,
+    and repository metadata and Contents are different permissions. A repo
+    deleted, made private, transferred, or dropped from an App installation
+    mid-sweep answers exactly like a repo that simply has no workflows.
+
+    So absence is *confirmed*, never inferred, with a positive observation:
+
+    - `repos/{repo}` must still read, or the repository is gone from under us
+      and that is a real gap;
+    - then either the repository root lists (Contents access intact, so the
+      subdirectory is genuinely not there), or `commits` reports 409 (the
+      repository has no commits at all).
+
+    Anything else stays None. The cost is a few calls for the handful of
+    repositories that 404, once per sweep.
+    """
+    out, err = gh_run("api", f"repos/{repo}/contents/{path}")
+    if out is not None:
+        return out
+    if last_status(err) != "404":
         return None
-    return p.stdout
+    if gh("api", f"repos/{repo}", "--jq", ".full_name") is None:
+        return None
+    root, root_err = gh_run("api", f"repos/{repo}/contents/")
+    if root is None:
+        # The root 404s too. That is an empty repository or a lost Contents
+        # grant, and only the commits endpoint tells the two apart.
+        if last_status(gh_run("api", f"repos/{repo}/commits?per_page=1")[1]) != "409":
+            return None
+    absent_directories.append(f"{repo}:{path}")
+    return ABSENT
 
 
 def repos() -> list[str]:
@@ -114,14 +192,22 @@ def hub_tree(ref: str) -> dict[str, str] | None:
 def workflows(repo: str) -> dict[str, str] | None:
     """adopter workflow path -> decoded text; None if the repo was unreachable.
 
-    An empty dict means "no workflows"; it must never also mean "the listing
-    call failed". That conflation is the same fail-open shape `classify` exists
-    to prevent, one level up: a repository whose listing 404s for a real reason
-    would contribute no rows and vanish from a completeness report.
+    An empty dict means "there is nothing to inventory": no workflow files, no
+    workflows directory, or no commits at all. It must never also mean "the
+    listing call failed". That conflation is the same fail-open shape `classify`
+    exists to prevent, one level up: a repository whose listing 404s for a real
+    reason would contribute no rows and vanish from a completeness report.
+
+    The two are kept apart by `gh_listing`, which *confirms* an absent directory
+    rather than inferring it from the 404 -- see its docstring for why a 404
+    alone cannot carry that weight.
     """
-    listing = gh("api", f"repos/{repo}/contents/.github/workflows")
+    listing = gh_listing(repo, ".github/workflows")
     if listing is None:
         return None
+    if isinstance(listing, _Absent):
+        # Confirmed: no workflows directory, or no commits. Nothing to inventory.
+        return {}
     if not listing.strip():
         return {}
     try:
@@ -223,11 +309,17 @@ def main() -> int:
           f"unreachable_repos={len(unreachable)} "
           f"unreadable_files={len(unreadable)} "
           f"incomplete_listings={len(incomplete_listings)} "
-          f"truncated_trees={len(truncated_trees)}", file=sys.stderr)
+          f"truncated_trees={len(truncated_trees)} "
+          f"absent_directories={len(absent_directories)}", file=sys.stderr)
     if unreachable:
         print("unreachable: " + " ".join(unreachable), file=sys.stderr)
     if unreadable:
         print("unreadable: " + " ".join(unreadable), file=sys.stderr)
+    # Counted and named, but not a gap: each of these was confirmed absent
+    # rather than assumed to be, and the confirmation is the auditable part.
+    if absent_directories:
+        print("absent (confirmed, not a gap): "
+              + " ".join(absent_directories), file=sys.stderr)
     # One per line: a capped-listing gap carries spaces, so a space-joined list
     # would no longer be one token per gap.
     for gap in incomplete_listings:
