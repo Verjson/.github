@@ -764,6 +764,90 @@ if [ -n "$empty_sha" ]; then
   fi
 fi
 
+# The pin is taken from the mode's emitted form, not the resolver's raw bytes.
+# Those two agree for as long as the canonical generator ends in exactly one
+# trailing newline, which it does today — so at $sha the loop above passes
+# whichever source the pin came from, and the unification it exists to protect
+# is asserted only in prose. Build the day it stops agreeing: a canonical
+# generator carrying one extra trailing newline, where the emitted form (which
+# normalizes to exactly one) and the raw bytes have different digests. Under a
+# resolver-sourced pin the adopter's contract test would fail against a file it
+# had just regenerated correctly, and this fixture is what catches that.
+#
+# Both fixtures below are pinned to a temporary ref for the length of the block.
+# They are otherwise unreferenced loose objects in the shared store, and a
+# concurrent `git gc --auto` between construction and read-back makes them
+# unresolvable — which fails closed, but as noise rather than a verdict.
+newline_ref="refs/tmp/changelog-caller-contract/$$-empty-generator"
+[ -n "${empty_sha:-}" ] && git -C "$repo_root" update-ref "$newline_ref" "$empty_sha"
+
+padded_ref="refs/tmp/changelog-caller-contract/$$-padded-generator"
+padded_sha=""
+padded_index="$(mktemp)"
+padded_blob_file="$tmproot/padded-generator.sh"
+# Every plumbing step is checked separately: a fixture built by a chain that
+# reports only the first status turns a later construction failure into an
+# apparent misbehavior of the branch under test.
+if ! git -C "$repo_root" show "$sha:scripts/gen-adr-index.sh" >"$padded_blob_file"; then
+  fail "could not read the canonical generator for the padded-newline fixture"
+elif ! printf '\n' >>"$padded_blob_file"; then
+  fail "could not pad the canonical generator with a second trailing newline"
+elif ! GIT_INDEX_FILE="$padded_index" git -C "$repo_root" read-tree "$sha"; then
+  fail "could not stage the pinned tree for the padded-newline fixture"
+elif ! padded_blob="$(git -C "$repo_root" hash-object -w -t blob "$padded_blob_file")" \
+  || [ -z "$padded_blob" ]; then
+  fail "could not write the padded generator blob"
+elif ! GIT_INDEX_FILE="$padded_index" git -C "$repo_root" update-index \
+  --cacheinfo 100644,"$padded_blob",scripts/gen-adr-index.sh; then
+  fail "could not replace gen-adr-index.sh in the padded-newline fixture"
+elif ! padded_tree="$(GIT_INDEX_FILE="$padded_index" git -C "$repo_root" write-tree)" \
+  || [ -z "$padded_tree" ]; then
+  fail "could not write the padded-newline fixture tree"
+else
+  padded_sha="$(
+    GIT_AUTHOR_NAME='changelog-caller-contract' \
+    GIT_AUTHOR_EMAIL='changelog-caller-contract@invalid' \
+    GIT_COMMITTER_NAME='changelog-caller-contract' \
+    GIT_COMMITTER_EMAIL='changelog-caller-contract@invalid' \
+    git -C "$repo_root" commit-tree "$padded_tree" -p "$sha" -m 'generator padded with a second trailing newline'
+  )"
+  [ -n "$padded_sha" ] || fail "could not build the padded-newline fixture commit"
+fi
+rm -f "$padded_index"
+[ -n "$padded_sha" ] && git -C "$repo_root" update-ref "$padded_ref" "$padded_sha"
+
+if [ -n "$padded_sha" ]; then
+  padded_raw_digest="$(sha256sum <"$padded_blob_file" | cut -d' ' -f1)"
+  padded_mode="$tmproot/padded-generator.out"
+  padded_mode_status=0
+  bash "$gen" adr-index-generator "$padded_sha" >"$padded_mode" 2>/dev/null \
+    || padded_mode_status=$?
+  padded_emitted_digest="$(sha256sum <"$padded_mode" | cut -d' ' -f1)"
+  padded_contract="$(bash "$gen" contract-test "$padded_sha" 2>/dev/null)"
+  padded_pin="$(grep -m1 '^ADR_INDEX_SHA256=' <<<"$padded_contract" | cut -d'"' -f2)"
+
+  # The fixture only proves anything if the two candidate sources actually
+  # disagree at this ref. If padding failed to change the emitted form, the pin
+  # would match both and the assertion below would pass vacuously.
+  if [ "$padded_mode_status" != 0 ] || [ ! -s "$padded_mode" ]; then
+    fail "adr-index-generator emitted nothing at the padded-newline fixture (status=$padded_mode_status)"
+  elif [ "$padded_raw_digest" = "$padded_emitted_digest" ]; then
+    fail "the padded-newline fixture does not separate the resolver's bytes from the emitted form"
+  elif ! grep -q "^CONTRACT_REF=\"$padded_sha\"$" <<<"$padded_contract"; then
+    fail "contract-test emitted nothing for the padded-newline fixture"
+  elif [ "$padded_pin" = "$padded_raw_digest" ]; then
+    fail "ADR_INDEX_SHA256 digests the resolver's raw bytes, which no adopter regenerating the file can match"
+  elif [ "$padded_pin" = "$padded_emitted_digest" ]; then
+    pass "ADR_INDEX_SHA256 digests the emitted form even when the canonical bytes do not end in one newline"
+  else
+    fail "ADR_INDEX_SHA256 matched neither source at the padded-newline fixture: $padded_pin"
+  fi
+  rm -f "$padded_mode"
+fi
+rm -f "$padded_blob_file"
+git -C "$repo_root" update-ref -d "$padded_ref" 2>/dev/null || true
+git -C "$repo_root" update-ref -d "$newline_ref" 2>/dev/null || true
+
 
 contract_validation="$(sed -n '/^  contract-test)/,/^    ;;/p' "$gen")"
 if grep -q 'bash -n <"$syntax_input"' <<<"$contract_validation" \

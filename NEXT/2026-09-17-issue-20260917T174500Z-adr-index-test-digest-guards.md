@@ -87,3 +87,16 @@ indistinguishable from a refusal — the shape that makes an assertion of this k
 vacuous on a host whose object visibility differs. Its refusal check asserts the
 emitter's own distinct diagnostic, so "resolved, but empty" can no longer read as
 "never resolved", and carries the resolver's stderr into the failure message.
+
+The contract test now builds a canonical generator carrying a second trailing
+newline and requires `ADR_INDEX_SHA256` to digest the emitted form rather than
+the resolver's raw bytes. Those two sources agree for as long as the canonical
+file ends in exactly one newline, so at `HEAD` the existing assertion passed
+whichever source the pin came from — the unification it protects was argued in a
+comment and asserted nowhere. Reverting the pin source now fails that fixture
+with "digests the resolver's raw bytes, which no adopter regenerating the file
+can match".
+
+Both ADR-index fixtures are pinned to a temporary ref while they are read back,
+so a concurrent `git gc` can no longer prune the unreferenced loose objects out
+from under the child process that resolves them.

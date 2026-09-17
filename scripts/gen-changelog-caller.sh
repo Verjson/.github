@@ -2122,6 +2122,14 @@ digest_of_resolved() { # "$@" = the resolver command
     rm -f "$tmp"
     return 1
   }
+  # `-s` is unreachable from the callers this function has today: both emit_*
+  # resolvers already refuse an empty canonical file with their own diagnostic,
+  # so nothing reaches here having exited zero with nothing written. It is kept
+  # deliberately, as the last line of defense rather than a covered branch --
+  # removing it alone leaves the suite green, but removing it together with the
+  # pin-source unification reproduces the original defect exactly, pinning the
+  # empty-string hash. Read it as belt-and-braces for a future resolver that
+  # does not carry its own guard, not as a claim the suite is asserting.
   if "$@" >"$tmp" 2>"$err" && [ -s "$tmp" ]; then
     digest="$(digest_of <"$tmp")" || digest=''
   fi
