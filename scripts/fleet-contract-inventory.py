@@ -72,6 +72,10 @@ def repos() -> list[str]:
 _tree_cache: dict[str, dict[str, str] | None] = {}
 # Paths whose blob could not be read. A completeness tool must name its gaps.
 unreadable: list[str] = []
+# Directories whose listing was complete-looking but capped. A different gap
+# kind from an unreadable blob: the file names themselves are missing, so the
+# count of unreadable paths cannot express it.
+incomplete_listings: list[str] = []
 
 
 def hub_tree(ref: str) -> dict[str, str] | None:
@@ -118,9 +122,9 @@ def workflows(repo: str) -> dict[str, str] | None:
     if not isinstance(entries, list):
         return {}
     if len(entries) >= CONTENTS_DIR_LIMIT:
-        unreadable.append(f"{repo}:.github/workflows "
-                          f"(listing hit the {CONTENTS_DIR_LIMIT}-entry contents cap; "
-                          "read it through the git trees API)")
+        incomplete_listings.append(
+            f"{repo}:.github/workflows (listing hit the {CONTENTS_DIR_LIMIT}-entry "
+            "contents cap; read it through the git trees API)")
     files = {}
     for entry in entries:
         name = entry.get("name", "")
@@ -198,14 +202,19 @@ def main() -> int:
           f"{dict(tally)} drifted_repos={len(drifted_repos)} "
           f"repos_with_intra_repo_pin_skew={len(skewed)} "
           f"unreachable_repos={len(unreachable)} "
-          f"unreadable_files={len(unreadable)}", file=sys.stderr)
+          f"unreadable_files={len(unreadable)} "
+          f"incomplete_listings={len(incomplete_listings)}", file=sys.stderr)
     if unreachable:
         print("unreachable: " + " ".join(unreachable), file=sys.stderr)
     if unreadable:
         print("unreadable: " + " ".join(unreadable), file=sys.stderr)
+    # One per line: a capped-listing gap carries spaces, so a space-joined list
+    # would no longer be one token per gap.
+    for listing in incomplete_listings:
+        print("incomplete listing: " + listing, file=sys.stderr)
     # A sweep that lost its token halfway through has a truncated inventory.
     # Exiting 0 on it would report incompleteness as completeness.
-    return 1 if (unreachable or unreadable) else 0
+    return 1 if (unreachable or unreadable or incomplete_listings) else 0
 
 
 if __name__ == "__main__":

@@ -139,10 +139,14 @@ class DirectoryListingCap(unittest.TestCase):
     def setUp(self):
         self._gh = fci.gh
         self._unreadable = list(fci.unreadable)
+        self._incomplete = list(fci.incomplete_listings)
         self.addCleanup(lambda: setattr(fci, "gh", self._gh))
         self.addCleanup(lambda: fci.unreadable.__setitem__(
             slice(None), self._unreadable))
+        self.addCleanup(lambda: fci.incomplete_listings.__setitem__(
+            slice(None), self._incomplete))
         fci.unreadable.clear()
+        fci.incomplete_listings.clear()
 
     @staticmethod
     def _listing(count: int) -> str:
@@ -153,22 +157,30 @@ class DirectoryListingCap(unittest.TestCase):
         listing = self._listing(count)
 
         def gh(*args: str):
-            return listing if "contents" in args[-1] else base64.b64encode(
+            return listing if "/contents/" in args[-1] else base64.b64encode(
                 b"on: push\n").decode()
 
         fci.gh = gh
 
     def test_a_listing_at_the_cap_is_reported_as_a_gap(self):
         self._serve(fci.CONTENTS_DIR_LIMIT)
-        fci.workflows("Verjson/example")
+        files = fci.workflows("Verjson/example")
         self.assertTrue(any("Verjson/example:.github/workflows" in gap
-                            for gap in fci.unreadable),
+                            for gap in fci.incomplete_listings),
                         "a capped listing must name itself as a gap")
+        # The gap is named, not raised: the entries that WERE returned are still
+        # classified, so a capped repository contributes rows and a gap rather
+        # than vanishing from the report entirely.
+        self.assertEqual(len(files), fci.CONTENTS_DIR_LIMIT)
+        # A capped directory is not an unreadable path, and conflating the two
+        # would make the unreadable-file count mean two different things.
+        self.assertEqual(fci.unreadable, [])
 
     def test_a_listing_below_the_cap_reports_no_gap(self):
         self._serve(3)
         self.assertEqual(len(fci.workflows("Verjson/example")), 3)
         self.assertEqual(fci.unreadable, [])
+        self.assertEqual(fci.incomplete_listings, [])
 
 
 if __name__ == "__main__":
