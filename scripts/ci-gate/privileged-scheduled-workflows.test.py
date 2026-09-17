@@ -28,6 +28,10 @@ ARM_AUDIT_COMMAND = (
     "python3 scripts/audit-finding-state.py"
     " --audit ai-review-arm"
     " --expectations config/audit-expected-findings.json"
+    # The audit declares the exit statuses it uses, so any other status is a
+    # crash rather than a verdict. Pinned here because widening the declared
+    # set is how a crashed privileged audit would start reading as conformance.
+    " --expect-status 0 --expect-status 1"
     " -- python3 scripts/ai-review-required-workflow-audit.py"
 )
 

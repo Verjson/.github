@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Adjudicate a scheduled audit's findings against a reviewed expectation file."""
+"""Adjudicate a scheduled audit's findings against a reviewed expectation file.
+
+The wrapped audit reports findings as `ERROR: <finding>` lines on **stderr**;
+stdout is passed through untouched and is not scanned. An audit adopting this
+adjudicator must report on stderr, and must declare the exit statuses it uses
+with `--expect-status` if they are not 0 and 1.
+"""
 
 import argparse
 import hashlib
@@ -85,7 +91,9 @@ def parse_expiry(value: object, where: str) -> date:
         raise Undetermined(f"expectation {where} expiry {value!r} is not an ISO date") from None
 
 
-def observe(command: list[str]) -> list[str]:
+def observe(command: list[str], expected_statuses: frozenset[int]) -> list[str]:
+    if not command:
+        raise Undetermined("no audit command was given to run")
     try:
         completed = subprocess.run(command, capture_output=True, text=True)
     except OSError as error:
@@ -95,7 +103,21 @@ def observe(command: list[str]) -> list[str]:
         match = FINDING_LINE.match(line)
         if match:
             findings.append(CONTROL_CHARACTERS.sub("\ufffd", match.group(1)))
+    # The wrapped audit's own stdout is its structured result. It goes to this
+    # process's stderr rather than its stdout, which carries the adjudicator's
+    # own JSON; dropping it would make wrapping an audit quietly remove its
+    # payload from the job log.
+    sys.stderr.write(completed.stdout)
     sys.stderr.write(completed.stderr)
+    # An exit status the audit does not use is a crash, not a verdict. Without
+    # this, an audit that printed the recorded finding and was then killed
+    # satisfied both guards below and adjudicated `match`: a hub-privileged
+    # control reporting conformance from a run that never finished.
+    if completed.returncode not in expected_statuses:
+        raise Undetermined(
+            f"audit exited {completed.returncode}, which is not one of the statuses "
+            f"it is declared to use ({', '.join(str(s) for s in sorted(expected_statuses))})"
+        )
     # Neither shape can be compared, and treating either as "no finding" is the
     # fail-open ADR 0024 rules out: a crashed audit would read as conformance.
     if completed.returncode != 0 and not findings:
@@ -170,6 +192,17 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--audit", required=True)
     parser.add_argument("--expectations", required=True)
+    parser.add_argument(
+        "--expect-status",
+        type=int,
+        action="append",
+        metavar="N",
+        help=(
+            "an exit status the audit is declared to use; repeatable. "
+            "Any other status is a crash and the run is undetermined. "
+            "Defaults to 0 and 1."
+        ),
+    )
     parser.add_argument("command", nargs=argparse.REMAINDER)
     return parser.parse_args()
 
@@ -180,7 +213,8 @@ def main() -> int:
     try:
         entries = read_expectations(Path(args.expectations), args.audit)
         today = datetime.now(timezone.utc).date()
-        state = adjudicate(observe(command), entries, today)
+        expected_statuses = frozenset(args.expect_status or (0, 1))
+        state = adjudicate(observe(command, expected_statuses), entries, today)
     except Undetermined as error:
         publish_summary({"audit": args.audit, "verdict": "undetermined", "reason": str(error)})
         print(f"ERROR: audit-state-undetermined: {error}", file=sys.stderr)

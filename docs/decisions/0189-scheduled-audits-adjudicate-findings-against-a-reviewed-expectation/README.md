@@ -62,6 +62,16 @@ one:
 - An audit that exits non-zero without reporting a finding, an audit that exits
   zero while reporting one, a missing or malformed expectation file, and an audit
   name with no recorded expectation all exit 2. None of them can report a match.
+- An audit that exits with a status it does not declare exits 2 as well. Those
+  two guards constrain findings against zero and non-zero exits but neither
+  constrains *which* non-zero: an audit that printed the recorded finding and was
+  then killed satisfied both and adjudicated `match`, exit 0. A wrapped audit
+  therefore declares its statuses with `--expect-status` (defaulting to 0 and 1),
+  and anything else is a crash rather than a verdict.
+- Findings are read from the audit's **stderr** only. Its stdout is passed
+  through to this process's stderr, keeping the audit's own payload in the job
+  log while leaving stdout for the adjudicator's JSON. A sibling audit adopting
+  this mechanism must report findings on stderr.
 - The committed expectation file is validated by `scripts/audit_finding_state_test.py`
   in the `platform` CI group, so a malformed edit fails in the pull request rather
   than in the next scheduled run.

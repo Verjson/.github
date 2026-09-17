@@ -28,3 +28,23 @@ rather than reporting a match. The committed expectation is validated in the
 can adopt it by adding an `audits` key and wrapping their command. ADR 0189
 records the decision and why the issue's proposed issue-per-finding mechanism was
 not chosen as the primary signal.
+
+The adjudicator's two guards constrained findings against a zero and a non-zero
+exit, but neither constrained *which* non-zero. An audit that printed the
+recorded finding and was then killed satisfied both and was adjudicated `match`,
+exit 0 — a hub-privileged control reporting conformance from a run that never
+finished, which is the ADR 0024 fail-open it exists to close. A wrapped audit now
+declares the statuses it uses with `--expect-status`, defaulting to 0 and 1, and
+any other status is undetermined. The arm audit's own invocation declares them
+explicitly rather than relying on the default.
+
+Wrapping an audit also removed its output from the job log: its stdout was
+captured and dropped, so the structured result `ai-review-required-workflow-audit.py`
+prints no longer appeared anywhere. It is now written through to stderr, leaving
+stdout for the adjudicator's own JSON. An empty command fails closed as
+undetermined rather than raising `IndexError` and exiting 1 as drift.
+
+The control-character scrub's test exercised nothing: its fixture used a carriage
+return, which `splitlines()` discards before the scrub can run, so the test passed
+with the scrub deleted. It now uses an escape character and asserts the
+replacement character appears.

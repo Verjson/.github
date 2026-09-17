@@ -75,7 +75,7 @@ jobs:
       - name: Audit the AI authorization arm against its reviewed contract
         env:
           GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
-        run: python3 scripts/audit-finding-state.py --audit ai-review-arm --expectations config/audit-expected-findings.json -- python3 scripts/ai-review-required-workflow-audit.py
+        run: python3 scripts/audit-finding-state.py --audit ai-review-arm --expectations config/audit-expected-findings.json --expect-status 0 --expect-status 1 -- python3 scripts/ai-review-required-workflow-audit.py
       - name: Remove the isolated arm-audit checkout
         if: ${{ always() }}
         working-directory: ${{ github.workspace }}

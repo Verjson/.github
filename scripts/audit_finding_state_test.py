@@ -144,7 +144,7 @@ class AuditFindingStateTest(unittest.TestCase):
         self.assertIn("audit-state-undetermined", completed.stderr)
 
     def test_an_audit_that_failed_without_reporting_a_finding_fails_closed(self):
-        completed = self.run_state(entries=[], command=emitter(findings=[], status=3))
+        completed = self.run_state(entries=[], command=emitter(findings=[], status=1))
         self.assertEqual(completed.returncode, 2, completed.stdout)
         self.assertIn("reported no finding", completed.stderr)
 
@@ -188,18 +188,57 @@ class AuditFindingStateTest(unittest.TestCase):
         self.assertIn(fingerprint(finding), summary)
 
     def test_a_finding_cannot_inject_an_actions_workflow_command(self):
-        hostile = "::error::spoofed" + chr(13) + "::set-output name=x::y"
+        # Not \r: `splitlines()` already discards everything after it, so the
+        # scrub is never reached and this test passes with the scrub deleted.
+        hostile = "::error::spoofed" + chr(27) + "[2K::set-output name=x::y"
         completed, summary = self.summary_of(entries=[], command=emitter(findings=[hostile]))
         self.assertEqual(completed.returncode, 1, completed.stdout)
         for line in summary.splitlines():
             self.assertFalse(line.startswith("::"), line)
-        self.assertNotIn(chr(13), summary)
+        self.assertNotIn(chr(27), summary)
+        self.assertIn("\ufffd", summary)
 
     def test_an_undetermined_run_says_so_in_the_step_summary(self):
-        completed, summary = self.summary_of(entries=[], command=emitter(findings=[], status=3))
+        completed, summary = self.summary_of(entries=[], command=emitter(findings=[], status=1))
         self.assertEqual(completed.returncode, 2, completed.stdout)
         self.assertIn("undetermined", summary)
         self.assertIn("reported no finding", summary)
+
+    def test_an_audit_that_dies_after_printing_a_recorded_finding_is_undetermined(self):
+        """A crash is not a verdict, however far the audit got before it.
+
+        The guards either side of this one constrain findings against exit
+        zero and non-zero; neither constrains *which* non-zero. An audit that
+        printed the recorded finding and was then OOM-killed satisfied both and
+        adjudicated `match`, exit 0 -- a hub-privileged control reporting
+        conformance from a run that never finished, which is the ADR 0024
+        fail-open the mechanism exists to close.
+        """
+        finding = "armed default CI: missing=1"
+        completed, summary = self.summary_of(
+            entries=[expectation(finding)],
+            command=emitter(findings=[finding], status=137),
+        )
+
+        self.assertEqual(completed.returncode, 2, completed.stdout)
+        self.assertIn("undetermined", summary)
+        self.assertIn("137", summary)
+
+    def test_an_audits_own_output_still_reaches_the_log(self):
+        """The adjudicator wraps the audit; it must not swallow what it wrapped.
+
+        The wrapped audit prints its structured result to stdout. That stdout
+        was captured and dropped, so wrapping the audit silently removed the
+        payload from the job log -- working against the readable-without-opening
+        -it goal the wrapper exists for.
+        """
+        completed, _ = self.summary_of(
+            entries=[],
+            command=emitter(findings=[], status=0, stdout="audit-said-this\n"),
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("audit-said-this", completed.stderr)
 
 
 class ShippedExpectationTest(unittest.TestCase):
