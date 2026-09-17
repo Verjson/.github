@@ -33,3 +33,44 @@ jobs:
         if: ${{ always() }}
         working-directory: ${{ github.workspace }}
         run: rm -rf ".org-ruleset-conformance-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}"
+
+  # The authorization-arm audit is the only control that can see an adopter
+  # unable to satisfy the required workflow, and until #1404 nothing ran it. It
+  # shares this schedule but keeps its own job so a finding here is attributable
+  # and cannot mask the release-authorization result above. It reports; no pull
+  # request gates on it.
+  arm-audit:
+    runs-on: ${{ fromJSON(vars.CI_LANE_PRIVILEGED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    defaults:
+      run:
+        working-directory: .org-ruleset-conformance-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+    timeout-minutes: 10
+    steps:
+      - name: Check out the authorization arm audit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: .org-ruleset-conformance-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          persist-credentials: false
+      - name: Provision audit Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.14'
+      - name: Install the hash-pinned audit dependencies
+        run: |
+          python3 -m pip install \
+            --disable-pip-version-check \
+            --no-input \
+            --quiet \
+            --no-deps \
+            --only-binary=:all: \
+            --require-hashes \
+            --requirement scripts/actions-ci-python.requirements.txt
+      - name: Audit the AI authorization arm against its reviewed contract
+        env:
+          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+        run: python3 scripts/ai-review-required-workflow-audit.py
+      - name: Remove the isolated arm-audit checkout
+        if: ${{ always() }}
+        working-directory: ${{ github.workspace }}
+        run: rm -rf ".org-ruleset-conformance-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}"

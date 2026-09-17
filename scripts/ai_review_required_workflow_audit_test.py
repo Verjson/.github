@@ -131,6 +131,10 @@ jobs:
             "repositories": [{"full_name": repository} for repository in repositories],
         }]
 
+    def live_pull_request_parameters(self, path=None):
+        rules = self.fixture[path or self.ruleset_path][0]["rules"]
+        return next(rule for rule in rules if rule["type"] == "pull_request")["parameters"]
+
     def assert_audit_error(self, text):
         with self.assertRaisesRegex(AUDIT.AuditError, text):
             AUDIT.audit(self.contract, self.read)
@@ -247,6 +251,8 @@ jobs:
         self.assertEqual(self.contract["preimage"]["bypass_actors"], [
             {"actor_id": None, "actor_type": "OrganizationAdmin", "bypass_mode": "always"},
             {"actor_id": 2740, "actor_type": "Integration", "bypass_mode": "always"},
+            {"actor_id": 4583107, "actor_type": "Integration", "bypass_mode": "always"},
+            {"actor_id": 4693283, "actor_type": "Integration", "bypass_mode": "always"},
         ])
         self.assertEqual(self.contract["preimage"]["conditions"], {
             "ref_name": {"exclude": [], "include": ["~DEFAULT_BRANCH", "refs/heads/develop"]},
@@ -332,6 +338,119 @@ jobs:
         self.assert_audit_error("differs from both full reviewed preimage and postimage")
         with self.assertRaisesRegex(AUDIT.AuditError, "differs from both"):
             AUDIT.render_payload(self.contract, "retarget", self.read)
+
+    def test_a_field_github_adds_to_its_own_schema_is_not_drift(self):
+        # GitHub extended `pull_request` parameters with
+        # `require_extra_approval_for_unattributed_changes` long after the images
+        # were frozen (#1404). Whole-object equality read the vendor's schema
+        # growth as collateral drift and killed the audit at its first
+        # precondition, where it stayed invisible for as long as nothing ran it.
+        self.live_pull_request_parameters()["require_extra_approval_for_unattributed_changes"] = True
+        self.assertEqual(AUDIT.audit(self.contract, self.read)["state"], "ready")
+
+    def test_the_arm_image_tolerates_a_vendor_key_but_not_a_changed_value(self):
+        # The live arm ruleset carries a `sha` GitHub resolves for the selected
+        # workflow, which no reviewed image can contain. The same comparison that
+        # ignores it must still reject a changed enforcement.
+        self.enter_split_state()
+        live_arm = self.fixture[f"orgs/Verjson/rulesets/{self.arm_id}"][0]
+        live_arm["rules"][0]["parameters"]["workflows"][0]["sha"] = "c597d69"
+        self.assertEqual(AUDIT.audit(self.contract, self.read)["state"], "split")
+        live_arm["enforcement"] = "evaluate"
+        self.assert_audit_error("arm ruleset drifted from its full reviewed image")
+
+    def test_the_deterministic_images_tolerate_a_vendor_key_but_not_a_changed_check(self):
+        # Live required status checks carry the resolving App's `integration_id`,
+        # which the reviewed images do not pin. Ignoring it must not extend to
+        # ignoring a context that is no longer required.
+        node = next(
+            declaration for declaration in self.contract["deterministic_rulesets"]
+            if declaration["stack"] == "node"
+        )
+        live_node = self.fixture[f"orgs/Verjson/rulesets/{node['id']}"][0]
+        checks = live_node["rules"][0]["parameters"]["required_status_checks"]
+        for check in checks:
+            check["integration_id"] = 15368
+        self.assertEqual(AUDIT.audit(self.contract, self.read)["state"], "ready")
+        checks[0]["context"] = "ci / something-else"
+        self.assert_audit_error(f"deterministic ruleset {node['id']} drifted from its full reviewed image")
+
+    def test_the_contract_records_the_reviewed_automation_bypass_grants(self):
+        # `release-authorization` (4583107) and `merge-authorization` (4693283)
+        # hold bypass because they land work on protected default branches — the
+        # merge App squash-merges on green CI and cannot do so without it. They
+        # were granted and never written down. `ai-review-authorization`
+        # (4528902) deliberately holds none: review stays non-privileged, and an
+        # audit that re-froze live state would never be able to say so.
+        for name in ("preimage", "postimage", "arm_ruleset"):
+            self.assertEqual(
+                [actor["actor_id"] for actor in self.contract[name]["bypass_actors"]],
+                [None, 2740, 4583107, 4693283],
+                name,
+            )
+        for declaration in self.contract["deterministic_rulesets"]:
+            self.assertEqual(
+                [actor["actor_id"] for actor in declaration["image"]["bypass_actors"]],
+                [None, 4583107, 4693283],
+                declaration["stack"],
+            )
+        self.assertNotIn("4528902", json.dumps(self.contract))
+
+    def test_the_node_image_records_the_decided_changelog_contract_requirement(self):
+        # ADR 0186 made `changelog-contract` a required context on the node
+        # stack. The reviewed image predates that decision, so the audit reported
+        # as drift a requirement the organization had already taken and written
+        # down — the mirror of re-freezing live state, and just as blinding.
+        node = next(
+            declaration for declaration in self.contract["deterministic_rulesets"]
+            if declaration["stack"] == "node"
+        )
+        checks = node["image"]["rules"][0]["parameters"]["required_status_checks"]
+        self.assertEqual(
+            [check["context"] for check in checks],
+            ["ci / build-test", "ci / eligibility", "changelog-contract"],
+        )
+        self.assertIn("changelog-contract", self.contract["deterministic_required_status_contexts"])
+
+    def test_tolerating_an_unknown_key_never_tolerates_an_unexpected_value(self):
+        # The one property that distinguishes this comparison from "accept what
+        # the API returns". Each case asserts the same field the contract pins,
+        # alongside a vendor key that must stay ignored.
+        parameters = self.live_pull_request_parameters()
+        parameters["require_extra_approval_for_unattributed_changes"] = True
+        for value in (0, 2, "1", None):
+            with self.subTest(required_approving_review_count=value):
+                parameters["required_approving_review_count"] = value
+                self.assert_audit_error("differs from both full reviewed preimage and postimage")
+        parameters["required_approving_review_count"] = 1
+        self.assertEqual(AUDIT.audit(self.contract, self.read)["state"], "ready")
+
+    def test_a_pinned_true_is_not_satisfied_by_a_truthy_one(self):
+        # JSON `true` and `1` are distinct policy answers, and Python's `1 == True`
+        # would otherwise let a ruleset flip type without reporting drift.
+        self.live_pull_request_parameters()["require_code_owner_review"] = 1
+        self.assert_audit_error("differs from both full reviewed preimage and postimage")
+
+    def test_an_asserted_key_the_api_stops_returning_is_drift(self):
+        # The failure mode a subset comparison invites: silence when the field
+        # the contract depends on simply is not there any more.
+        del self.live_pull_request_parameters()["require_last_push_approval"]
+        self.assert_audit_error("differs from both full reviewed preimage and postimage")
+
+    def test_an_unrecorded_bypass_actor_is_still_drift(self):
+        # Unknown-key tolerance must not leak into list membership: a bypass
+        # grant nobody wrote down is exactly what this audit exists to surface.
+        self.fixture[self.ruleset_path][0]["bypass_actors"].append(
+            {"actor_id": 4528902, "actor_type": "Integration", "bypass_mode": "always"},
+        )
+        self.assert_audit_error("differs from both full reviewed preimage and postimage")
+
+    def test_a_drift_report_names_the_field_that_disagrees(self):
+        # "differs from both images" sent the reader to diff two 40-line objects
+        # by eye, which is how a vendor-added key looked the same as a real
+        # regression for as long as it did.
+        self.live_pull_request_parameters()["required_approving_review_count"] = 0
+        self.assert_audit_error(r"required_approving_review_count: 0 is not 1")
 
     def test_rendered_payloads_are_verified_and_the_tool_has_no_mutation_path(self):
         self.assertEqual(

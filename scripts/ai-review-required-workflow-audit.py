@@ -258,6 +258,52 @@ def normalize_ruleset(live: dict) -> dict:
     return {field: live[field] for field in RULESET_FIELDS}
 
 
+def image_mismatches(live, asserted, path: str = "") -> list[str]:
+    """Report every field the reviewed image asserts that the live object fails.
+
+    Keys GitHub adds to its own schema are tolerated; a key the contract asserts
+    must exist and carry exactly the asserted value. That asymmetry is the whole
+    control. Whole-object equality rotted the moment GitHub shipped
+    `require_extra_approval_for_unattributed_changes` (#1404): the audit died at
+    its first precondition with a message indistinguishable from real drift.
+    Tolerating an unknown key must never become tolerating an unexpected value,
+    so list members are matched position-wise and a differing length is drift —
+    an added bypass actor or required status check is still a finding.
+    """
+    where = path or "<root>"
+    if isinstance(asserted, dict):
+        if not isinstance(live, dict):
+            return [f"{where}: expected an object"]
+        mismatches = []
+        for key, value in asserted.items():
+            field = f"{path}.{key}" if path else key
+            if key not in live:
+                mismatches.append(f"{field}: absent")
+            else:
+                mismatches.extend(image_mismatches(live[key], value, field))
+        return mismatches
+    if isinstance(asserted, list):
+        if not isinstance(live, list) or len(live) != len(asserted):
+            return [f"{where}: expected {len(asserted)} entries"]
+        mismatches = []
+        for index, value in enumerate(asserted):
+            mismatches.extend(image_mismatches(live[index], value, f"{path}[{index}]"))
+        return mismatches
+    if isinstance(asserted, bool) != isinstance(live, bool) or live != asserted:
+        return [f"{where}: {live!r} is not {asserted!r}"]
+    return []
+
+
+def matches_image(live, image) -> bool:
+    return not image_mismatches(live, image)
+
+
+def concise_mismatches(mismatches: list[str]) -> str:
+    sample = mismatches[:4]
+    suffix = f" (plus {len(mismatches) - len(sample)} more)" if len(mismatches) > len(sample) else ""
+    return f"{'; '.join(sample)}{suffix}"
+
+
 def concise_missing(name: str, missing: list[str]) -> None:
     sample = missing[:8]
     suffix = f" (plus {len(missing) - len(sample)} more)" if len(missing) > len(sample) else ""
@@ -291,12 +337,25 @@ def require_scope(read, organization: str, kind: str, name: str, governed: dict[
 def verify_ruleset_state(contract: dict, read, expected: str | None = None) -> tuple[str, dict]:
     path = f"orgs/{contract['organization']}/rulesets/{contract['ruleset_id']}"
     live = normalize_ruleset(single_object(read, path))
-    if live == contract["preimage"]:
+    if matches_image(live, contract["preimage"]):
         state = "ready"
-    elif live == contract["postimage"]:
+    elif matches_image(live, contract["postimage"]):
         state = "split"
     else:
-        raise AuditError("main-protection differs from both full reviewed preimage and postimage")
+        # Name the nearest image and the fields that disagree. "Differs from both"
+        # alone sent a reader off to diff two forty-line objects by eye, which is
+        # how a key GitHub added looked exactly like a real regression (#1404).
+        nearest, mismatches = min(
+            (
+                (name, image_mismatches(live, contract[name]))
+                for name in ("preimage", "postimage")
+            ),
+            key=lambda candidate: len(candidate[1]),
+        )
+        raise AuditError(
+            "main-protection differs from both full reviewed preimage and postimage: "
+            f"nearest {nearest}: {concise_mismatches(mismatches)}"
+        )
     require(expected is None or state == expected, f"ruleset state is {state}, expected {expected}")
     return state, live
 
@@ -340,9 +399,10 @@ def verify_ruleset_exclusivity(contract: dict, read, state: str) -> dict[int, di
             recognized == [(named[0], contract["replacement_path"])],
             f"retired and replacement workflow identities are not exclusive: {recognized}",
         )
+        arm_mismatches = image_mismatches(normalize_ruleset(candidates[named[0]]), contract["arm_ruleset"])
         require(
-            normalize_ruleset(candidates[named[0]]) == contract["arm_ruleset"],
-            "arm ruleset drifted from its full reviewed image",
+            not arm_mismatches,
+            f"arm ruleset drifted from its full reviewed image: {concise_mismatches(arm_mismatches)}",
         )
     require(not conflicts, f"retired or App authorization status is also required: {conflicts}")
     return candidates
@@ -358,9 +418,11 @@ def verify_deterministic_ci(
     for declaration in contract["deterministic_rulesets"]:
         ruleset_id = declaration["id"]
         require(ruleset_id in candidates, f"deterministic ruleset {ruleset_id} is absent")
+        mismatches = image_mismatches(normalize_ruleset(candidates[ruleset_id]), declaration["image"])
         require(
-            normalize_ruleset(candidates[ruleset_id]) == declaration["image"],
-            f"deterministic ruleset {ruleset_id} drifted from its full reviewed image",
+            not mismatches,
+            f"deterministic ruleset {ruleset_id} drifted from its full reviewed image: "
+            f"{concise_mismatches(mismatches)}",
         )
         declarations[declaration["stack"]] = declaration
     property_rows = paginated_items(

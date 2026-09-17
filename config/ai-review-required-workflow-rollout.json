@@ -18,6 +18,16 @@
         "actor_id": 2740,
         "actor_type": "Integration",
         "bypass_mode": "always"
+      },
+      {
+        "actor_id": 4583107,
+        "actor_type": "Integration",
+        "bypass_mode": "always"
+      },
+      {
+        "actor_id": 4693283,
+        "actor_type": "Integration",
+        "bypass_mode": "always"
       }
     ],
     "conditions": {
@@ -75,6 +85,16 @@
         "actor_id": 2740,
         "actor_type": "Integration",
         "bypass_mode": "always"
+      },
+      {
+        "actor_id": 4583107,
+        "actor_type": "Integration",
+        "bypass_mode": "always"
+      },
+      {
+        "actor_id": 4693283,
+        "actor_type": "Integration",
+        "bypass_mode": "always"
       }
     ],
     "conditions": {
@@ -118,6 +138,16 @@
       },
       {
         "actor_id": 2740,
+        "actor_type": "Integration",
+        "bypass_mode": "always"
+      },
+      {
+        "actor_id": 4583107,
+        "actor_type": "Integration",
+        "bypass_mode": "always"
+      },
+      {
+        "actor_id": 4693283,
         "actor_type": "Integration",
         "bypass_mode": "always"
       }
@@ -166,6 +196,16 @@
       },
       {
         "actor_id": 2740,
+        "actor_type": "Integration",
+        "bypass_mode": "always"
+      },
+      {
+        "actor_id": 4583107,
+        "actor_type": "Integration",
+        "bypass_mode": "always"
+      },
+      {
+        "actor_id": 4693283,
         "actor_type": "Integration",
         "bypass_mode": "always"
       }
@@ -220,7 +260,8 @@
     "ci / validate",
     "ci / preview",
     "generated-artifacts / validate",
-    "changelog / validate"
+    "changelog / validate",
+    "changelog-contract"
   ],
   "core_checks_property": "verjson-core-checks",
   "core_checks_value": "enforced",
@@ -233,7 +274,9 @@
         "target": "branch",
         "enforcement": "active",
         "bypass_actors": [
-          {"actor_id": null, "actor_type": "OrganizationAdmin", "bypass_mode": "always"}
+          {"actor_id": null, "actor_type": "OrganizationAdmin", "bypass_mode": "always"},
+          {"actor_id": 4583107, "actor_type": "Integration", "bypass_mode": "always"},
+          {"actor_id": 4693283, "actor_type": "Integration", "bypass_mode": "always"}
         ],
         "conditions": {
           "ref_name": {"exclude": [], "include": ["~DEFAULT_BRANCH"]},
@@ -265,7 +308,9 @@
         "target": "branch",
         "enforcement": "active",
         "bypass_actors": [
-          {"actor_id": null, "actor_type": "OrganizationAdmin", "bypass_mode": "always"}
+          {"actor_id": null, "actor_type": "OrganizationAdmin", "bypass_mode": "always"},
+          {"actor_id": 4583107, "actor_type": "Integration", "bypass_mode": "always"},
+          {"actor_id": 4693283, "actor_type": "Integration", "bypass_mode": "always"}
         ],
         "conditions": {
           "ref_name": {"exclude": [], "include": ["~DEFAULT_BRANCH"]},
@@ -284,7 +329,8 @@
               "do_not_enforce_on_create": true,
               "required_status_checks": [
                 {"context": "ci / build-test"},
-                {"context": "ci / eligibility"}
+                {"context": "ci / eligibility"},
+                {"context": "changelog-contract"}
               ],
               "strict_required_status_checks_policy": false
             }
