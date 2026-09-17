@@ -26,3 +26,12 @@ writes to disk. The fixture is built with git plumbing into a scratch object
 store so the suite neither touches the working tree nor leaves objects behind.
 
 Follow-up hardening on the `adr-index-test` mode introduced for `#1380`.
+
+That fixture resolved the real object store with `rev-parse --absolute-git-dir`,
+which in a linked worktree names the worktree's private git directory — a path
+with no `objects` under it. The alternate therefore pointed nowhere, the fixture
+could not be staged, and every assertion that consumes it reported its own
+unrelated failure, so the suite blamed the refusal branch for a staging fault.
+It now uses `rev-parse --path-format=absolute --git-common-dir`, the idiom the
+rest of `scripts/` already uses, and the assertions that depend on the fixture
+are skipped when staging fails rather than run against an empty ref.

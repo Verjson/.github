@@ -552,53 +552,61 @@ mutated_objects="$tmproot/mutated-objects"
 mkdir -p "$mutated_objects"
 # Absolute: a relative alternate resolves against each child process's cwd, and
 # the generator runs git from its own directory.
-export GIT_ALTERNATE_OBJECT_DIRECTORIES="$(git -C "$repo_root" rev-parse --absolute-git-dir)/objects"
+export GIT_ALTERNATE_OBJECT_DIRECTORIES="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir)/objects"
 export GIT_OBJECT_DIRECTORY="$mutated_objects"
 # A zero-length mktemp file is a deliberately empty index for read-tree to fill;
 # were read-tree to fail, the tree below would carry one path and quietly make
 # this whole block vacuous, so its status is checked.
 mutated_index="$(mktemp)"
+staged_fixture=true
 GIT_INDEX_FILE="$mutated_index" git -C "$repo_root" read-tree "$sha" \
-  || fail "could not stage the pinned tree for the ADR-index refusal fixture"
-mutated_suite="$(mktemp)"
-git -C "$repo_root" show "$sha:scripts/ci-gate/gen-adr-index.test.sh" \
-  | sed 's|^repo_root=.*|repo_root="$(git rev-parse --show-toplevel)"|' >"$mutated_suite"
-mutated_blob="$(git -C "$repo_root" hash-object -w "$mutated_suite")"
-GIT_INDEX_FILE="$mutated_index" git -C "$repo_root" update-index \
-  --cacheinfo 100644,"$mutated_blob",scripts/ci-gate/gen-adr-index.test.sh
-mutated_tree="$(GIT_INDEX_FILE="$mutated_index" git -C "$repo_root" write-tree)"
-mutated_sha="$(git -C "$repo_root" commit-tree "$mutated_tree" -p "$sha" -m 'anchor removed')"
-rm -f "$mutated_index" "$mutated_suite"
-# The scratch store stays exported until the last assertion below: the fixture
-# commit lives only there, so a child generator that cannot read it fails at
-# digest resolution instead of reaching the refusal branch being asserted.
+  || { fail "could not stage the pinned tree for the ADR-index refusal fixture"; staged_fixture=false; }
+# Every assertion below consumes this fixture. When staging fails they receive an
+# empty ref and report their own unrelated failures, which is exactly how a wrong
+# alternates path surfaced as "adr-index-test did not refuse as documented"
+# instead of as the staging failure it was. Skip them rather than let one cause
+# produce three misleading verdicts; the suite still runs its ~1800 sibling lines.
+if [ "$staged_fixture" = true ]; then
+  mutated_suite="$(mktemp)"
+  git -C "$repo_root" show "$sha:scripts/ci-gate/gen-adr-index.test.sh" \
+    | sed 's|^repo_root=.*|repo_root="$(git rev-parse --show-toplevel)"|' >"$mutated_suite"
+  mutated_blob="$(git -C "$repo_root" hash-object -w "$mutated_suite")"
+  GIT_INDEX_FILE="$mutated_index" git -C "$repo_root" update-index \
+    --cacheinfo 100644,"$mutated_blob",scripts/ci-gate/gen-adr-index.test.sh
+  mutated_tree="$(GIT_INDEX_FILE="$mutated_index" git -C "$repo_root" write-tree)"
+  mutated_sha="$(git -C "$repo_root" commit-tree "$mutated_tree" -p "$sha" -m 'anchor removed')"
+  rm -f "$mutated_index" "$mutated_suite"
+  # The scratch store stays exported until the last assertion below: the fixture
+  # commit lives only there, so a child generator that cannot read it fails at
+  # digest resolution instead of reaching the refusal branch being asserted.
 
-refusal_err="$tmproot/adr-index-test-refusal.err"
-refusal_status=0
-bash "$gen" adr-index-test "$mutated_sha" >/dev/null 2>"$refusal_err" \
-  || refusal_status=$?
-# Status 3 and the stated reason, not merely nonzero: distinguishing a refusal
-# from a failure to resolve is the whole point of the branch being asserted.
-if [ "$refusal_status" = 3 ] \
-  && grep -q 'no longer resolves its repository root as expected' "$refusal_err"; then
-  pass "adr-index-test refuses with status 3 once its rewrite anchor is gone"
-else
-  fail "adr-index-test did not refuse as documented (status=$refusal_status): $(tail -1 "$refusal_err")"
-fi
+  refusal_err="$tmproot/adr-index-test-refusal.err"
+  refusal_status=0
+  bash "$gen" adr-index-test "$mutated_sha" >/dev/null 2>"$refusal_err" \
+    || refusal_status=$?
+  # Status 3 and the stated reason, not merely nonzero: distinguishing a refusal
+  # from a failure to resolve is the whole point of the branch being asserted.
+  if [ "$refusal_status" = 3 ] \
+    && grep -q 'no longer resolves its repository root as expected' "$refusal_err"; then
+    pass "adr-index-test refuses with status 3 once its rewrite anchor is gone"
+  else
+    fail "adr-index-test did not refuse as documented (status=$refusal_status): $(tail -1 "$refusal_err")"
+  fi
 
-mutated_contract="$(bash "$gen" contract-test "$mutated_sha" 2>/dev/null)"
-mutated_pin="$(grep -m1 '^ADR_INDEX_TEST_SHA256=' <<<"$mutated_contract" | cut -d'"' -f2)"
-# An empty pin is only evidence if a contract test was emitted at all: a mode
-# that failed wholesale also yields an empty pin, and would otherwise report the
-# pass this assertion is supposed to earn.
-if ! grep -q "^CONTRACT_REF=\"$mutated_sha\"$" <<<"$mutated_contract"; then
-  fail "contract-test emitted nothing for a ref whose ADR-index suite cannot be rewritten"
-elif [ -z "$mutated_pin" ]; then
-  pass "an unresolvable ADR-index suite pins nothing rather than the empty digest"
-elif [ "$mutated_pin" = "$empty_digest" ]; then
-  fail "an unresolvable ADR-index suite pinned the empty-string digest, which no adopter file can match"
-else
-  fail "an unresolvable ADR-index suite pinned an unexpected digest: $mutated_pin"
+  mutated_contract="$(bash "$gen" contract-test "$mutated_sha" 2>/dev/null)"
+  mutated_pin="$(grep -m1 '^ADR_INDEX_TEST_SHA256=' <<<"$mutated_contract" | cut -d'"' -f2)"
+  # An empty pin is only evidence if a contract test was emitted at all: a mode
+  # that failed wholesale also yields an empty pin, and would otherwise report the
+  # pass this assertion is supposed to earn.
+  if ! grep -q "^CONTRACT_REF=\"$mutated_sha\"$" <<<"$mutated_contract"; then
+    fail "contract-test emitted nothing for a ref whose ADR-index suite cannot be rewritten"
+  elif [ -z "$mutated_pin" ]; then
+    pass "an unresolvable ADR-index suite pins nothing rather than the empty digest"
+  elif [ "$mutated_pin" = "$empty_digest" ]; then
+    fail "an unresolvable ADR-index suite pinned the empty-string digest, which no adopter file can match"
+  else
+    fail "an unresolvable ADR-index suite pinned an unexpected digest: $mutated_pin"
+  fi
 fi
 unset GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
 
