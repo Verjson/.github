@@ -654,7 +654,10 @@ def verify_adopter_conformance(contract: dict, read, repositories: list[dict], c
             "branch_policies",
             allow_missing=True,
         )
-        admitted = sorted({policy.get("name") for policy in policies})
+        # A policy whose `name` is absent would make this set mix `None` with
+        # strings and `sorted` would raise `TypeError` out of a hub-privileged
+        # control, so an unusable policy is reported as one instead.
+        admitted = sorted({str(policy.get("name")) for policy in policies})
         if admitted != [branch]:
             environment_findings.append(
                 f"{label}:branch_policies {admitted} do not admit only {branch!r}"

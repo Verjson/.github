@@ -3,6 +3,7 @@ import copy
 import subprocess
 import importlib.util
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -738,6 +739,49 @@ jobs:
             r"review environment.*Verjson/beta:ai-review-app:branch_policies.*'main'.*develop/next",
         )
 
+    def test_the_admission_set_is_the_caller_the_rearm_gate_hard_requires(self):
+        # `retired_path` describes the ruleset split, not the gate, and today it
+        # only coincidentally equals the file `gate-rearm.yml` cannot proceed
+        # without. When the split completes and `retired_path` is repointed,
+        # admission would silently follow it and the severity split would invert
+        # with no test failing. So this asserts against the gate itself.
+        #
+        # The gate reads more than one adopter caller, but only one read is
+        # fatal on every arm; the others sit inside the label-receipt path. The
+        # fatal one is identified by the diagnostic it emits, not by position,
+        # so reordering the file does not quietly repoint this assertion.
+        gate = (ROOT / ".github/workflows/gate-rearm.yml").read_text(encoding="utf-8")
+        fatal = gate.index("could not read the protected default-branch review caller")
+        reads = re.findall(
+            r"repos/\$TARGET_REPO/contents/(\.github/workflows/[A-Za-z0-9._-]+\.ya?ml)\?",
+            gate[:fatal],
+        )
+        self.assertTrue(reads, "the gate's fatal caller read was not found")
+        contract = json.loads(
+            (ROOT / "config/ai-review-required-workflow-rollout.json").read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(
+            contract["adopter_conformance"]["caller_workflows"]["admission"],
+            [reads[-1]],
+            "the admission set must be exactly the caller gate-rearm.yml cannot proceed without",
+        )
+
+    def test_a_branch_policy_admitting_more_than_the_default_branch_is_reported(self):
+        # Naming the right branch is not enough: the point of the policy is to
+        # confine the review App key to where the review lane runs, so a policy
+        # that also admits a wildcard hands the key to every branch a
+        # contributor can create. Exact equality is the assertion, not
+        # membership.
+        path = "repos/Verjson/alpha/environments/ai-review-app/deployment-branch-policies"
+        self.fixture[path][0]["branch_policies"] = [
+            {"name": "main", "type": "branch"},
+            {"name": "*", "type": "branch"},
+        ]
+        self.assert_audit_error(
+            r"review environment.*Verjson/alpha:ai-review-app:branch_policies",
+        )
+
     def run_gh_api(self, returncode, stdout, stderr):
         completed = subprocess.CompletedProcess([], returncode, stdout=stdout, stderr=stderr)
         original = AUDIT.subprocess.run
@@ -903,6 +947,18 @@ jobs:
                     "completeness": [".github/workflows/ai-review-merge.yml"],
                 },
                 "admission set must be exactly the caller",
+            ),
+            # A set the audit does not know about is a set it does not check,
+            # so the shape is compared exactly rather than as a superset.
+            (
+                "adopter_conformance",
+                "caller_workflows",
+                {
+                    "admission": [".github/workflows/ai-review-merge.yml"],
+                    "completeness": [".github/workflows/ai-review-label-rearm.yml"],
+                    "advisory": [".github/workflows/ai-review-advisory.yml"],
+                },
+                "must declare an admission and a completeness set",
             ),
             ("adopter_conformance", "environment", "ai-review", "review environment contract"),
             (
