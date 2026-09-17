@@ -42,7 +42,15 @@ def ruleset(
         },
         "rules": rules
         if rules is not None
-        else [{"type": "required_status_checks", "parameters": {"strict_required_status_checks_policy": False}}],
+        else [
+            {
+                "type": "required_status_checks",
+                "parameters": {
+                    "strict_required_status_checks_policy": False,
+                    "required_status_checks": [],
+                },
+            }
+        ],
     }
 
 
@@ -374,6 +382,31 @@ class OrgRulesetConformanceTest(unittest.TestCase):
         result, _ = self.run_audit([[{"id": 12}], [{"id": 12}]], {12: ruleset(12)})
         self.assertEqual(result.returncode, 2)
         self.assertIn("duplicate ruleset id 12", result.stderr)
+
+
+    def test_required_status_check_without_producer_app_binding_fails(self):
+        detail = ruleset(
+            1,
+            name="core-checks-actions",
+            rules=[
+                {
+                    "type": "required_status_checks",
+                    "parameters": {
+                        "strict_required_status_checks_policy": False,
+                        "required_status_checks": [{"context": "shell-tests"}],
+                    },
+                }
+            ],
+        )
+
+        result, _ = self.run_audit([[{"id": 1}]], {1: detail})
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(
+            "core-checks-actions (1): required status check 'shell-tests' "
+            "is not bound to a producer App",
+            result.stderr,
+        )
 
 
 if __name__ == "__main__":
