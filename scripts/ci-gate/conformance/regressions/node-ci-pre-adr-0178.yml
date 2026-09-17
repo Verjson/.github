@@ -1,7 +1,11 @@
 # Regression fixture — the contract as it stood before ADR 0178.
 #
 # This is `node-ci.yml` with the `deferred-ci` job removed and nothing else
-# changed. It is the shape that shipped as `Verjson/verjson-ci#184`: on a
+# changed semantically — it is a YAML round-trip, so comments are stripped and
+# `on:` is serialized as `true:`, and
+# `test_the_counter_example_differs_from_the_contract_only_by_the_deferred_job`
+# asserts the parsed documents differ by that job alone. It is the shape that
+# shipped as `Verjson/verjson-ci#184`: on a
 # deferred head every execution step is guarded off and the required
 # `build-test` context still reports SUCCESS, so a merge gate reading
 # conclusions alone reads an unverified head as verified.

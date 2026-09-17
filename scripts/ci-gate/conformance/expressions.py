@@ -64,7 +64,14 @@ def _python_source(expression: str, placeholders: dict[str, str]) -> str:
 
 
 class Evaluator:
-    """Evaluates one workflow's guards against one scenario's bindings."""
+    """Evaluates one workflow's guards against one scenario's bindings.
+
+    Known divergence: GitHub compares strings case-insensitively and this does
+    not. Matching it would make a guard comparing against the wrong casing
+    evaluate as intended here and fail in Actions — the harness would hide the
+    defect. No guard in the contract depends on the difference; a guard that
+    starts to should be rewritten rather than accommodated.
+    """
 
     def __init__(self, bindings: dict[str, object], *, functions: dict[str, object] | None = None):
         self.bindings = bindings
@@ -99,17 +106,26 @@ class Evaluator:
         for name in _SUPPORTED_FUNCTIONS:
             if name in self.functions:
                 values[name] = self.functions[name]
+        # GitHub's boolean and null literals are lowercase, so they reach the
+        # parser as names rather than as Python constants. Plain assignment,
+        # not `setdefault`: nothing can legitimately shadow these — placeholders
+        # are `_ctxN` and function names come from a fixed set — so a collision
+        # is a defect that should be loud rather than silently deferred to.
+        values['true'] = True
+        values['false'] = False
+        values['null'] = None
 
         try:
             tree = ast.parse(source, mode='eval')
         except SyntaxError as error:
             raise UnsupportedExpression(f'{expression!r} -> {source!r}: {error}') from error
 
-        self._reject_unsupported_nodes(tree, expression)
+        self._reject_unsupported_nodes(tree, expression, values)
         return bool(eval(compile(tree, '<guard>', 'eval'), {'__builtins__': {}}, values))
 
     @staticmethod
-    def _reject_unsupported_nodes(tree: ast.Expression, expression: str) -> None:
+    def _reject_unsupported_nodes(tree: ast.Expression, expression: str,
+                                  values: dict[str, object]) -> None:
         allowed = (
             ast.Expression, ast.BoolOp, ast.And, ast.Or, ast.UnaryOp, ast.Not,
             ast.Compare, ast.Eq, ast.NotEq, ast.Name, ast.Load, ast.Constant,
@@ -119,3 +135,9 @@ class Evaluator:
             if not isinstance(node, allowed):
                 raise UnsupportedExpression(
                     f'{expression!r} contains unsupported {type(node).__name__}')
+            # An unbound name would reach `eval` and raise a bare NameError,
+            # which is outside this module's typed-error contract and reads to
+            # a caller as a harness crash rather than as an unmodelled guard.
+            if isinstance(node, ast.Name) and node.id not in values:
+                raise UnsupportedExpression(
+                    f'{expression!r} reads {node.id!r}, which nothing bound')
