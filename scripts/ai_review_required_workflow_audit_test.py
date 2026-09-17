@@ -700,6 +700,28 @@ jobs:
             r"adopter caller set.*Verjson/alpha:\.github/workflows/ai-review-merge\.yml",
         )
 
+    def test_an_armed_adopter_without_the_review_environment_is_reported(self):
+        # ADR 0187: GitHub creates a referenced environment on first use with no
+        # protection rules, so an adopter that installs the caller without
+        # creating `ai-review-app` gets a working review lane and an unprotected
+        # environment. Every signal reports success; the absent control produces
+        # no error at all. Only a read-back can see it.
+        del self.fixture["repos/Verjson/alpha/environments/ai-review-app"]
+        del self.fixture["repos/Verjson/alpha/environments/ai-review-app/deployment-branch-policies"]
+        self.assert_audit_error(r"review environment.*Verjson/alpha:ai-review-app:absent")
+
+    def test_an_environment_github_auto_created_is_not_a_provisioned_one(self):
+        # The exact shape GitHub leaves behind when a caller names an
+        # environment that does not exist: it exists afterwards, and it
+        # restricts nothing. Presence is therefore not the assertion; the
+        # branch policy is (ADR 0187).
+        environment = self.fixture["repos/Verjson/alpha/environments/ai-review-app"][0]
+        environment["deployment_branch_policy"] = None
+        environment["protection_rules"] = []
+        self.assert_audit_error(
+            r"review environment.*Verjson/alpha:ai-review-app:deployment_branch_policy: expected an object",
+        )
+
     def test_malformed_contract_fails_with_controlled_diagnostics(self):
         for section, key, value, diagnostic in (
             (None, "ruleset_id", True, "ruleset ID"),

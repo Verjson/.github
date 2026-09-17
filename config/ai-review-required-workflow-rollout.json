@@ -360,6 +360,11 @@
       ".github/workflows/ai-review-label-rearm.yml",
       ".github/workflows/ai-privileged-merge.yml",
       ".github/workflows/ai-promotion-retry.yml"
-    ]
+    ],
+    "environment": "ai-review-app",
+    "environment_deployment_branch_policy": {
+      "protected_branches": false,
+      "custom_branch_policies": true
+    }
   }
 }

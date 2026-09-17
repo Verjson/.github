@@ -236,6 +236,15 @@ def read_contract(path: Path = CONTRACT) -> dict:
         contract["retired_path"] in callers,
         "adopter caller set omits the review caller the arm hard-requires",
     )
+    require(
+        conformance.get("environment") == "ai-review-app",
+        "adopter review environment contract drifted",
+    )
+    require(
+        conformance.get("environment_deployment_branch_policy")
+        == {"protected_branches": False, "custom_branch_policies": True},
+        "adopter review environment branch-policy contract drifted",
+    )
     return contract
 
 
@@ -555,7 +564,9 @@ def verify_adopter_conformance(contract: dict, read, repositories: list[dict], c
     default_branches = {
         repository["full_name"]: repository.get("default_branch") for repository in repositories
     }
+    environment = conformance["environment"]
     findings = []
+    environment_findings = []
     for full_name in covered:
         branch = default_branches.get(full_name)
         require(isinstance(branch, str) and branch, f"{full_name} reports no default branch")
@@ -570,7 +581,29 @@ def verify_adopter_conformance(contract: dict, read, repositories: list[dict], c
             for caller in conformance["caller_workflows"]
             if caller not in present
         )
+        label = f"{full_name}:{environment}"
+        pages = read(f"repos/{full_name}/environments/{environment}", allow_missing=True)
+        if not pages:
+            environment_findings.append(f"{label}:absent")
+            continue
+        require(
+            len(pages) == 1 and isinstance(pages[0], dict),
+            f"unexpected environment response shape for {label}",
+        )
+        live = pages[0]
+        environment_findings.extend(
+            f"{label}:{mismatch}"
+            for mismatch in image_mismatches(
+                live.get("deployment_branch_policy"),
+                conformance["environment_deployment_branch_policy"],
+                "deployment_branch_policy",
+            )
+        )
     concise_missing("armed adopters with an incomplete generated adopter caller set", sorted(findings))
+    concise_missing(
+        "armed adopters without a conforming review environment",
+        sorted(environment_findings),
+    )
 
 
 def read_workflow(read, selected: dict, label: str) -> dict:
