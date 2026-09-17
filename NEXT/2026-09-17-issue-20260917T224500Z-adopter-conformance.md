@@ -1,6 +1,6 @@
 ---
 date: 2026-09-17
-issue: 1404
+id: 20260917T224500Z
 title: The authorization arm audit reaches adopter conformance
 impact: minor
 ---
