@@ -524,38 +524,330 @@ grep -qF 'scripts/gen-adr-index.test.sh' <<<"$adr_test_gate" \
   && pass "the ADR-index suite requirement is gated on adr-index: true" \
   || fail "the ADR-index suite requirement is not confined to the adr-index gate"
 
+# Both ADR pins must digest what their mode writes, not the resolver's raw
+# bytes: the two agree only while the canonical file ends in exactly one
+# newline, and the day one did not, every adopter would fail a contract test
+# against a file it had just regenerated correctly.
+empty_digest="$(printf '' | sha256sum | cut -d' ' -f1)"
+# A mode that emits nothing makes this comparison agree with itself: the pin and
+# the mode would both digest an empty stream, so the assertion has to establish
+# that bytes were written before it can read anything into them matching.
+for pinned in "ADR_INDEX_SHA256:adr-index-generator" "ADR_INDEX_TEST_SHA256:adr-index-test"; do
+  pin_name="${pinned%%:*}"
+  pin_mode="${pinned#*:}"
+  pin_recorded="$(grep -m1 "^$pin_name=" "$emitted" | cut -d'"' -f2)"
+  pin_bytes="$tmproot/pin-$pin_mode.out"
+  pin_mode_status=0
+  bash "$gen" "$pin_mode" "$sha" >"$pin_bytes" 2>/dev/null || pin_mode_status=$?
+  pin_emitted="$(sha256sum <"$pin_bytes" | cut -d' ' -f1)"
+  if [ "$pin_mode_status" != 0 ] || [ ! -s "$pin_bytes" ]; then
+    # Bytes on disk are what makes the rest of this comparison mean anything: an
+    # empty file digests to the empty-string hash on both sides and agrees with
+    # itself, so `-s` is the assertion, not a redundant guard in front of one.
+    fail "$pin_mode emitted nothing, so $pin_name would match it only vacuously"
+  elif [ -n "$pin_recorded" ] && [ "$pin_recorded" = "$pin_emitted" ]; then
+    pass "$pin_name digests the bytes $pin_mode writes to disk"
+  else
+    fail "$pin_name does not match what $pin_mode emits ($pin_recorded vs $pin_emitted)"
+  fi
+  rm -f "$pin_bytes"
+done
 # A resolver that produces nothing must pin nothing. `sha256sum` digests an empty
 # stream without complaint, and that empty-string digest is a real-looking pin no
 # adopter file can ever match — it would turn a refusal to emit into a contract
 # test that simply cannot be satisfied, and make the emitted `[ -n ... ]` guards
 # vacuously true. Build a ref whose canonical suite has lost the line the rewrite
 # anchors on, and require an empty pin rather than a digest.
-empty_digest="$(printf '' | sha256sum | cut -d' ' -f1)"
-mutated_index="$(mktemp)"
-GIT_INDEX_FILE="$mutated_index" git -C "$repo_root" read-tree "$sha"
-mutated_suite="$(mktemp)"
-git -C "$repo_root" show "$sha:scripts/ci-gate/gen-adr-index.test.sh" \
-  | sed 's|^repo_root=.*|repo_root="$(git rev-parse --show-toplevel)"|' >"$mutated_suite"
-mutated_blob="$(git -C "$repo_root" hash-object -w "$mutated_suite")"
-GIT_INDEX_FILE="$mutated_index" git -C "$repo_root" update-index \
-  --cacheinfo 100644,"$mutated_blob",scripts/ci-gate/gen-adr-index.test.sh
-mutated_tree="$(GIT_INDEX_FILE="$mutated_index" git -C "$repo_root" write-tree)"
-mutated_sha="$(git -C "$repo_root" commit-tree "$mutated_tree" -p "$sha" -m 'anchor removed')"
-rm -f "$mutated_index" "$mutated_suite"
-
-bash "$gen" adr-index-test "$mutated_sha" >/dev/null 2>&1 \
-  && fail "adr-index-test emitted a suite after the line it rewrites disappeared" \
-  || pass "adr-index-test refuses to emit once its rewrite anchor is gone"
-
-mutated_contract="$(bash "$gen" contract-test "$mutated_sha" 2>/dev/null)"
-mutated_pin="$(grep -m1 '^ADR_INDEX_TEST_SHA256=' <<<"$mutated_contract" | cut -d'"' -f2)"
-if [ -z "$mutated_pin" ]; then
-  pass "an unresolvable ADR-index suite pins nothing rather than the empty digest"
-elif [ "$mutated_pin" = "$empty_digest" ]; then
-  fail "an unresolvable ADR-index suite pinned the empty-string digest, which no adopter file can match"
+# The fixture commit is written into a scratch object store: `hash-object -w`
+# and `commit-tree` would otherwise leave dangling objects in the real
+# repository for a test that only needs them for the length of this block.
+mutated_objects="$tmproot/mutated-objects"
+staged_fixture=true
+mkdir -p "$mutated_objects" || {
+  fail "could not create the scratch object store for the ADR-index refusal fixture"
+  staged_fixture=false
+}
+# Absolute: a relative alternate resolves against each child process's cwd, and
+# the generator runs git from its own directory. Assigning through `export` would
+# report export's own status rather than rev-parse's, leaving the bare path
+# "/objects" behind and degrading this block into a silent skip.
+common_git_dir=""
+git_dir_status=0
+common_git_dir="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir)" || git_dir_status=$?
+if [ "$git_dir_status" -ne 0 ] || [ -z "$common_git_dir" ]; then
+  fail "could not resolve the object store for the ADR-index refusal fixture"
+  staged_fixture=false
 else
-  fail "an unresolvable ADR-index suite pinned an unexpected digest: $mutated_pin"
+  # Exported only once the path is known good: the empty-generator block below
+  # is not gated on $staged_fixture, so publishing a bare "/objects" here would
+  # starve it of every object rather than skip it.
+  export GIT_ALTERNATE_OBJECT_DIRECTORIES="$common_git_dir/objects"
+  export GIT_OBJECT_DIRECTORY="$mutated_objects"
 fi
+# A zero-length mktemp file is a deliberately empty index for read-tree to fill;
+# were read-tree to fail, the tree below would carry one path and quietly make
+# this whole block vacuous, so its status is checked.
+mutated_index="$(mktemp)"
+if [ "$staged_fixture" = true ]; then
+  GIT_INDEX_FILE="$mutated_index" git -C "$repo_root" read-tree "$sha" \
+    || { fail "could not stage the pinned tree for the ADR-index refusal fixture"; staged_fixture=false; }
+fi
+# Every assertion below consumes this fixture. When staging fails they receive an
+# empty ref and report their own unrelated failures, which is exactly how a wrong
+# alternates path surfaced as "adr-index-test did not refuse as documented"
+# instead of as the staging failure it was. Skip them rather than let one cause
+# produce three misleading verdicts; the suite still runs its ~1800 sibling lines.
+if [ "$staged_fixture" = true ]; then
+  mutated_suite="$(mktemp)"
+  # An unchecked `show | sed` is the worst of the construction faults: a path
+  # that no longer exists leaves an empty file, `hash-object` writes an empty
+  # blob, and the generator then refuses it with the very message this block
+  # asserts — a green run that tested nothing.
+  git -C "$repo_root" show "$sha:scripts/ci-gate/gen-adr-index.test.sh" \
+    | sed 's|^repo_root=.*|repo_root="$(git rev-parse --show-toplevel)"|' >"$mutated_suite"
+  show_status=${PIPESTATUS[0]}
+  mutated_tree=""
+  if [ "$show_status" -ne 0 ] || [ ! -s "$mutated_suite" ]; then
+    fail "could not read the canonical ADR-index suite for the refusal fixture"
+    staged_fixture=false
+  elif ! mutated_blob="$(git -C "$repo_root" hash-object -w "$mutated_suite")" \
+    || [ -z "$mutated_blob" ]; then
+    fail "could not write the mutated ADR-index suite blob"
+    staged_fixture=false
+  elif ! GIT_INDEX_FILE="$mutated_index" git -C "$repo_root" update-index \
+    --cacheinfo 100644,"$mutated_blob",scripts/ci-gate/gen-adr-index.test.sh; then
+    # Left unchecked this does not fail — it leaves the original blob in the
+    # index, so the fixture is simply not mutated and the assertions below
+    # report the branch under test as misbehaving.
+    fail "could not replace the ADR-index suite in the refusal fixture"
+    staged_fixture=false
+  elif ! mutated_tree="$(GIT_INDEX_FILE="$mutated_index" git -C "$repo_root" write-tree)" \
+    || [ -z "$mutated_tree" ]; then
+    fail "could not write the ADR-index refusal fixture tree"
+    staged_fixture=false
+  fi
+fi
+
+if [ "$staged_fixture" = true ]; then
+  # commit-tree refuses without a committer identity, and a CI runner has none
+  # configured: it dies with "unable to auto-detect email address". Supply one
+  # through the environment rather than writing git config, so the fixture needs
+  # nothing of the host and leaves nothing behind.
+  mutated_sha="$(
+    GIT_AUTHOR_NAME='changelog-caller-contract' \
+    GIT_AUTHOR_EMAIL='changelog-caller-contract@invalid' \
+    GIT_COMMITTER_NAME='changelog-caller-contract' \
+    GIT_COMMITTER_EMAIL='changelog-caller-contract@invalid' \
+    git -C "$repo_root" commit-tree "$mutated_tree" -p "$sha" -m 'anchor removed'
+  )"
+  # Without this the block continues with an empty ref, the generator refuses it
+  # on ref validation, and the assertions below report that refusal as though the
+  # branch under test had misbehaved. Every verdict past here needs a real ref.
+  [ -n "$mutated_sha" ] || {
+    fail "could not build the ADR-index refusal fixture commit"
+    staged_fixture=false
+  }
+fi
+rm -f "$mutated_index" "${mutated_suite:-}"
+
+if [ "$staged_fixture" = true ]; then
+  # The scratch store stays exported until the last assertion below: the fixture
+  # commit lives only there, so a child generator that cannot read it fails at
+  # digest resolution instead of reaching the refusal branch being asserted.
+
+  refusal_err="$tmproot/adr-index-test-refusal.err"
+  refusal_status=0
+  bash "$gen" adr-index-test "$mutated_sha" >/dev/null 2>"$refusal_err" \
+    || refusal_status=$?
+  # Status 3 and the stated reason, not merely nonzero: distinguishing a refusal
+  # from a failure to resolve is the whole point of the branch being asserted.
+  if [ "$refusal_status" = 3 ] \
+    && grep -q 'no longer resolves its repository root as expected' "$refusal_err"; then
+    pass "adr-index-test refuses with status 3 once its rewrite anchor is gone"
+  else
+    fail "adr-index-test did not refuse as documented (status=$refusal_status): $(tail -1 "$refusal_err")"
+  fi
+
+  mutated_contract="$(bash "$gen" contract-test "$mutated_sha" 2>/dev/null)"
+  mutated_pin="$(grep -m1 '^ADR_INDEX_TEST_SHA256=' <<<"$mutated_contract" | cut -d'"' -f2)"
+  # An empty pin is only evidence if a contract test was emitted at all: a mode
+  # that failed wholesale also yields an empty pin, and would otherwise report the
+  # pass this assertion is supposed to earn.
+  if ! grep -q "^CONTRACT_REF=\"$mutated_sha\"$" <<<"$mutated_contract"; then
+    fail "contract-test emitted nothing for a ref whose ADR-index suite cannot be rewritten"
+  elif [ -z "$mutated_pin" ]; then
+    pass "an unresolvable ADR-index suite pins nothing rather than the empty digest"
+  elif [ "$mutated_pin" = "$empty_digest" ]; then
+    fail "an unresolvable ADR-index suite pinned the empty-string digest, which no adopter file can match"
+  else
+    fail "an unresolvable ADR-index suite pinned an unexpected digest: $mutated_pin"
+  fi
+fi
+unset GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
+
+# The other end of the same fault: a resolver can succeed and yield nothing — an
+# empty blob at the ref, or a 200 with an empty body. `printf` would turn that
+# into a lone newline, non-empty enough to satisfy every downstream guard while
+# pinning a real-looking digest over a one-byte generator.
+#
+# This fixture deliberately writes into the real object store rather than the
+# scratch one above. The assertions below require the generator to *emit* at the
+# fixture ref, not merely to refuse it, so the child process has to be able to
+# read the fixture back — and a refusal is indistinguishable from an unreadable
+# ref, which is how an assertion of this shape goes vacuously green. A handful of
+# unreferenced loose objects in a test checkout is the cheaper trade.
+newline_digest="$(printf '\n' | sha256sum | cut -d' ' -f1)"
+empty_sha=""
+empty_tree=""
+empty_index="$(mktemp)"
+# Every step here is checked: a fixture built by several plumbing commands that
+# reports only the first one's status turns a later failure into an apparent
+# misbehavior of the branch under test.
+if ! GIT_INDEX_FILE="$empty_index" git -C "$repo_root" read-tree "$sha"; then
+  fail "could not stage the pinned tree for the empty-generator fixture"
+elif ! empty_blob="$(git -C "$repo_root" hash-object -w -t blob /dev/null)" \
+  || [ -z "$empty_blob" ]; then
+  fail "could not write the empty generator blob"
+elif ! GIT_INDEX_FILE="$empty_index" git -C "$repo_root" update-index \
+  --cacheinfo 100644,"$empty_blob",scripts/gen-adr-index.sh; then
+  fail "could not replace gen-adr-index.sh in the empty-generator fixture"
+elif ! empty_tree="$(GIT_INDEX_FILE="$empty_index" git -C "$repo_root" write-tree)" \
+  || [ -z "$empty_tree" ]; then
+  fail "could not write the empty-generator fixture tree"
+else
+  empty_sha="$(
+    GIT_AUTHOR_NAME='changelog-caller-contract' \
+    GIT_AUTHOR_EMAIL='changelog-caller-contract@invalid' \
+    GIT_COMMITTER_NAME='changelog-caller-contract' \
+    GIT_COMMITTER_EMAIL='changelog-caller-contract@invalid' \
+    git -C "$repo_root" commit-tree "$empty_tree" -p "$sha" -m 'generator emptied'
+  )"
+  [ -n "$empty_sha" ] || fail "could not build the empty-generator fixture commit"
+fi
+rm -f "$empty_index"
+
+if [ -n "$empty_sha" ]; then
+  # Any nonzero status would otherwise read as the refusal under test, and an
+  # unresolvable ref exits 1 from a much earlier guard — the very regression the
+  # object-store fix above repaired. Anchor on a sibling mode that resolves the
+  # same ref through the same plumbing, then require the refusal's own reason.
+  anchor_err="$tmproot/empty-generator-anchor.err"
+  if ! bash "$gen" adr-index-test "$empty_sha" 2>"$anchor_err" | grep -q .; then
+    # Carry the reason out: this fixture has now failed for three host-specific
+    # causes (a linked worktree's git dir, a runner's missing committer identity,
+    # a scratch object store the child could not read), and each time the verdict
+    # alone said nothing about which.
+    fail "the empty-generator fixture is not resolvable, so its refusal proves nothing: $(head -3 "$anchor_err")"
+  else
+    empty_refusal="$tmproot/empty-generator.err"
+    if bash "$gen" adr-index-generator "$empty_sha" >/dev/null 2>"$empty_refusal"; then
+      fail "adr-index-generator emitted a lone newline for an empty canonical generator"
+    elif grep -q 'the canonical scripts/gen-adr-index.sh is empty at' "$empty_refusal"; then
+      pass "adr-index-generator refuses an empty canonical generator rather than emitting a newline"
+    else
+      fail "adr-index-generator refused the empty canonical generator for another reason: $(cat "$empty_refusal")"
+    fi
+    rm -f "$empty_refusal"
+  fi
+  rm -f "$anchor_err"
+
+  empty_contract="$(bash "$gen" contract-test "$empty_sha" 2>/dev/null)"
+  empty_pin="$(grep -m1 '^ADR_INDEX_SHA256=' <<<"$empty_contract" | cut -d'"' -f2)"
+  if ! grep -q "^CONTRACT_REF=\"$empty_sha\"$" <<<"$empty_contract"; then
+    fail "contract-test emitted nothing for a ref whose ADR-index generator is empty"
+  elif [ -z "$empty_pin" ]; then
+    pass "an empty canonical generator pins nothing rather than the digest of a newline"
+  elif [ "$empty_pin" = "$newline_digest" ]; then
+    fail "an empty canonical generator pinned the digest of a lone newline"
+  else
+    fail "an empty canonical generator pinned an unexpected digest: $empty_pin"
+  fi
+fi
+
+# The pin is taken from the mode's emitted form, not the resolver's raw bytes.
+# Those two agree for as long as the canonical generator ends in exactly one
+# trailing newline, which it does today — so at $sha the loop above passes
+# whichever source the pin came from, and the unification it exists to protect
+# is asserted only in prose. Build the day it stops agreeing: a canonical
+# generator carrying one extra trailing newline, where the emitted form (which
+# normalizes to exactly one) and the raw bytes have different digests. Under a
+# resolver-sourced pin the adopter's contract test would fail against a file it
+# had just regenerated correctly, and this fixture is what catches that.
+#
+# Both fixtures below are pinned to a temporary ref for the length of the block.
+# They are otherwise unreferenced loose objects in the shared store, and a
+# concurrent `git gc --auto` between construction and read-back makes them
+# unresolvable — which fails closed, but as noise rather than a verdict.
+newline_ref="refs/tmp/changelog-caller-contract/$$-empty-generator"
+[ -n "${empty_sha:-}" ] && git -C "$repo_root" update-ref "$newline_ref" "$empty_sha"
+
+padded_ref="refs/tmp/changelog-caller-contract/$$-padded-generator"
+padded_sha=""
+padded_index="$(mktemp)"
+padded_blob_file="$tmproot/padded-generator.sh"
+# Every plumbing step is checked separately: a fixture built by a chain that
+# reports only the first status turns a later construction failure into an
+# apparent misbehavior of the branch under test.
+if ! git -C "$repo_root" show "$sha:scripts/gen-adr-index.sh" >"$padded_blob_file"; then
+  fail "could not read the canonical generator for the padded-newline fixture"
+elif ! printf '\n' >>"$padded_blob_file"; then
+  fail "could not pad the canonical generator with a second trailing newline"
+elif ! GIT_INDEX_FILE="$padded_index" git -C "$repo_root" read-tree "$sha"; then
+  fail "could not stage the pinned tree for the padded-newline fixture"
+elif ! padded_blob="$(git -C "$repo_root" hash-object -w -t blob "$padded_blob_file")" \
+  || [ -z "$padded_blob" ]; then
+  fail "could not write the padded generator blob"
+elif ! GIT_INDEX_FILE="$padded_index" git -C "$repo_root" update-index \
+  --cacheinfo 100644,"$padded_blob",scripts/gen-adr-index.sh; then
+  fail "could not replace gen-adr-index.sh in the padded-newline fixture"
+elif ! padded_tree="$(GIT_INDEX_FILE="$padded_index" git -C "$repo_root" write-tree)" \
+  || [ -z "$padded_tree" ]; then
+  fail "could not write the padded-newline fixture tree"
+else
+  padded_sha="$(
+    GIT_AUTHOR_NAME='changelog-caller-contract' \
+    GIT_AUTHOR_EMAIL='changelog-caller-contract@invalid' \
+    GIT_COMMITTER_NAME='changelog-caller-contract' \
+    GIT_COMMITTER_EMAIL='changelog-caller-contract@invalid' \
+    git -C "$repo_root" commit-tree "$padded_tree" -p "$sha" -m 'generator padded with a second trailing newline'
+  )"
+  [ -n "$padded_sha" ] || fail "could not build the padded-newline fixture commit"
+fi
+rm -f "$padded_index"
+[ -n "$padded_sha" ] && git -C "$repo_root" update-ref "$padded_ref" "$padded_sha"
+
+if [ -n "$padded_sha" ]; then
+  padded_raw_digest="$(sha256sum <"$padded_blob_file" | cut -d' ' -f1)"
+  padded_mode="$tmproot/padded-generator.out"
+  padded_mode_status=0
+  bash "$gen" adr-index-generator "$padded_sha" >"$padded_mode" 2>/dev/null \
+    || padded_mode_status=$?
+  padded_emitted_digest="$(sha256sum <"$padded_mode" | cut -d' ' -f1)"
+  padded_contract="$(bash "$gen" contract-test "$padded_sha" 2>/dev/null)"
+  padded_pin="$(grep -m1 '^ADR_INDEX_SHA256=' <<<"$padded_contract" | cut -d'"' -f2)"
+
+  # The fixture only proves anything if the two candidate sources actually
+  # disagree at this ref. If padding failed to change the emitted form, the pin
+  # would match both and the assertion below would pass vacuously.
+  if [ "$padded_mode_status" != 0 ] || [ ! -s "$padded_mode" ]; then
+    fail "adr-index-generator emitted nothing at the padded-newline fixture (status=$padded_mode_status)"
+  elif [ "$padded_raw_digest" = "$padded_emitted_digest" ]; then
+    fail "the padded-newline fixture does not separate the resolver's bytes from the emitted form"
+  elif ! grep -q "^CONTRACT_REF=\"$padded_sha\"$" <<<"$padded_contract"; then
+    fail "contract-test emitted nothing for the padded-newline fixture"
+  elif [ "$padded_pin" = "$padded_raw_digest" ]; then
+    fail "ADR_INDEX_SHA256 digests the resolver's raw bytes, which no adopter regenerating the file can match"
+  elif [ "$padded_pin" = "$padded_emitted_digest" ]; then
+    pass "ADR_INDEX_SHA256 digests the emitted form even when the canonical bytes do not end in one newline"
+  else
+    fail "ADR_INDEX_SHA256 matched neither source at the padded-newline fixture: $padded_pin"
+  fi
+  rm -f "$padded_mode"
+fi
+rm -f "$padded_blob_file"
+git -C "$repo_root" update-ref -d "$padded_ref" 2>/dev/null || true
+git -C "$repo_root" update-ref -d "$newline_ref" 2>/dev/null || true
+
 
 contract_validation="$(sed -n '/^  contract-test)/,/^    ;;/p' "$gen")"
 if grep -q 'bash -n <"$syntax_input"' <<<"$contract_validation" \
