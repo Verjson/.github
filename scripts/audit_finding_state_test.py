@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -199,6 +200,25 @@ class AuditFindingStateTest(unittest.TestCase):
         self.assertEqual(completed.returncode, 2, completed.stdout)
         self.assertIn("undetermined", summary)
         self.assertIn("reported no finding", summary)
+
+
+class ShippedExpectationTest(unittest.TestCase):
+    """The committed expectation is validated here, not first by a scheduled run."""
+
+    def test_the_arm_audit_expectation_file_validates(self):
+        entries = STATE.read_expectations(ROOT / "config/audit-expected-findings.json", "ai-review-arm")
+        self.assertTrue(entries, "the recorded arm-audit expectation is empty")
+
+    def test_every_recorded_arm_finding_still_has_time_left(self):
+        entries = STATE.read_expectations(ROOT / "config/audit-expected-findings.json", "ai-review-arm")
+        today = datetime.now(timezone.utc).date()
+        expired = [entry["fingerprint"] for entry in entries if entry["expires"] < today]
+        self.assertEqual(expired, [], "a recorded acknowledgement has expired; resolve or re-review it")
+
+    def test_the_workflow_adjudicates_the_audit_it_records(self):
+        workflow = (ROOT / ".github/workflows/org-ruleset-conformance.yml").read_text(encoding="utf-8")
+        self.assertIn("--audit ai-review-arm", workflow)
+        self.assertIn("--expectations config/audit-expected-findings.json", workflow)
 
 
 if __name__ == "__main__":

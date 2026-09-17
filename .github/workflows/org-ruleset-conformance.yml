@@ -39,6 +39,12 @@ jobs:
   # shares this schedule but keeps its own job so a finding here is attributable
   # and cannot mask the release-authorization result above. It reports; no pull
   # request gates on it.
+  #
+  # Its verdict is the adjudicated finding state, not the raw audit exit (#1409).
+  # A finding recorded in config/audit-expected-findings.json is quiet, an
+  # unrecorded one is loud, and anything the comparison cannot classify fails
+  # closed under ADR 0024. Changing what is quiet is a reviewed diff to that
+  # file, not an edit to this workflow.
   arm-audit:
     runs-on: ${{ fromJSON(vars.CI_LANE_PRIVILEGED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     defaults:
@@ -69,7 +75,7 @@ jobs:
       - name: Audit the AI authorization arm against its reviewed contract
         env:
           GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
-        run: python3 scripts/ai-review-required-workflow-audit.py
+        run: python3 scripts/audit-finding-state.py --audit ai-review-arm --expectations config/audit-expected-findings.json -- python3 scripts/ai-review-required-workflow-audit.py
       - name: Remove the isolated arm-audit checkout
         if: ${{ always() }}
         working-directory: ${{ github.workspace }}
