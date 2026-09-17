@@ -64,6 +64,13 @@ this repository on" is a 40-hex string with no meaning outside a content diff.
 Under this decision it is a lookup in a list of releases, and "is it behind" and
 "is it still supported" are comparisons on that list.
 
+**This restriction has a precondition, and it is the first entry under
+[Consequences](#consequences): the release train must be running before the pin
+constraint is enforced.** Enforcing it while `main` sits hundreds of commits past
+the newest release converts "adopters rot on their own schedule" into "adopters
+cannot advance at all". The decision is stated here; the sequencing is stated
+there, and the two are not separable.
+
 ### 2. An adopter declares exactly one version, in one file
 
 `.github/verjson-contract.json`, with exactly one adopter-controlled field:
@@ -104,7 +111,18 @@ not do:
   once there is a version to compare.
 - **The scan is the whole tree, not a list of known adopter files.** Scoping it
   to a list would reproduce the defect it exists to catch: a reference the list
-  did not name is precisely the skew that was measured.
+  did not name is precisely the skew that was measured. Totality is a claim with
+  teeth only if the gaps are named, so the implementation makes each one visible
+  rather than silent: a file that is unreadable, past the scan limit, or text in
+  an undecodable encoding is an `UNSCANNED` finding, not a `continue`. The one
+  directory skipped outright is `.git` — git's own object and ref storage, not
+  the tree Actions checks out and executes. A file holding a NUL byte is skipped
+  on git's own binary heuristic, because it cannot carry a UTF-8 `uses:` line and
+  reporting every image in a repository is precisely the noise [ADR 0185](../0185-org-contract-distribution/README.md)
+  says gets a check muted. Comment lines are candidate header claims wherever
+  they occur, not within a leading window: `gen-changelog-caller.sh` stamps
+  `CONTRACT_REF` on line 13 of one generated file and emits the release caller's
+  header below `concurrency:`.
 - **A generated header is read as a claim, never as an instruction.** Headers
   remain human traceability per [ADR 0185](../0185-org-contract-distribution/README.md)'s
   sixth point; here a header disagreeing with the declaration is an *alarm*, and
@@ -121,6 +139,17 @@ Every unresolvable input is `UNKNOWN`, never `SUPPORTED`. A release whose commit
 does not resolve to a 40-hex object id fails closed — `target_commitish` is a
 branch name for many releases, and comparing a pin against the string `main`
 would report the entire fleet broken.
+
+**The cost of failing closed here is a producer obligation, and it is real.**
+`gh api repos/Verjson/.github/releases` returns a 40-hex SHA for `v2.3.0`,
+`v2.2.0` and `v2.1.0` and the literal string `main` for `v2.0.0`, `v1.1.0` and
+`v1.0.0`. A release-list producer built on `target_commitish` therefore refuses
+legitimately published older versions — a false failure, not a detected defect —
+so the producer must peel the tag instead, and `load_releases` validates that
+rather than trusting it. Peeling means `refs/tags/<tag>^{}`: an **annotated** tag's
+ref names the tag object, whose id is 40-hex and would pass every check here
+while being the wrong commit. Every current tag on this repository is
+lightweight, so the unpeeled form works today by luck.
 
 ### 4. The supported window is two minor lines, never narrower than the newest three releases
 
@@ -244,8 +273,20 @@ and its regression suite is `scripts/ci-gate/contract-version.test.py`, register
 in `scripts/actions-ci-groups.tsv` under the `platform` group. The assertions that
 matter are the fail-closed ones: an unreleased or malformed version is `UNKNOWN`
 rather than a soft `SUPPORTED`, a release whose commit is not a 40-hex object id
-is refused rather than compared against a branch name, and an unreadable releases
-document exits 2 rather than reporting a tree it never compared as conformant.
+is refused rather than compared against a branch name, an expired declaration is
+refused at `verify` even when every pin in the tree agrees with it, and an
+unreadable, ambiguous, or unvalidatable releases document exits 2 rather than
+reporting a tree it never compared as conformant.
+
+The totality claim in §3 carries its own assertions, because a missed reference
+reads as a clean PASS and the "declares a version but governs nothing" net only
+fires on a tree with *zero* references — never on a partial miss. Each case
+builds a tree with one conformant pin plus one skewed reference and requires a
+finding: a single- and a double-quoted `uses:` scalar, a header below the old
+six-line window, a caller vendored under `node_modules`, and an unreadable,
+oversize, or undecodable file. The quiet cases are pinned too, so the noise
+budget is a test rather than a hope: a binary file and a 40-hex string inside
+`.git` report nothing, and a commented-out pin is one reference, not two.
 
 Not verified here, and deliberately so: no release has been cut, no adopter
 declares a version yet, and the required-check binding in §6 is decided rather

@@ -10,6 +10,11 @@ This module is the readback half of ADR 0191: a version an adopter declares but
 nothing verifies fails exactly like a pin nobody advances. It resolves the
 declared version against published contract releases and then asserts that every
 `Verjson/.github` reference on disk names that version's release commit.
+
+Wiring this into a merge gate has a precondition, stated in ADR 0191's
+Consequences: the release train must be running first. Restricting legal pins to
+release commits before releases are cut on a cadence converts "adopters rot on
+their own schedule" into "adopters cannot advance at all".
 """
 from __future__ import annotations
 
@@ -163,15 +168,25 @@ DECLARATION_KEY = "contract_version"
 # Anchored on the hub, so an adopter's own SHA-pinned third-party actions are not
 # contract references. Case-insensitive because GitHub resolves owner/repo that
 # way and a completeness check must not drop a lowercase reference.
+# The optional quote is not cosmetic: `uses: 'Verjson/.github/x.yml@<sha>'` is
+# valid, common YAML, and an unquoted-only pattern reports a skewed quoted pin as
+# no finding at all -- a clean PASS on exactly the skew this check exists to catch.
 USES_RE = re.compile(
-    r"uses:\s*Verjson/\.github/(?P<path>[^@\s]+)@(?P<ref>[^\s\"']+)", re.IGNORECASE)
+    r"uses:\s*[\"']?Verjson/\.github/(?P<path>[^@\s\"']+)@(?P<ref>[^\s\"']+)",
+    re.IGNORECASE)
 # The trailing boundary matters: without it a 64-hex container digest in the same
 # header yields its first 40 characters as a bogus contract SHA.
 HEADER_RE = re.compile(
     r"Verjson/\.github[^\n]*?\b(?P<sha>[0-9a-f]{40})(?![0-9a-f])", re.IGNORECASE)
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 MAX_SCAN_BYTES = 1 << 20
-SKIP_DIRS = {".git", "node_modules"}
+# `.git` is the one skip that is correct rather than a hole: it is git's own
+# object and ref storage, not the tree Actions checks out and executes, and a
+# 40-hex string in a packfile or a reflog is not a contract reference. Every
+# other directory is scanned. `node_modules` used to be skipped too and that was
+# a hole -- a vendored or committed caller under it is a reference the
+# repository really carries, and the whole claim of this check is totality.
+SKIP_DIRS = {".git"}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -181,11 +196,14 @@ class Finding:
 
 
 def _scan_files(root):
-    """Every readable text file in the tree, because totality is the point.
+    """`(relative, text, unscanned_reason)` for every file in the tree.
 
     Scoping the scan to a list of known adopter files would reproduce the defect
     it is meant to catch: a contract reference somewhere the list did not name is
-    exactly the intra-repository skew ADR 0185 measured.
+    exactly the intra-repository skew ADR 0185 measured. The same argument
+    applies to a file the scan *reaches* and cannot read: skipping it silently
+    turns "this file might carry a skewed reference" into a clean PASS, so
+    exactly one of `text` and `unscanned_reason` is ever None.
     """
     root = pathlib.Path(root)
     for directory, subdirectories, names in os.walk(root):
@@ -198,34 +216,63 @@ def _scan_files(root):
                 # A symlink is followed nowhere: it can point outside the tree
                 # being verified, and its target is not this repository's state.
                 continue
+            relative = path.relative_to(root).as_posix()
             try:
-                if path.stat().st_size > MAX_SCAN_BYTES:
-                    continue
-                yield path.relative_to(root).as_posix(), path.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                # Not decodable as text, so it carries no contract reference.
+                size = path.stat().st_size
+            except OSError as error:
+                yield relative, None, f"could not be sized ({error.strerror or error})"
                 continue
+            if size > MAX_SCAN_BYTES:
+                yield relative, None, f"is {size} bytes, past the {MAX_SCAN_BYTES}-byte scan limit"
+                continue
+            try:
+                raw = path.read_bytes()
+            except OSError as error:
+                yield relative, None, f"could not be read ({error.strerror or error})"
+                continue
+            try:
+                yield relative, raw.decode("utf-8"), None
+            except UnicodeDecodeError:
+                if b"\x00" in raw:
+                    # Git's own binary heuristic. A file with a NUL byte holds no
+                    # UTF-8 `uses:` line, and reporting every image in the tree
+                    # is the noisy check ADR 0185 says gets muted.
+                    continue
+                yield relative, None, "is text in an encoding this scan cannot decode"
 
 
 def references(root):
-    """(file, kind, ref) for every contract reference on disk.
+    """`(found, unscanned)`: every contract reference on disk, and every gap.
 
     Generated headers are read as *claims* alongside the pins, never as
     instructions: adopter-controlled text is an input to this comparison, not to
     anything privileged.
+
+    Every comment line is a candidate header, not a fixed leading window.
+    `gen-changelog-caller.sh` stamps `CONTRACT_REF` on line 13 of the ADR index
+    test and emits the release caller's header below `concurrency:`, so any
+    window drawn at the top of the file misses real claims. The `uses:` spans on
+    a line are excluded from the header pass instead, which is what the window
+    was actually buying: a commented-out pin stays one reference, not two.
     """
-    found = []
-    for relative, text in _scan_files(root):
-        for match in USES_RE.finditer(text):
-            found.append((relative, "uses", match.group("ref")))
-        # Comment lines only. A header is a comment; scanning the raw first six
-        # lines would read a `uses:` pin a second time as a header claim and
-        # report one reference as two.
-        head = "\n".join(line for line in text.splitlines()[:6]
-                          if line.lstrip().startswith("#"))
-        for match in HEADER_RE.finditer(head):
-            found.append((relative, "header", match.group("sha")))
-    return found
+    found, unscanned = [], []
+    for relative, text, problem in _scan_files(root):
+        if text is None:
+            unscanned.append((relative, problem))
+            continue
+        for line in text.splitlines():
+            pins = list(USES_RE.finditer(line))
+            for match in pins:
+                found.append((relative, "uses", match.group("ref")))
+            if not line.lstrip().startswith("#"):
+                continue
+            spans = [match.span() for match in pins]
+            for match in HEADER_RE.finditer(line):
+                start = match.start("sha")
+                if any(low <= start < high for low, high in spans):
+                    continue
+                found.append((relative, "header", match.group("sha")))
+    return found, unscanned
 
 
 def read_declaration(root):
@@ -254,16 +301,28 @@ def verify(root, releases, today: str):
     those apply once there is a version to compare.
     """
     version, finding = read_declaration(root)
-    found = references(root)
-    if finding is not None:
+    found, unscanned = references(root)
+    if finding is not None and finding.kind == "DECLARATION_MISSING" and not found:
         # No declaration and no reference is a repository that does not consume
         # the contract, not a defect. Reporting it would fire on every repository
         # in the organization, and a check that fires everywhere gets muted --
-        # which is how the previous invalid drift test survived.
-        return [finding] if found else []
+        # which is how the previous invalid drift test survived. A declaration
+        # that exists and cannot be read is the other thing entirely: it is a
+        # defect whether or not the tree happens to carry a reference, so it is
+        # deliberately outside this guard.
+        return []
+    gaps = [Finding("UNSCANNED", f"{relative} {problem}, so it cannot be shown to carry "
+                                 "no contract reference")
+            for relative, problem in unscanned]
+    if finding is not None:
+        return [finding] + gaps
     verdict = classify(version, releases, today)
     if verdict.state in (UNKNOWN, EXPIRED):
-        return [Finding(verdict.state, verdict.reason)]
+        # EXPIRED short-circuits with UNKNOWN because expiry IS the enforcement
+        # (ADR 0191 sec.5/sec.6). Falling through would let an expired contract whose
+        # pins happen to agree return no findings -- a clean PASS of the refusal
+        # the required-check binding exists to deliver.
+        return [Finding(verdict.state, verdict.reason)] + gaps
 
     commit = next((r.commit for r in releases if r.version == version), "")
     if not SHA_RE.match(commit or ""):
@@ -271,9 +330,9 @@ def verify(root, releases, today: str):
         # commit would compare a pin against the string "main" and report every
         # adopter broken, so an unresolved release fails closed instead.
         return [Finding(UNKNOWN,
-                        f"{version} resolved to {commit!r}, not a 40-hex commit")]
+                        f"{version} resolved to {commit!r}, not a 40-hex commit")] + gaps
 
-    findings = []
+    findings = list(gaps)
     if verdict.state == DEPRECATED:
         findings.append(Finding(DEPRECATED, verdict.reason))
     if not found:
@@ -297,27 +356,70 @@ def verify(root, releases, today: str):
 def load_releases(path: str):
     """Published contract releases, or a usage failure. Never a partial list.
 
-    Resolve them with the tag's own object id, not `target_commitish`:
+    Resolve the commit by **peeling the tag**, not from `target_commitish`, and
+    not from `git/ref/tags/<tag>` unpeeled either:
 
-        gh api repos/Verjson/.github/releases --paginate --jq '.[] | {version: .tag_name,
-          published: (.published_at | split("T")[0])}' \\
-          | while read -r row; do ...; done   # commit from git/ref/tags/<tag>
+        gh api repos/Verjson/.github/releases --paginate \\
+          --jq '.[] | [.tag_name, (.published_at | split("T")[0])] | @tsv' \\
+        | while IFS=$'\\t' read -r tag published; do
+            # `^{}` is load-bearing: an ANNOTATED tag's ref names the tag object,
+            # whose id is 40-hex and would pass every check here while being the
+            # wrong commit. Every current tag on this repository is lightweight,
+            # so the unpeeled form works today by luck alone.
+            commit=$(git rev-parse "refs/tags/$tag^{}")
+            printf '{"version":"%s","commit":"%s","published":"%s"}\\n' \\
+              "$tag" "$commit" "$published"
+          done | jq -s .
 
-    The `commit` field must be a 40-hex object id; `verify` fails closed on
-    anything else rather than comparing a pin against a branch name.
+    Every field is validated here rather than at the first verdict that happens
+    to touch it: `published_at` is `2026-03-01T00:00:00Z` raw and the deprecation
+    clock parses it as a date, and a producer built on `target_commitish` yields
+    the literal string `main` for this repository's v2.0.0 and older. Both are
+    producer defects, and exit 2 -- "the question could not be asked" -- is the
+    honest answer to them, not a verdict computed from a broken list.
     """
     with open(path, encoding="utf-8") as handle:
         payload = json.load(handle)
     if not isinstance(payload, list):
         raise ValueError("the releases document must be a JSON array")
-    releases = []
+    releases, versions = [], set()
     for entry in payload:
         if not isinstance(entry, dict):
             raise ValueError("every release entry must be an object")
-        releases.append(Release(version=str(entry.get("version", "")),
-                                commit=str(entry.get("commit", "")),
-                                published=str(entry.get("published", ""))))
+        release = Release(version=str(entry.get("version", "")),
+                          commit=str(entry.get("commit", "")),
+                          published=str(entry.get("published", "")))
+        if not SHA_RE.match(release.commit):
+            raise ValueError(f"{release.version or 'a release'} has commit "
+                             f"{release.commit!r}, which is not a 40-hex object id")
+        try:
+            datetime.date.fromisoformat(release.published)
+        except ValueError as error:
+            raise ValueError(f"{release.version or 'a release'} has published "
+                             f"{release.published!r}, which is not a YYYY-MM-DD date") from error
+        if release.version in versions:
+            # First-wins would pick one commit silently, and which one it picked
+            # would decide every PIN_MISMATCH in the sweep.
+            raise ValueError(f"{release.version} appears more than once, so its "
+                             "commit is ambiguous")
+        versions.add(release.version)
+        releases.append(release)
     return releases
+
+
+def today_utc() -> str:
+    """Today in UTC. `date.today()` is the runner's local date, and a check whose
+    expiry verdict depends on the timezone of whatever host ran it is not one
+    verdict."""
+    return datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+
+
+def _iso_date(value: str) -> str:
+    try:
+        datetime.date.fromisoformat(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a YYYY-MM-DD date") from None
+    return value
 
 
 def main(argv=None) -> int:
@@ -326,7 +428,7 @@ def main(argv=None) -> int:
     for name in ("classify", "verify"):
         child = sub.add_parser(name)
         child.add_argument("--releases", required=True)
-        child.add_argument("--today", default=datetime.date.today().isoformat())
+        child.add_argument("--today", type=_iso_date, default=today_utc())
         if name == "classify":
             child.add_argument("--version", required=True)
         else:

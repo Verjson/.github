@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """Regression suite for scripts/contract-version.py (Verjson/.github#1374)."""
 import contextlib
+import datetime
 import importlib.util
 import io
 import json
+import os
 import pathlib
+import shutil
 import sys
 import tempfile
+import time
 import unittest
 
 _root = pathlib.Path(__file__).resolve().parents[2]
@@ -130,6 +134,57 @@ class DeclarationVersusReality(unittest.TestCase):
         root = self.write_repo(None, "jobs:\n  ci:\n    steps: []\n")
         self.assertEqual(cv.verify(root, releases, today="2026-02-02"), [])
 
+    def test_a_pin_naming_another_release_commit_is_still_a_mismatch(self):
+        # The repinned-but-undeclared adopter: the pin is a perfectly good
+        # release commit, just not the declared release's. "Not a release
+        # commit" and "not THIS release's commit" are different assertions and
+        # only the second one is the skew this check exists to catch.
+        releases = [rel("v3.1.0", commit_char="c", published="2026-01-01"),
+                    rel("v3.2.0", commit_char="a", published="2026-02-01")]
+        root = self.write_repo(
+            {"contract_version": "v3.2.0"},
+            "jobs:\n  ci:\n    uses: Verjson/.github/.github/workflows/node-ci.yml@"
+            + "c" * 40 + "\n")
+        findings = cv.verify(root, releases, today="2026-02-02")
+        self.assertEqual([f.kind for f in findings], ["PIN_MISMATCH"])
+        self.assertIn("c" * 40, findings[0].detail)
+
+    def test_an_expired_contract_is_refused_even_when_every_pin_agrees(self):
+        # ADR 0191 sec.5/sec.6: expiry IS the enforcement. A repository whose pins are
+        # internally consistent but whose declared version expired must not pass.
+        releases = [
+            rel("v3.0.0", commit_char="a", published="2026-01-01"),
+            rel("v3.1.0", commit_char="d", published="2026-01-15"),
+            rel("v3.2.0", commit_char="e", published="2026-02-01"),
+            rel("v3.3.0", commit_char="f", published="2026-03-01"),
+        ]
+        root = self.write_repo(
+            {"contract_version": "v3.0.0"},
+            "jobs:\n  ci:\n    uses: Verjson/.github/.github/workflows/node-ci.yml@"
+            + "a" * 40 + "\n")
+        findings = cv.verify(root, releases, today="2026-06-01")
+        self.assertEqual([f.kind for f in findings], [cv.EXPIRED])
+
+    def test_a_corrupt_declaration_is_reported_even_when_the_tree_has_no_references(self):
+        # "No declaration and no reference" is not an adopter. A declaration
+        # that exists and cannot be parsed is a defect either way, and the
+        # not-an-adopter guard must not swallow it.
+        releases = [rel("v3.2.0", commit_char="a", published="2026-02-01")]
+        root = pathlib.Path(tempfile.mkdtemp())
+        (root / ".github").mkdir(parents=True)
+        (root / ".github" / "verjson-contract.json").write_text("{not json")
+        self.assertEqual([f.kind for f in cv.verify(root, releases, today="2026-02-02")],
+                         ["DECLARATION_UNREADABLE"])
+
+    def test_a_declaration_without_a_string_version_is_reported_on_a_bare_tree(self):
+        releases = [rel("v3.2.0", commit_char="a", published="2026-02-01")]
+        root = pathlib.Path(tempfile.mkdtemp())
+        (root / ".github").mkdir(parents=True)
+        (root / ".github" / "verjson-contract.json").write_text(
+            json.dumps({"contract_version": 3}))
+        self.assertEqual([f.kind for f in cv.verify(root, releases, today="2026-02-02")],
+                         ["DECLARATION_UNREADABLE"])
+
     def test_an_unresolved_release_commit_fails_closed(self):
         # `target_commitish` is a branch name for many releases; comparing a pin
         # against "main" would report every adopter broken.
@@ -150,6 +205,15 @@ class WindowEdges(unittest.TestCase):
                     rel("v3"), rel("runner-canary-v1.0.0")]
         self.assertEqual(cv.supported_versions(releases),
                          {"v3.0.0", "v3.1.0", "v3.2.0"})
+
+    def test_the_window_is_exactly_two_minor_lines_when_retention_does_not_widen_it(self):
+        # Five releases on three minor lines, so the newest-three floor is a
+        # subset of the minor-line half and the minor-line count alone decides.
+        # One line would drop v3.1.0; three would admit v3.0.0.
+        releases = [rel("v3.0.0"), rel("v3.1.0"), rel("v3.1.1"),
+                    rel("v3.2.0"), rel("v3.2.1")]
+        self.assertEqual(cv.supported_versions(releases),
+                         {"v3.1.0", "v3.1.1", "v3.2.0", "v3.2.1"})
 
     def test_no_releases_supports_nothing(self):
         self.assertEqual(cv.supported_versions([]), set())
@@ -184,6 +248,143 @@ class WindowEdges(unittest.TestCase):
                          cv.EXPIRED)
 
 
+class ScanTotality(unittest.TestCase):
+    """ADR 0191 sec.3 claims the scan is the whole tree. A missed reference is a
+    clean PASS, and UNGOVERNED_DECLARATION only fires when the tree has zero
+    references, so it never catches a partial miss."""
+
+    def repo(self):
+        root = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        (root / ".github" / "workflows").mkdir(parents=True)
+        (root / ".github" / "verjson-contract.json").write_text(
+            json.dumps({"contract_version": "v3.2.0"}))
+        # One conformant pin, so the tree is never reference-free and the
+        # UNGOVERNED_DECLARATION net cannot stand in for the scan.
+        (root / ".github" / "workflows" / "ci.yml").write_text(
+            "jobs:\n  ci:\n    uses: Verjson/.github/.github/workflows/node-ci.yml@"
+            + "a" * 40 + "\n")
+        return root
+
+    def verify(self, root):
+        releases = [rel("v3.2.0", commit_char="a", published="2026-02-01")]
+        return cv.verify(root, releases, today="2026-02-02")
+
+    def test_a_single_quoted_uses_scalar_is_a_contract_reference(self):
+        root = self.repo()
+        (root / ".github" / "workflows" / "quoted.yml").write_text(
+            "jobs:\n  ci:\n    uses: 'Verjson/.github/.github/workflows/node-ci.yml@"
+            + "b" * 40 + "'\n")
+        self.assertEqual([f.kind for f in self.verify(root)], ["PIN_MISMATCH"])
+
+    def test_a_double_quoted_uses_scalar_is_a_contract_reference(self):
+        root = self.repo()
+        (root / ".github" / "workflows" / "quoted.yml").write_text(
+            'jobs:\n  ci:\n    uses: "Verjson/.github/.github/workflows/node-ci.yml@'
+            + "b" * 40 + '"\n')
+        self.assertEqual([f.kind for f in self.verify(root)], ["PIN_MISMATCH"])
+
+    def test_a_header_below_the_first_six_lines_is_still_a_claim(self):
+        # gen-changelog-caller.sh stamps CONTRACT_REF on line 13 of the ADR
+        # index test and emits its workflow header below `concurrency:`. A
+        # fixed leading window misses both.
+        root = self.repo()
+        (root / ".github" / "workflows" / "deep.yml").write_text(
+            "name: x\n" * 8
+            + "# Generated by Verjson/.github scripts/gen-changelog-caller.sh workflow "
+            + "b" * 40 + "\n")
+        findings = self.verify(root)
+        self.assertEqual([f.kind for f in findings], ["PIN_MISMATCH"])
+        self.assertIn("header", findings[0].detail)
+
+    def test_a_commented_out_pin_is_one_reference_not_two(self):
+        # The reason the old code used a window at all: a `uses:` line that is
+        # also a comment must not be counted once as a pin and once as a header.
+        root = self.repo()
+        (root / ".github" / "workflows" / "commented.yml").write_text(
+            "#    uses: Verjson/.github/.github/workflows/node-ci.yml@" + "b" * 40 + "\n")
+        self.assertEqual([f.kind for f in self.verify(root)], ["PIN_MISMATCH"])
+
+    def test_an_unreadable_file_is_reported_rather_than_skipped(self):
+        root = self.repo()
+        hidden = root / ".github" / "workflows" / "locked.yml"
+        hidden.write_text("jobs: {}\n")
+        hidden.chmod(0o000)
+        self.addCleanup(hidden.chmod, 0o600)
+        findings = self.verify(root)
+        self.assertEqual([f.kind for f in findings], ["UNSCANNED"])
+        self.assertIn("locked.yml", findings[0].detail)
+
+    def test_a_file_past_the_scan_limit_is_reported_rather_than_skipped(self):
+        root = self.repo()
+        (root / "big.txt").write_text("x" * (cv.MAX_SCAN_BYTES + 1))
+        self.assertEqual([f.kind for f in self.verify(root)], ["UNSCANNED"])
+
+    def test_text_in_an_unknown_encoding_is_reported_rather_than_skipped(self):
+        root = self.repo()
+        (root / "latin.txt").write_bytes("caf\u00e9 pins\n".encode("latin-1"))
+        self.assertEqual([f.kind for f in self.verify(root)], ["UNSCANNED"])
+
+    def test_a_binary_file_carries_no_text_reference_and_is_quiet(self):
+        # The counterweight: reporting every PNG as UNSCANNED is the noisy
+        # check ADR 0185 says gets muted. Git's own NUL heuristic decides.
+        root = self.repo()
+        (root / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00")
+        self.assertEqual(self.verify(root), [])
+
+    def test_a_reference_under_node_modules_is_not_a_hole(self):
+        root = self.repo()
+        vendored = root / "node_modules" / "@verjson" / "thing" / ".github" / "workflows"
+        vendored.mkdir(parents=True)
+        (vendored / "ci.yml").write_text(
+            "jobs:\n  ci:\n    uses: Verjson/.github/.github/workflows/node-ci.yml@"
+            + "b" * 40 + "\n")
+        self.assertEqual([f.kind for f in self.verify(root)], ["PIN_MISMATCH"])
+
+    def test_the_git_directory_is_not_repository_content(self):
+        # The one skip that is correct rather than a hole: `.git` is git's own
+        # object and ref storage, not the tree Actions executes.
+        root = self.repo()
+        (root / ".git").mkdir()
+        (root / ".git" / "COMMIT_EDITMSG").write_text(
+            "uses: Verjson/.github/.github/workflows/node-ci.yml@" + "b" * 40 + "\n")
+        self.assertEqual(self.verify(root), [])
+
+
+class ReleaseDocument(unittest.TestCase):
+    def load(self, payload):
+        handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+        json.dump(payload, handle)
+        handle.close()
+        self.addCleanup(os.unlink, handle.name)
+        return cv.load_releases(handle.name)
+
+    def test_one_version_published_at_two_commits_is_a_usage_failure(self):
+        # First-wins picks a commit silently, and which one it picks decides
+        # every PIN_MISMATCH in the sweep. An ambiguous list cannot be asked.
+        with self.assertRaises(ValueError):
+            self.load([{"version": "v3.2.0", "commit": "a" * 40, "published": "2026-02-01"},
+                       {"version": "v3.2.0", "commit": "b" * 40, "published": "2026-02-01"}])
+
+    def test_a_commit_that_is_not_a_40_hex_object_id_is_a_usage_failure(self):
+        # `target_commitish` is a branch name for v2.0.0 and older on this
+        # repository right now; a producer that used it is broken at the source.
+        with self.assertRaises(ValueError):
+            self.load([{"version": "v3.2.0", "commit": "main", "published": "2026-02-01"}])
+
+    def test_a_timestamp_shaped_publication_date_is_a_usage_failure(self):
+        # `published_at` is `2026-03-01T00:00:00Z` raw; the deprecation clock
+        # calls date.fromisoformat on it and would raise mid-verdict.
+        with self.assertRaises(ValueError):
+            self.load([{"version": "v3.2.0", "commit": "a" * 40,
+                        "published": "2026-02-01T00:00:00Z"}])
+
+    def test_a_well_formed_document_loads(self):
+        releases = self.load(
+            [{"version": "v3.2.0", "commit": "a" * 40, "published": "2026-02-01"}])
+        self.assertEqual(releases, [cv.Release("v3.2.0", "a" * 40, "2026-02-01")])
+
+
 class CommandLine(unittest.TestCase):
     def releases_file(self, payload):
         handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
@@ -206,6 +407,31 @@ class CommandLine(unittest.TestCase):
                               "--today", "2026-02-02"])
         self.assertEqual(status, 1)
         self.assertIn("PIN_MISMATCH", captured.getvalue())
+
+    def test_a_today_that_is_not_an_iso_date_is_rejected_at_the_flag(self):
+        releases = self.releases_file(
+            [{"version": "v3.2.0", "commit": "a" * 40, "published": "2026-02-01"}])
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            cv.main(["classify", "--version", "v3.2.0", "--releases", releases,
+                     "--today", "not-a-date"])
+
+    def test_the_default_today_is_utc_not_the_runner_local_date(self):
+        # Two zones 26 hours apart, so whatever hour it is in UTC at least one
+        # of them has a different local date. `date.today()` would follow TZ and
+        # the expiry verdict would depend on which host ran the check.
+        for zone in ("Pacific/Kiritimati", "Etc/GMT+12"):
+            with self.subTest(zone=zone):
+                previous = os.environ.get("TZ")
+                os.environ["TZ"] = zone
+                time.tzset()
+                self.addCleanup(time.tzset)
+                if previous is None:
+                    self.addCleanup(os.environ.pop, "TZ", None)
+                else:
+                    self.addCleanup(os.environ.__setitem__, "TZ", previous)
+                self.assertEqual(
+                    cv.today_utc(),
+                    datetime.datetime.now(datetime.timezone.utc).date().isoformat())
 
     def test_a_releases_file_that_cannot_be_read_is_a_usage_failure_not_a_verdict(self):
         # A sweep that lost its input must not report the tree it never compared
