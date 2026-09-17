@@ -23,6 +23,13 @@ RULESET_FIELDS = ("name", "target", "enforcement", "bypass_actors", "conditions"
 # The only events GitHub will start a ruleset-required workflow on. A selected
 # workflow declaring none of them is inert, however valid its YAML is.
 RULESET_ELIGIBLE_TRIGGERS = frozenset({"pull_request", "pull_request_target", "merge_group"})
+# What the rulesets API returns beside the mutation payload: identity,
+# provenance, and timestamps. Any other top-level key is a candidate policy
+# field the contract does not pin, so it belongs in the review report.
+RULESET_METADATA_FIELDS = frozenset({
+    "id", "node_id", "source", "source_type", "created_at", "updated_at",
+    "_links", "links", "current_user_can_bypass",
+})
 
 
 class AuditError(Exception):
@@ -294,6 +301,35 @@ def image_mismatches(live, asserted, path: str = "") -> list[str]:
     return []
 
 
+def unpinned_keys(live, asserted, path: str = "") -> list[str]:
+    """Name every live key the reviewed image does not assert.
+
+    ADR 0188 tolerates keys GitHub adds, so the audit survives a schema that
+    grows, and accepts as residual that such a key is invisible by construction
+    — including one that weakens protection. Its stated mitigation is a periodic
+    review that pins newly security-relevant fields, which is a review task, not
+    a property the code can assert about itself. What the code can do is hand
+    that review its candidate set instead of asking a human to re-read a vendor
+    schema by eye. So an unpinned key is reported and never fails the audit:
+    deciding whether it matters stays the reviewer's judgment (#1410).
+    """
+    if isinstance(asserted, dict) and isinstance(live, dict):
+        keys = []
+        for key, value in live.items():
+            field = f"{path}.{key}" if path else key
+            if key in asserted:
+                keys.extend(unpinned_keys(value, asserted[key], field))
+            else:
+                keys.append(field)
+        return keys
+    if isinstance(asserted, list) and isinstance(live, list):
+        keys = []
+        for index, (value, pinned) in enumerate(zip(live, asserted)):
+            keys.extend(unpinned_keys(value, pinned, f"{path}[{index}]"))
+        return keys
+    return []
+
+
 def matches_image(live, image) -> bool:
     return not image_mismatches(live, image)
 
@@ -559,6 +595,70 @@ def verify_replacement_workflow(contract: dict, read) -> None:
     require(arm.get("runs-on") == expected_runner, "required arm is not routed through the trusted lane")
 
 
+def unpinned_ruleset_fields(ruleset: dict, image: dict) -> list[str]:
+    beside_the_payload = [
+        key for key in ruleset
+        if key not in RULESET_FIELDS and key not in RULESET_METADATA_FIELDS
+    ]
+    return unpinned_keys(normalize_ruleset(ruleset), image) + beside_the_payload
+
+
+def candidate_by_id(candidates: dict[int, dict], ruleset_id: int) -> dict:
+    require(
+        ruleset_id in candidates,
+        f"contracted ruleset {ruleset_id} is absent from the organization listing, "
+        "so its unpinned fields cannot be reported",
+    )
+    return candidates[ruleset_id]
+
+
+def candidate_by_name(candidates: dict[int, dict], name: str) -> dict:
+    named = [candidate for candidate in candidates.values() if candidate.get("name") == name]
+    require(
+        len(named) == 1,
+        f"expected exactly one organization ruleset named {name}, found {len(named)}",
+    )
+    return named[0]
+
+
+def unpinned_live_fields(contract: dict, live: dict, candidates: dict[int, dict], state: str) -> list[str]:
+    """Report, per contracted ruleset, the live fields no reviewed image pins.
+
+    Every contracted ruleset carries the same residual, so a review fed only
+    main-protection would leave the arm and both core-checks rulesets exactly as
+    unreviewable as before. Top-level keys are read from the unnormalized
+    ruleset: `normalize_ruleset` keeps the mutation payload, so a policy field
+    GitHub adds beside it would otherwise be invisible to this report as well as
+    to the comparison. Identity, provenance, and timestamps are not candidates.
+    """
+    matched = contract["preimage" if state == "ready" else "postimage"]
+    # Never fall back to `live`: it is normalized, so it carries no top-level
+    # key outside RULESET_FIELDS and its residual is empty by construction. A
+    # contracted ruleset absent from the listing would then report as pinning
+    # everything, precisely when it could not be read -- the silence ADR 0188
+    # rules out. An unreadable surface is a failure, not an empty one.
+    surfaces = [(matched["name"], candidate_by_id(candidates, contract["ruleset_id"]), matched)]
+    if state != "ready":
+        surfaces.append((
+            contract["arm_ruleset_name"],
+            candidate_by_name(candidates, contract["arm_ruleset_name"]),
+            contract["arm_ruleset"],
+        ))
+    for declaration in contract["deterministic_rulesets"]:
+        surfaces.append((
+            declaration["image"]["name"],
+            candidate_by_id(candidates, declaration["id"]),
+            declaration["image"],
+        ))
+    # Sorted so the review diff this feeds is stable between runs: an unordered
+    # list would show every field as moved whenever one is added.
+    return sorted(
+        f"{label}.{field}"
+        for label, ruleset, image in surfaces
+        for field in unpinned_ruleset_fields(ruleset, image)
+    )
+
+
 def audit(contract: dict, read=gh_pages, allow_unschedulable_selection: bool = False) -> dict:
     state, live = verify_ruleset_state(contract, read)
     candidates = verify_ruleset_exclusivity(contract, read, state)
@@ -599,6 +699,7 @@ def audit(contract: dict, read=gh_pages, allow_unschedulable_selection: bool = F
     verify_authorization(contract, read, {name: governed[name] for name in covered})
     verify_replacement_workflow(contract, read)
     return {
+        "unpinned_live_fields": unpinned_live_fields(contract, live, candidates, state),
         "organization": contract["organization"],
         "ruleset_id": contract["ruleset_id"],
         "current_path": current_path,
