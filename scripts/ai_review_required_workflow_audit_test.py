@@ -251,6 +251,8 @@ jobs:
         self.assertEqual(self.contract["preimage"]["bypass_actors"], [
             {"actor_id": None, "actor_type": "OrganizationAdmin", "bypass_mode": "always"},
             {"actor_id": 2740, "actor_type": "Integration", "bypass_mode": "always"},
+            {"actor_id": 4583107, "actor_type": "Integration", "bypass_mode": "always"},
+            {"actor_id": 4693283, "actor_type": "Integration", "bypass_mode": "always"},
         ])
         self.assertEqual(self.contract["preimage"]["conditions"], {
             "ref_name": {"exclude": [], "include": ["~DEFAULT_BRANCH", "refs/heads/develop"]},
@@ -372,6 +374,27 @@ jobs:
         self.assertEqual(AUDIT.audit(self.contract, self.read)["state"], "ready")
         checks[0]["context"] = "ci / something-else"
         self.assert_audit_error(f"deterministic ruleset {node['id']} drifted from its full reviewed image")
+
+    def test_the_contract_records_the_reviewed_automation_bypass_grants(self):
+        # `release-authorization` (4583107) and `merge-authorization` (4693283)
+        # hold bypass because they land work on protected default branches — the
+        # merge App squash-merges on green CI and cannot do so without it. They
+        # were granted and never written down. `ai-review-authorization`
+        # (4528902) deliberately holds none: review stays non-privileged, and an
+        # audit that re-froze live state would never be able to say so.
+        for name in ("preimage", "postimage", "arm_ruleset"):
+            self.assertEqual(
+                [actor["actor_id"] for actor in self.contract[name]["bypass_actors"]],
+                [None, 2740, 4583107, 4693283],
+                name,
+            )
+        for declaration in self.contract["deterministic_rulesets"]:
+            self.assertEqual(
+                [actor["actor_id"] for actor in declaration["image"]["bypass_actors"]],
+                [None, 4583107, 4693283],
+                declaration["stack"],
+            )
+        self.assertNotIn("4528902", json.dumps(self.contract))
 
     def test_rendered_payloads_are_verified_and_the_tool_has_no_mutation_path(self):
         self.assertEqual(

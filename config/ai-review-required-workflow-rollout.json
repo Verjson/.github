@@ -18,6 +18,16 @@
         "actor_id": 2740,
         "actor_type": "Integration",
         "bypass_mode": "always"
+      },
+      {
+        "actor_id": 4583107,
+        "actor_type": "Integration",
+        "bypass_mode": "always"
+      },
+      {
+        "actor_id": 4693283,
+        "actor_type": "Integration",
+        "bypass_mode": "always"
       }
     ],
     "conditions": {
@@ -75,6 +85,16 @@
         "actor_id": 2740,
         "actor_type": "Integration",
         "bypass_mode": "always"
+      },
+      {
+        "actor_id": 4583107,
+        "actor_type": "Integration",
+        "bypass_mode": "always"
+      },
+      {
+        "actor_id": 4693283,
+        "actor_type": "Integration",
+        "bypass_mode": "always"
       }
     ],
     "conditions": {
@@ -118,6 +138,16 @@
       },
       {
         "actor_id": 2740,
+        "actor_type": "Integration",
+        "bypass_mode": "always"
+      },
+      {
+        "actor_id": 4583107,
+        "actor_type": "Integration",
+        "bypass_mode": "always"
+      },
+      {
+        "actor_id": 4693283,
         "actor_type": "Integration",
         "bypass_mode": "always"
       }
@@ -166,6 +196,16 @@
       },
       {
         "actor_id": 2740,
+        "actor_type": "Integration",
+        "bypass_mode": "always"
+      },
+      {
+        "actor_id": 4583107,
+        "actor_type": "Integration",
+        "bypass_mode": "always"
+      },
+      {
+        "actor_id": 4693283,
         "actor_type": "Integration",
         "bypass_mode": "always"
       }
@@ -233,7 +273,9 @@
         "target": "branch",
         "enforcement": "active",
         "bypass_actors": [
-          {"actor_id": null, "actor_type": "OrganizationAdmin", "bypass_mode": "always"}
+          {"actor_id": null, "actor_type": "OrganizationAdmin", "bypass_mode": "always"},
+          {"actor_id": 4583107, "actor_type": "Integration", "bypass_mode": "always"},
+          {"actor_id": 4693283, "actor_type": "Integration", "bypass_mode": "always"}
         ],
         "conditions": {
           "ref_name": {"exclude": [], "include": ["~DEFAULT_BRANCH"]},
@@ -265,7 +307,9 @@
         "target": "branch",
         "enforcement": "active",
         "bypass_actors": [
-          {"actor_id": null, "actor_type": "OrganizationAdmin", "bypass_mode": "always"}
+          {"actor_id": null, "actor_type": "OrganizationAdmin", "bypass_mode": "always"},
+          {"actor_id": 4583107, "actor_type": "Integration", "bypass_mode": "always"},
+          {"actor_id": 4693283, "actor_type": "Integration", "bypass_mode": "always"}
         ],
         "conditions": {
           "ref_name": {"exclude": [], "include": ["~DEFAULT_BRANCH"]},
