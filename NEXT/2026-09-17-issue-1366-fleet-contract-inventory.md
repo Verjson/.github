@@ -32,9 +32,14 @@ Composite-action references name a directory rather than a file, so the path ind
 includes tree entries as well as blobs. Indexing blobs alone reported those two
 references `UNKNOWN`; with trees indexed they resolve, and both are drifted.
 
-Measured against the live fleet on 2026-09-17: 332 references across 67
-repositories — 280 drifted, 52 current, 0 unresolved — with 38 repositories
-carrying two or more distinct contract SHAs at once.
+Measured against the live fleet on 2026-09-17: of the organization's
+non-archived repositories, 67 reference the hub at all, contributing 332 pinned
+references — 280 drifted, 52 current, 0 unresolved — and 38 of those 67 carry two
+or more distinct contract SHAs at once. "0 unresolved" is a statement about pins
+that were successfully discovered; a repository whose workflow listing could not
+be read is reported separately as unreachable, and any unreachable repository or
+unreadable file makes the run exit non-zero rather than present a truncated
+inventory as a complete one.
 
 Every one of the 34 drifted `node-ci.yml` references resolves to a contract SHA
 that predates ADR 0178, so none of them publishes `deferred-ci`. The drift is not
