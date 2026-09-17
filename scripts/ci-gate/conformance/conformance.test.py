@@ -24,6 +24,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from adopter import ADOPTERS, AdopterContractMismatch, bind_inputs, callers_for  # noqa: E402
 from expressions import Evaluator, UnknownContext, UnsupportedExpression  # noqa: E402
+from contract_steps import (MissingContractStep,  # noqa: E402
+                            StepEnvironmentMismatch, execute_step,
+                            locate_step)
 from model import Scenario, model_workflow  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -347,6 +350,27 @@ class TheHarnessFailsClosed(unittest.TestCase):
         with self.assertRaises(UnsupportedExpression):
             Evaluator({}, functions={}).evaluate('success()')
 
+    def test_a_step_the_contract_no_longer_declares_raises(self):
+        """A test naming a dropped step must fail, not exercise nothing."""
+        with self.assertRaises(MissingContractStep):
+            locate_step(CONTRACT, 'acquire-secretless-dependencies',
+                        'Enforce the secretless event boundary that was renamed')
+        with self.assertRaises(MissingContractStep):
+            locate_step(CONTRACT, 'a-job-this-contract-does-not-declare',
+                        'Enforce the secretless event boundary')
+
+    def test_binding_an_environment_the_step_does_not_declare_raises(self):
+        """An input the contract stopped reading, or one it started reading,
+        both invalidate what an executed-script assertion claims to prove."""
+        step = locate_step(CONTRACT, 'acquire-secretless-dependencies',
+                           BOUNDARY_STEP)
+        with self.assertRaises(StepEnvironmentMismatch):
+            execute_step(step, {**SECRETLESS_PR_CALL, 'SECRETLESS_PT': 'true'})
+        with self.assertRaises(StepEnvironmentMismatch):
+            execute_step(step, {key: value for key, value
+                                in SECRETLESS_PR_CALL.items()
+                                if key != 'EVENT_NAME'})
+
 
 # The credential the secretless lanes exist to keep away from PR-controlled
 # code. A reference to `secrets.NODE_AUTH_TOKEN` anywhere in a step definition
@@ -408,6 +432,146 @@ class TheSecretlessLaneNeverReceivesThePackageCredential(unittest.TestCase):
             'the credentialed lane no longer passes NODE_AUTH_TOKEN to any '
             'step this detector can see, so the secretless assertion above '
             'proves nothing')
+
+
+# The contract's own secretless boundary, exercised by running it. `env:` names
+# come from the step itself (`contract_steps` rejects a binding set that is not
+# exactly the declared one), so renaming one of these inputs upstream fails
+# here instead of quietly leaving the matrix asserting against a stale surface.
+BOUNDARY_STEP = 'Enforce the secretless event boundary'
+
+
+def boundary_verdict(**bindings):
+    """Run the contract's boundary script and return its exit status."""
+    step = locate_step(CONTRACT, 'acquire-secretless-dependencies', BOUNDARY_STEP)
+    return execute_step(step, bindings)
+
+
+def admitted(**bindings):
+    return boundary_verdict(**bindings) == 0
+
+
+# A same-repository pull request opting into the PR lane: the one shape the
+# secretless PR lane is specified to admit.
+SECRETLESS_PR_CALL = dict(
+    APPROVED_INTERNAL_PACKAGES='@verjson/compliance',
+    EVENT_NAME='pull_request',
+    HEAD_REPOSITORY='Verjson/verjson-ci',
+    NODE_AUTH_TOKEN='x' * 40,
+    REPOSITORY='Verjson/verjson-ci',
+    SCHEMA_DIR='',
+    SECRETLESS_PR='true',
+    SECRETLESS_TRUSTED_REF='false',
+)
+TRUSTED_REF_CALL = {
+    **SECRETLESS_PR_CALL,
+    'EVENT_NAME': 'push',
+    'HEAD_REPOSITORY': '',
+    'SECRETLESS_PR': 'false',
+    'SECRETLESS_TRUSTED_REF': 'true',
+}
+
+
+class TheTwoSecretlessLanesAdmitDisjointEvents(unittest.TestCase):
+    """Requirement 3 of Verjson/.github#1369, and the security property under it.
+
+    The lanes differ only in which heads they trust: the PR lane admits a
+    same-repository `pull_request` and nothing else, the trusted-ref lane
+    admits `push` and explicit `workflow_dispatch` and nothing else. Both are
+    enforced in one script, so what matters is that no combination of the two
+    inputs lets an untrusted head reach the credentialed acquisition job.
+    """
+
+    def test_the_pr_lane_admits_a_same_repository_pull_request(self):
+        self.assertTrue(
+            admitted(**SECRETLESS_PR_CALL),
+            'the boundary refuses the one call the PR lane exists to admit, so '
+            'every refusal asserted below is satisfied by a script that '
+            'refuses everything')
+
+    def test_the_trusted_ref_lane_admits_a_push(self):
+        self.assertTrue(
+            admitted(**TRUSTED_REF_CALL),
+            'the boundary refuses the one call the trusted-ref lane exists to '
+            'admit')
+
+    def test_the_trusted_ref_lane_refuses_a_pull_request(self):
+        self.assertFalse(
+            admitted(**{**TRUSTED_REF_CALL, 'EVENT_NAME': 'pull_request',
+                        'HEAD_REPOSITORY': 'fork/verjson-ci'}),
+            'secretless-trusted-ref admitted a pull_request, so PR-controlled '
+            'code entered the credentialed acquisition job by declaring the '
+            'wrong lane')
+
+    def test_the_pr_lane_refuses_a_fork_head(self):
+        self.assertFalse(
+            admitted(**{**SECRETLESS_PR_CALL,
+                        'HEAD_REPOSITORY': 'fork/verjson-ci'}),
+            'a fork pull request was admitted to the acquisition job, which '
+            'holds the package credential')
+
+    def test_the_pr_lane_refuses_every_other_event(self):
+        for event in ('push', 'workflow_dispatch', 'pull_request_target',
+                      'issue_comment', 'schedule', ''):
+            with self.subTest(event=event):
+                self.assertFalse(
+                    admitted(**{**SECRETLESS_PR_CALL, 'EVENT_NAME': event}),
+                    'secretless-pr is restricted to pull_request validation')
+
+    def test_the_trusted_ref_lane_refuses_every_event_but_push_and_dispatch(self):
+        for event in ('pull_request', 'pull_request_target', 'issue_comment',
+                      'schedule', ''):
+            with self.subTest(event=event):
+                self.assertFalse(
+                    admitted(**{**TRUSTED_REF_CALL, 'EVENT_NAME': event}),
+                    'the trusted-ref lane admitted an event whose head is not '
+                    'a trusted ref')
+        self.assertTrue(
+            admitted(**{**TRUSTED_REF_CALL, 'EVENT_NAME': 'workflow_dispatch'}),
+            'an explicit dispatch is the trusted-ref lane\'s second admitted '
+            'event; refusing it means the refusals above prove less than they '
+            'claim')
+
+    def test_neither_lane_is_admitted_when_both_are_declared(self):
+        """The combination is the one an attacker would want: a `pull_request`
+        that also claims the trusted-ref lane, hoping one guard admits it."""
+        for event in ('pull_request', 'push', 'workflow_dispatch'):
+            with self.subTest(event=event):
+                self.assertFalse(
+                    admitted(**{**SECRETLESS_PR_CALL, 'EVENT_NAME': event,
+                                'SECRETLESS_PR': 'true',
+                                'SECRETLESS_TRUSTED_REF': 'true'}),
+                    'both secretless modes were admitted at once, so which '
+                    'head the acquisition job trusts is no longer decided by '
+                    'either lane\'s rule')
+
+    def test_a_call_declaring_neither_lane_is_refused(self):
+        """The acquisition job's own guard already requires one of the two, so
+        this is defense in depth — and it is what makes the exactly-one rule a
+        rule rather than a side effect of the guard above it."""
+        self.assertFalse(
+            admitted(**{**SECRETLESS_PR_CALL, 'SECRETLESS_PR': 'false',
+                        'SECRETLESS_TRUSTED_REF': 'false'}),
+            'the acquisition job ran with neither secretless mode declared')
+
+    def test_both_lanes_refuse_credentialed_submodule_acquisition(self):
+        for lane, call in (('secretless-pr', SECRETLESS_PR_CALL),
+                           ('secretless-trusted-ref', TRUSTED_REF_CALL)):
+            with self.subTest(lane=lane):
+                self.assertFalse(
+                    admitted(**{**call, 'SCHEMA_DIR': 'schema'}),
+                    'a secretless lane admitted a schema-dir call, whose '
+                    '`npm ci` in build-test is handed NODE_AUTH_TOKEN')
+
+    def test_both_lanes_refuse_an_acquisition_with_no_credential(self):
+        for lane, call in (('secretless-pr', SECRETLESS_PR_CALL),
+                           ('secretless-trusted-ref', TRUSTED_REF_CALL)):
+            with self.subTest(lane=lane):
+                self.assertFalse(
+                    admitted(**{**call, 'NODE_AUTH_TOKEN': ''}),
+                    'the acquisition job continued without the credential it '
+                    'exists to hold, so it would report success having '
+                    'acquired nothing')
 
 
 if __name__ == '__main__':
