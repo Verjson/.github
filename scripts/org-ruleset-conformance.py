@@ -110,6 +110,7 @@ def read_policy(policy: Path):
         {
             "organization",
             "release_authorization_bypass",
+            "required_check_producer_app_id",
             "bypassless_required_workflows",
         },
         "ruleset policy",
@@ -142,6 +143,10 @@ def read_policy(policy: Path):
         raise AuditDataError(
             "release authorization policy must require an always-bypass Integration"
         )
+    producer_app_id = require_positive_integer(
+        document["required_check_producer_app_id"],
+        "ruleset policy.required_check_producer_app_id",
+    )
     exceptions = require_array(
         document["bypassless_required_workflows"],
         "ruleset policy.bypassless_required_workflows",
@@ -184,7 +189,7 @@ def read_policy(policy: Path):
             )
         names.add(parsed["name"])
         parsed_exceptions.append(parsed)
-    return organization, expected, parsed_exceptions
+    return organization, expected, producer_app_id, parsed_exceptions
 
 
 def list_ruleset_ids(organization: str):
@@ -282,7 +287,22 @@ def read_ruleset(organization: str, ruleset_id: int):
     rules = require_array(ruleset.get("rules"), f"ruleset {ruleset_id}.rules")
     for rule_index, rule_value in enumerate(rules):
         rule = require_mapping(rule_value, f"ruleset {ruleset_id} rule {rule_index}")
-        require_string(rule.get("type"), f"ruleset {ruleset_id} rule {rule_index}.type")
+        rule_location = f"ruleset {ruleset_id} rule {rule_index}"
+        if require_string(rule.get("type"), f"{rule_location}.type") != "required_status_checks":
+            continue
+        parameters = require_mapping(rule.get("parameters"), f"{rule_location}.parameters")
+        checks = require_array(
+            parameters.get("required_status_checks"),
+            f"{rule_location}.parameters.required_status_checks",
+        )
+        for check_index, check_value in enumerate(checks):
+            check_location = f"{rule_location}.parameters.required_status_checks[{check_index}]"
+            check = require_mapping(check_value, check_location)
+            require_string(check.get("context"), f"{check_location}.context")
+            if check.get("integration_id") is not None:
+                require_positive_integer(
+                    check["integration_id"], f"{check_location}.integration_id"
+                )
     return ruleset
 
 
@@ -338,10 +358,31 @@ def is_exact_bypassless_required_workflow(ruleset: dict, exceptions: list[dict])
     )
 
 
+def producer_binding_findings(ruleset: dict, producer_app_id: int):
+    """Required contexts an App other than the declared producer could satisfy."""
+    findings = []
+    for rule in ruleset["rules"]:
+        if rule.get("type") != "required_status_checks":
+            continue
+        for check in rule["parameters"]["required_status_checks"]:
+            binding = check.get("integration_id")
+            if binding == producer_app_id:
+                continue
+            findings.append(
+                (
+                    check["context"],
+                    "is not bound to a producer App"
+                    if binding is None
+                    else f"is bound to App {binding}, not the declared producer App {producer_app_id}",
+                )
+            )
+    return findings
+
+
 def main(arguments: list[str] | None = None) -> int:
     try:
         policy = select_policy(sys.argv[1:] if arguments is None else arguments)
-        organization, expected_actor, bypassless_exceptions = read_policy(policy)
+        organization, expected_actor, producer_app_id, bypassless_exceptions = read_policy(policy)
         ruleset_ids = list_ruleset_ids(organization)
         rulesets = [read_ruleset(organization, ruleset_id) for ruleset_id in ruleset_ids]
     except (OSError, AuditDataError, RuntimeError) as error:
@@ -359,11 +400,22 @@ def main(arguments: list[str] | None = None) -> int:
             ruleset, bypassless_exceptions
         )
     ]
-    if failures:
+    unbound = [
+        (ruleset, context, diagnostic)
+        for ruleset in rulesets
+        for context, diagnostic in producer_binding_findings(ruleset, producer_app_id)
+    ]
+    if failures or unbound:
         for ruleset in failures:
             print(
                 f"ERROR: {ruleset['name']} ({ruleset['id']}): "
                 "required release authorization bypass is absent",
+                file=sys.stderr,
+            )
+        for ruleset, context, diagnostic in unbound:
+            print(
+                f"ERROR: {ruleset['name']} ({ruleset['id']}): "
+                f"required status check {context!r} {diagnostic}",
                 file=sys.stderr,
             )
         return 1

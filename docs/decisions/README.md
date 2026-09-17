@@ -12,6 +12,7 @@ Reverse-chronological index of org-level decisions.
 <!-- prettier-ignore -->
 | # | Date | Decision |
 |---|------|----------|
+| [0190](0190-pin-the-producer-app-of-every-required-status-check/README.md) | 2026-09-17 | Pin the producer App of every required status check |
 | [0189](0189-scheduled-audits-adjudicate-findings-against-a-reviewed-expectation/README.md) | 2026-09-17 | Scheduled audits adjudicate findings against a reviewed expectation |
 | [0188](0188-contract-audits-assert-fields-against-a-growing-vendor-schema/README.md) | 2026-09-17 | Contract audits assert fields, and a growing vendor schema is not drift |
 | [0187](0187-provision-the-review-environment-before-the-caller/README.md) | 2026-09-17 | Provision the review environment before the review caller |
