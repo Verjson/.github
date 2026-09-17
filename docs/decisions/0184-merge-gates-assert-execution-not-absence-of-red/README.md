@@ -55,8 +55,8 @@ class of error as parsing an adopter-controlled workflow header and trusting it.
 fails closed with its own exit code and its own message.** The implementation is
 `scripts/assert-mergeable-head.sh`.
 
-- **Gate A — required-context completeness.** The required set is read from the
-  ruleset governing the pull request's *base ref*
+- **Gate A — required-context completeness and provenance.** The required set
+  is read from the ruleset governing the pull request's *base ref*
   (`repos/{repo}/rules/branches/{ref}`), never inferred from the head. Every
   required context must be present on the head, `COMPLETED`, and concluded
   `SUCCESS`, `NEUTRAL`, or `SKIPPED`. An absent required context fails closed
@@ -64,6 +64,20 @@ fails closed with its own exit code and its own message.** The implementation is
   satisfied by its own absence. A base ref that declares no required checks at
   all fails closed too, because a green rollup proves nothing about an
   ungoverned ref.
+
+  Matching is by **exact context name plus the app the ruleset binds it to**.
+  A draft of this script also matched a synthesized `"<workflowName> / <name>"`
+  shape, which let *any* workflow satisfy a required context by naming one of
+  its jobs after it — reintroducing the ADR 0024 class this gate exists to
+  close, from a direction branch protection itself is not vulnerable to. When a
+  ruleset binds a context to an `integration_id`, a check published by any other
+  app, and a legacy commit status (which carries no app identity at all), are
+  both refused as `wrong producer`.
+
+  Because app identity is required, the check inventory is read from
+  `commits/{sha}/check-runs` and `commits/{sha}/status` rather than from
+  `gh pr view --json statusCheckRollup`: that projection carries no app id, so a
+  gate built on it cannot know *who* produced a required check.
 - **Gate B — positive evidence of execution.** A rollup entry proves a check
   *reported*; it does not prove a check *worked*. ADR 0178's `deferred-ci` job
   runs only on a defer, so its having run at all — any conclusion other than
@@ -78,6 +92,12 @@ fails closed with its own exit code and its own message.** The implementation is
 Every failure is a `::error::` and a distinct exit code (`3`, `4`, `5`; `1` for
 an assertion that could not be evaluated, `2` for usage). The script never
 prints a bare `false` and never exits `0` on an unanswered question.
+
+**No gate's matching rule is configurable from the environment.** A draft
+exposed the two deferral patterns as overridable variables. That made disabling
+Gate B a single-variable edit at the call site — strictly cheaper, and far less
+visible, than the allowlist widening this decision exists to prevent. A gate
+whose strictness is tunable by its caller is not a gate.
 
 ### Why three gates rather than a better single predicate
 
@@ -105,8 +125,9 @@ merge gated on a set the head itself chose.
   it keep working unchanged. This decision adds a stronger assertion beside it
   rather than altering a script other repositories already invoke; nothing is
   silently made stricter under an existing name.
-- The new script requires `repos/{repo}/rules/branches/{ref}` read access, which
-  a token with `contents: read` on the repository already has. On a repository
+- The new script reads `repos/{repo}/rules/branches/{ref}`. Verified against the
+  live endpoint with an ordinary repository-read token: it returns this
+  repository's `shell-tests` required context without `administration` scope. On a repository
   with no ruleset on its default branch it will refuse to pass, by design. That
   is a real behavioral difference from the old predicate and the reason it ships
   as a new entry point rather than as an in-place upgrade.
