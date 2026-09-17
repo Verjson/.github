@@ -339,10 +339,14 @@ def concise_mismatches(mismatches: list[str]) -> str:
     return f"{'; '.join(sample)}{suffix}"
 
 
+def concise_findings(name: str, findings: list[str]) -> str:
+    sample = findings[:8]
+    suffix = f" (plus {len(findings) - len(sample)} more)" if len(findings) > len(sample) else ""
+    return f"{name}: missing={len(findings)} sample={sample}{suffix}"
+
+
 def concise_missing(name: str, missing: list[str]) -> None:
-    sample = missing[:8]
-    suffix = f" (plus {len(missing) - len(sample)} more)" if len(missing) > len(sample) else ""
-    require(not missing, f"{name}: missing={len(missing)} sample={sample}{suffix}")
+    require(not missing, concise_findings(name, missing))
 
 
 def selected_repositories(read, organization: str, kind: str, name: str) -> set[str]:
@@ -575,7 +579,7 @@ def verify_adopter_conformance(contract: dict, read, repositories: list[dict], c
             f"repos/{full_name}/contents/.github/workflows?ref={branch}",
             allow_missing=True,
         )
-        present = {entry.get("path") for entry in entries}
+        present = {entry.get("path") for entry in entries if entry.get("type") == "file"}
         findings.extend(
             f"{full_name}:{caller}"
             for caller in conformance["caller_workflows"]
@@ -615,11 +619,19 @@ def verify_adopter_conformance(contract: dict, read, repositories: list[dict], c
             environment_findings.append(
                 f"{label}:branch_policies {admitted} do not admit only {branch!r}"
             )
-    concise_missing("armed adopters with an incomplete generated adopter caller set", sorted(findings))
-    concise_missing(
-        "armed adopters without a conforming review environment",
-        sorted(environment_findings),
-    )
+    # Both classes are reported together. The audit runs daily, so surfacing one
+    # class at a time would make the fleet take as many scheduled days to become
+    # visible as there are classes — the same "the control could not tell you"
+    # shape this audit exists to remove.
+    reported = [
+        concise_findings(name, items)
+        for name, items in (
+            ("armed adopters with an incomplete generated adopter caller set", sorted(findings)),
+            ("armed adopters without a conforming review environment", sorted(environment_findings)),
+        )
+        if items
+    ]
+    require(not reported, " | ".join(reported))
 
 
 def read_workflow(read, selected: dict, label: str) -> dict:

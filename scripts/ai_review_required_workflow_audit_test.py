@@ -1,5 +1,6 @@
 import base64
 import copy
+import subprocess
 import importlib.util
 import json
 import tempfile
@@ -734,12 +735,95 @@ jobs:
             r"review environment.*Verjson/beta:ai-review-app:branch_policies.*'main'.*develop/next",
         )
 
+    def run_gh_api(self, returncode, stdout, stderr):
+        completed = subprocess.CompletedProcess([], returncode, stdout=stdout, stderr=stderr)
+        original = AUDIT.subprocess.run
+        AUDIT.subprocess.run = lambda *args, **kwargs: completed
+        self.addCleanup(setattr, AUDIT.subprocess, "run", original)
+
+    def test_a_tolerated_absence_is_a_404_and_nothing_else(self):
+        # Reporting "absent" for an expired credential would convert a token
+        # problem into a fleet-wide non-adoption report, and reporting it for a
+        # 500 would let a transient API failure read as remediated drift. Only
+        # the status that actually means "this does not exist" is tolerated.
+        for returncode, stderr in (
+            (1, "gh: Bad credentials (HTTP 401)"),
+            (1, "gh: Forbidden (HTTP 403)"),
+            (1, "gh: Internal Server Error (HTTP 500)"),
+            (1, ""),
+        ):
+            with self.subTest(stderr=stderr):
+                self.run_gh_api(returncode, "", stderr)
+                with self.assertRaisesRegex(AUDIT.AuditError, r"GitHub API read failed for repos/x"):
+                    AUDIT.gh_pages("repos/x", allow_missing=True)
+
+    def test_a_caller_finding_does_not_mask_an_environment_finding(self):
+        # The audit runs daily. Reporting one class of adopter finding at a time
+        # makes the fleet take as many scheduled days to become visible as there
+        # are classes, which is the same "the control could not tell you" shape
+        # #1404 set out to remove.
+        self.remove_adopter_caller("Verjson/alpha", ".github/workflows/ai-review-merge.yml")
+        del self.fixture["repos/Verjson/beta/environments/ai-review-app"]
+        del self.fixture["repos/Verjson/beta/environments/ai-review-app/deployment-branch-policies"]
+        message = self.audit_error_message()
+        self.assertIn("Verjson/alpha:.github/workflows/ai-review-merge.yml", message)
+        self.assertIn("Verjson/beta:ai-review-app:absent", message)
+
+    def test_an_unarmed_repository_owes_no_caller_set_and_no_environment(self):
+        # A repository the arm does not cover cannot be blocked by it, so
+        # demanding the review lane there would report 70 of 99 organization
+        # repositories as findings and bury the 4 that are actually broken.
+        rows = self.fixture["orgs/Verjson/properties/values?per_page=100"][0]
+        beta = next(row for row in rows if row["repository_full_name"] == "Verjson/beta")
+        beta["properties"] = [{"property_name": "verjson-stack", "value": "node"}]
+        for path in list(self.fixture):
+            if path.startswith("repos/Verjson/beta/contents") or "/beta/environments/" in path:
+                del self.fixture[path]
+        report = AUDIT.audit(self.contract, self.read)
+        self.assertEqual(report["armed_repositories"], 1)
+
+    def test_only_a_file_satisfies_a_declared_caller(self):
+        # The listing is adopter-controlled. A directory at the caller's path is
+        # listed under that exact path and is not a workflow: `gate-rearm.yml`
+        # reading the caller still fails, so a name-only membership test would
+        # certify an adopter the arm cannot admit.
+        listing = self.adopter_workflow_listing("Verjson/alpha")
+        for entry in listing:
+            if entry["path"] == ".github/workflows/ai-review-merge.yml":
+                entry["type"] = "dir"
+        self.assert_audit_error(
+            r"adopter caller set.*Verjson/alpha:\.github/workflows/ai-review-merge\.yml",
+        )
+
     def test_malformed_contract_fails_with_controlled_diagnostics(self):
         for section, key, value, diagnostic in (
             (None, "ruleset_id", True, "ruleset ID"),
             ("authorization", "variables", [{}], "authorization variables"),
             ("authorization", "app_permissions", {"checks": "write"}, "permission contract"),
             ("authorization", "app_events", ["pull_request"], "event contract"),
+            ("adopter_conformance", "caller_workflows", [], "adopter caller workflows"),
+            ("adopter_conformance", "caller_workflows", ["ai-review-merge.yml"], "adopter caller workflows"),
+            (
+                "adopter_conformance",
+                "caller_workflows",
+                [".github/workflows/a.yml", ".github/workflows/a.yml"],
+                "adopter caller workflows",
+            ),
+            # A caller set that omits the one member `gate-rearm.yml` hard-requires
+            # would let the audit certify the exact state #1401 reported.
+            (
+                "adopter_conformance",
+                "caller_workflows",
+                [".github/workflows/ai-privileged-merge.yml"],
+                "omits the review caller",
+            ),
+            ("adopter_conformance", "environment", "ai-review", "review environment contract"),
+            (
+                "adopter_conformance",
+                "environment_deployment_branch_policy",
+                {"protected_branches": True, "custom_branch_policies": True},
+                "branch-policy contract",
+            ),
         ):
             with self.subTest(diagnostic=diagnostic), tempfile.TemporaryDirectory() as directory:
                 contract = copy.deepcopy(self.contract)
