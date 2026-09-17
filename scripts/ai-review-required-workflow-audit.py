@@ -342,9 +342,19 @@ def verify_ruleset_state(contract: dict, read, expected: str | None = None) -> t
     elif matches_image(live, contract["postimage"]):
         state = "split"
     else:
+        # Name the nearest image and the fields that disagree. "Differs from both"
+        # alone sent a reader off to diff two forty-line objects by eye, which is
+        # how a key GitHub added looked exactly like a real regression (#1404).
+        nearest, mismatches = min(
+            (
+                (name, image_mismatches(live, contract[name]))
+                for name in ("preimage", "postimage")
+            ),
+            key=lambda candidate: len(candidate[1]),
+        )
         raise AuditError(
             "main-protection differs from both full reviewed preimage and postimage: "
-            f"postimage {concise_mismatches(image_mismatches(live, contract['postimage']))}"
+            f"nearest {nearest}: {concise_mismatches(mismatches)}"
         )
     require(expected is None or state == expected, f"ruleset state is {state}, expected {expected}")
     return state, live

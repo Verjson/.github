@@ -412,6 +412,46 @@ jobs:
         )
         self.assertIn("changelog-contract", self.contract["deterministic_required_status_contexts"])
 
+    def test_tolerating_an_unknown_key_never_tolerates_an_unexpected_value(self):
+        # The one property that distinguishes this comparison from "accept what
+        # the API returns". Each case asserts the same field the contract pins,
+        # alongside a vendor key that must stay ignored.
+        parameters = self.live_pull_request_parameters()
+        parameters["require_extra_approval_for_unattributed_changes"] = True
+        for value in (0, 2, "1", None):
+            with self.subTest(required_approving_review_count=value):
+                parameters["required_approving_review_count"] = value
+                self.assert_audit_error("differs from both full reviewed preimage and postimage")
+        parameters["required_approving_review_count"] = 1
+        self.assertEqual(AUDIT.audit(self.contract, self.read)["state"], "ready")
+
+    def test_a_pinned_true_is_not_satisfied_by_a_truthy_one(self):
+        # JSON `true` and `1` are distinct policy answers, and Python's `1 == True`
+        # would otherwise let a ruleset flip type without reporting drift.
+        self.live_pull_request_parameters()["require_code_owner_review"] = 1
+        self.assert_audit_error("differs from both full reviewed preimage and postimage")
+
+    def test_an_asserted_key_the_api_stops_returning_is_drift(self):
+        # The failure mode a subset comparison invites: silence when the field
+        # the contract depends on simply is not there any more.
+        del self.live_pull_request_parameters()["require_last_push_approval"]
+        self.assert_audit_error("differs from both full reviewed preimage and postimage")
+
+    def test_an_unrecorded_bypass_actor_is_still_drift(self):
+        # Unknown-key tolerance must not leak into list membership: a bypass
+        # grant nobody wrote down is exactly what this audit exists to surface.
+        self.fixture[self.ruleset_path][0]["bypass_actors"].append(
+            {"actor_id": 4528902, "actor_type": "Integration", "bypass_mode": "always"},
+        )
+        self.assert_audit_error("differs from both full reviewed preimage and postimage")
+
+    def test_a_drift_report_names_the_field_that_disagrees(self):
+        # "differs from both images" sent the reader to diff two 40-line objects
+        # by eye, which is how a vendor-added key looked the same as a real
+        # regression for as long as it did.
+        self.live_pull_request_parameters()["required_approving_review_count"] = 0
+        self.assert_audit_error(r"required_approving_review_count: 0 is not 1")
+
     def test_rendered_payloads_are_verified_and_the_tool_has_no_mutation_path(self):
         self.assertEqual(
             AUDIT.render_payload(self.contract, "split", self.read),
