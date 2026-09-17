@@ -58,6 +58,57 @@ else
   pass "skipped UTF-8 collation check — en_US.UTF-8 not installed"
 fi
 
+# 1c. The generated region is a fixed point of prettier (#1382). prettier owns
+# markdown formatting in a TypeScript adopter's canonical `ci` lane, and it
+# reformats every table it is handed: padding each cell to the column width and
+# separating the table from the closing marker with a blank line. That made
+# `prettier --check` and `gen-adr-index.sh --check` mutually unsatisfiable over
+# one generated file, and each adopter discovered it only by going red. The
+# guard comment and the trailing blank line are what make the two agree, so
+# assert the emitted shape exactly rather than only that the table is present.
+d="$(new_fixture)"
+adr "$d" "0001-first" "0001 — First" "2026-07-01"
+adr "$d" "0002-second" "0002 — Second" "2026-07-02"
+gen "$d"
+idx="$d/docs/decisions/README.md"
+begin_line="$(grep -n '^<!-- BEGIN ADR INDEX -->$' "$idx" | cut -d: -f1)"
+end_line="$(grep -n '^<!-- END ADR INDEX -->$' "$idx" | cut -d: -f1)"
+[ "$(sed -n "$((begin_line + 1))p" "$idx")" = '<!-- prettier-ignore -->' ] \
+  && pass "the generated region opens with the prettier-ignore guard (#1382)" \
+  || fail "the generated region does not open with the prettier-ignore guard (#1382)"
+[ -n "$end_line" ] && [ -z "$(sed -n "$((end_line - 1))p" "$idx")" ] \
+  && pass "the generated table is separated from the closing marker (#1382)" \
+  || fail "no blank line before the closing marker — prettier will insert one (#1382)"
+
+# Regeneration is a fixed point of itself as well: emitting the guard and the
+# blank line must not make the second run see the first run's output as stale.
+cp "$idx" "$d/index-first-pass"
+gen "$d"
+cmp -s "$d/index-first-pass" "$idx" \
+  && pass "regenerating an already-current index changes nothing" \
+  || fail "regeneration is not idempotent"
+
+# The real agreement, where a prettier is actually installed. The assertions
+# above pin the shape that produces it; this one proves the shape is the right
+# one against the formatter itself, under each proseWrap setting — the padded
+# table prettier emits by default, and the compact one it emits for `never`.
+if command -v prettier >/dev/null 2>&1; then
+  prettier_agrees=1
+  for prose_wrap in preserve never always; do
+    printf '{"proseWrap":"%s"}\n' "$prose_wrap" >"$d/.prettierrc"
+    cp "$idx" "$d/index-before-prettier"
+    prettier --write "$idx" >/dev/null 2>&1 || prettier_agrees=0
+    cmp -s "$d/index-before-prettier" "$idx" || prettier_agrees=0
+    gen "$d" --check || prettier_agrees=0
+  done
+  rm -f "$d/.prettierrc"
+  [ "$prettier_agrees" -eq 1 ] \
+    && pass "prettier leaves the generated index byte-identical and --check current (#1382)" \
+    || fail "prettier reformatted the generated index or left --check stale (#1382)"
+else
+  pass "skipped prettier agreement check — prettier not installed"
+fi
+
 # 2. ADR directory with no README -> fail fast.
 d="$(new_fixture)"; mkdir -p "$d/docs/decisions/0001-noreadme"
 gen "$d" && fail "an ADR dir without README must fail" || pass "ADR dir without README fails fast"
