@@ -13,6 +13,9 @@ exact defect it exists to prevent: #184 was green.
 Step 3 of the contract-distribution sequence (Verjson/.github#1369, ADR 0185).
 """
 
+import base64
+import hashlib
+import json
 import sys
 import tempfile
 import unittest
@@ -442,13 +445,13 @@ BOUNDARY_STEP = 'Enforce the secretless event boundary'
 
 
 def boundary_verdict(**bindings):
-    """Run the contract's boundary script and return its exit status."""
+    """Run the contract's boundary script over one call's inputs."""
     step = locate_step(CONTRACT, 'acquire-secretless-dependencies', BOUNDARY_STEP)
     return execute_step(step, bindings)
 
 
 def admitted(**bindings):
-    return boundary_verdict(**bindings) == 0
+    return boundary_verdict(**bindings).admitted
 
 
 # A same-repository pull request opting into the PR lane: the one shape the
@@ -472,7 +475,28 @@ TRUSTED_REF_CALL = {
 }
 
 
-class TheTwoSecretlessLanesAdmitDisjointEvents(unittest.TestCase):
+class RefusalAssertions:
+    """Assert *why* the contract refused, not only that it did.
+
+    A non-zero exit is satisfied by a fixture that has drifted into being
+    malformed, or by a validator that refuses every input. Naming the reason is
+    what keeps each case bound to the rule it claims to exercise.
+    """
+
+    def assertRefusedBecause(self, result, reason, message):
+        self.assertNotEqual(0, result.status, message)
+        self.assertIn(
+            reason, result.output,
+            f'refused, but not because {reason!r}; this case no longer '
+            f'exercises the rule it names:\n{result.output.strip()[-400:]}')
+
+    def assertAdmitted(self, result, message):
+        self.assertEqual(
+            0, result.status,
+            f'{message}\n{result.output.strip()[-400:]}')
+
+
+class TheTwoSecretlessLanesAdmitDisjointEvents(RefusalAssertions, unittest.TestCase):
     """Requirement 3 of Verjson/.github#1369, and the security property under it.
 
     The lanes differ only in which heads they trust: the PR lane admits a
@@ -496,17 +520,20 @@ class TheTwoSecretlessLanesAdmitDisjointEvents(unittest.TestCase):
             'admit')
 
     def test_the_trusted_ref_lane_refuses_a_pull_request(self):
-        self.assertFalse(
-            admitted(**{**TRUSTED_REF_CALL, 'EVENT_NAME': 'pull_request',
-                        'HEAD_REPOSITORY': 'fork/verjson-ci'}),
+        self.assertRefusedBecause(
+            boundary_verdict(**{**TRUSTED_REF_CALL,
+                                'EVENT_NAME': 'pull_request',
+                                'HEAD_REPOSITORY': 'fork/verjson-ci'}),
+            'secretless-trusted-ref accepts only push',
             'secretless-trusted-ref admitted a pull_request, so PR-controlled '
             'code entered the credentialed acquisition job by declaring the '
             'wrong lane')
 
     def test_the_pr_lane_refuses_a_fork_head(self):
-        self.assertFalse(
-            admitted(**{**SECRETLESS_PR_CALL,
-                        'HEAD_REPOSITORY': 'fork/verjson-ci'}),
+        self.assertRefusedBecause(
+            boundary_verdict(**{**SECRETLESS_PR_CALL,
+                                'HEAD_REPOSITORY': 'fork/verjson-ci'}),
+            'fork PRs receive no package credential',
             'a fork pull request was admitted to the acquisition job, which '
             'holds the package credential')
 
@@ -537,10 +564,12 @@ class TheTwoSecretlessLanesAdmitDisjointEvents(unittest.TestCase):
         that also claims the trusted-ref lane, hoping one guard admits it."""
         for event in ('pull_request', 'push', 'workflow_dispatch'):
             with self.subTest(event=event):
-                self.assertFalse(
-                    admitted(**{**SECRETLESS_PR_CALL, 'EVENT_NAME': event,
-                                'SECRETLESS_PR': 'true',
-                                'SECRETLESS_TRUSTED_REF': 'true'}),
+                self.assertRefusedBecause(
+                    boundary_verdict(**{**SECRETLESS_PR_CALL,
+                                        'EVENT_NAME': event,
+                                        'SECRETLESS_PR': 'true',
+                                        'SECRETLESS_TRUSTED_REF': 'true'}),
+                    'enable exactly one secretless event mode',
                     'both secretless modes were admitted at once, so which '
                     'head the acquisition job trusts is no longer decided by '
                     'either lane\'s rule')
@@ -558,8 +587,9 @@ class TheTwoSecretlessLanesAdmitDisjointEvents(unittest.TestCase):
         for lane, call in (('secretless-pr', SECRETLESS_PR_CALL),
                            ('secretless-trusted-ref', TRUSTED_REF_CALL)):
             with self.subTest(lane=lane):
-                self.assertFalse(
-                    admitted(**{**call, 'SCHEMA_DIR': 'schema'}),
+                self.assertRefusedBecause(
+                    boundary_verdict(**{**call, 'SCHEMA_DIR': 'schema'}),
+                    'do not permit credentialed submodule acquisition',
                     'a secretless lane admitted a schema-dir call, whose '
                     '`npm ci` in build-test is handed NODE_AUTH_TOKEN')
 
@@ -572,6 +602,178 @@ class TheTwoSecretlessLanesAdmitDisjointEvents(unittest.TestCase):
                     'the acquisition job continued without the credential it '
                     'exists to hold, so it would report success having '
                     'acquired nothing')
+
+
+# The contract's own allowlist enforcement, exercised by running it against a
+# synthetic checkout. Requirement 2 of Verjson/.github#1369 turns on a package
+# deliberately outside the allowlist, and what the contract does with one is
+# decided by an embedded Python program, not by a job guard.
+LOCK_VALIDATION_STEP = 'Validate approved internal dependency lock'
+
+
+def github_packages_url(package, version='1.0.0'):
+    return f'https://npm.pkg.github.com/download/{package}/{version}/deadbeef'
+
+
+def lock_integrity(package):
+    """One exact, well-formed sha512 lock integrity, stable per package.
+
+    The validator requires a decodable 64-byte digest, so this has to be a real
+    base64 encoding rather than a plausible-looking literal; deriving it from
+    the name keeps a repeated download URL consistent with itself.
+    """
+    digest = hashlib.sha512(package.encode('utf-8')).digest()
+    return 'sha512-' + base64.b64encode(digest).decode('ascii')
+
+
+def npm_lock(*internal_packages):
+    """A lockfileVersion 3 lock whose only internal deps are those named."""
+    packages = {'': {'name': 'synthetic-adopter', 'version': '0.0.0'}}
+    for package in internal_packages:
+        packages[f'node_modules/{package}'] = {
+            'version': '1.0.0',
+            'resolved': github_packages_url(package),
+            'integrity': lock_integrity(package),
+        }
+    # One public dependency, so the lock is not exclusively internal and the
+    # validator's "ignore anything outside the approved scopes" path is
+    # actually taken rather than assumed.
+    packages['node_modules/left-pad'] = {
+        'version': '1.3.0',
+        'resolved': 'https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz',
+        'integrity': lock_integrity('left-pad'),
+    }
+    return {'name': 'synthetic-adopter', 'lockfileVersion': 3,
+            'requires': True, 'packages': packages}
+
+
+def _write_manifest(directory, lock):
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / 'package.json').write_text(
+        json.dumps({'name': 'synthetic-adopter', 'version': '0.0.0'}),
+        encoding='utf-8')
+    (directory / 'package-lock.json').write_text(json.dumps(lock),
+                                                 encoding='utf-8')
+
+
+def lock_validation(approved, lock, *, nested=None, nested_manifests=''):
+    """Run the contract's lock validator over a synthetic checkout.
+
+    `nested` maps a repository-relative directory to the lock it should
+    contain, so a manifest's own approvals can be exercised separately from
+    the root's.
+    """
+    step = locate_step(CONTRACT, 'acquire-secretless-dependencies',
+                       LOCK_VALIDATION_STEP)
+    with tempfile.TemporaryDirectory() as scratch:
+        workspace = Path(scratch).resolve()
+        _write_manifest(workspace, lock)
+        for directory, nested_lock in (nested or {}).items():
+            _write_manifest(workspace / directory, nested_lock)
+        return execute_step(step, {
+            'APPROVED_INTERNAL_PACKAGES': '\n'.join(approved),
+            'APPROVED_INTERNAL_SCOPES': '@verjson',
+            'COMPATIBILITY_RANGES': '',
+            'NESTED_MANIFESTS': nested_manifests,
+            # Outside the workspace: the validator creates this file and
+            # refuses a second run that finds it, so it must not be a path a
+            # later assertion in the same checkout would collide with.
+            'PRIVATE_CACHE_ENTRIES': str(Path(scratch) / 'private-entries'),
+            'TRUSTED_PACKAGE_POLICY': '',
+            'PACKAGE_MANAGER': 'npm',
+        }, workspace=workspace)
+
+
+APPROVED = '@verjson/compliance'
+OUTSIDE_THE_ALLOWLIST = '@verjson/unapproved-by-this-call'
+
+
+class TheAllowlistIsExactlyWhatTheLaneMayAcquire(RefusalAssertions, unittest.TestCase):
+    """Requirement 2 of Verjson/.github#1369: a package in
+    `approved-internal-packages` is acquirable, one outside it is refused, and
+    the refusal is a failure rather than a silent skip."""
+
+    def test_an_approved_internal_package_is_acquirable(self):
+        self.assertAdmitted(
+            lock_validation([APPROVED], npm_lock(APPROVED)),
+            'the lane refuses the package its caller approved, so every '
+            'refusal asserted below is satisfied by a validator that refuses '
+            'every lock it is given')
+
+    def test_a_lane_with_no_internal_dependencies_is_acquirable(self):
+        self.assertAdmitted(
+            lock_validation([], npm_lock()),
+            'an empty approved set is valid when the lock has no internal '
+            'downloads, and an adopter that acquires only public packages '
+            'must still reach its build')
+
+    def test_a_package_outside_the_allowlist_is_refused_by_name(self):
+        """Refused *for that reason*, not merely non-zero.
+
+        A validator that rejected the synthetic lock over its shape would
+        satisfy a bare exit-status assertion while proving nothing about the
+        allowlist, and the fixture would then be free to drift into
+        malformedness without any test noticing.
+        """
+        refusal = lock_validation(
+            [APPROVED], npm_lock(APPROVED, OUTSIDE_THE_ALLOWLIST))
+        self.assertNotEqual(
+            0, refusal.status,
+            'an internal package the caller never approved was acquired with '
+            'the package credential')
+        self.assertIn(
+            OUTSIDE_THE_ALLOWLIST, refusal.output,
+            'the lane refused the lock without naming the unapproved package, '
+            'so this case no longer proves the allowlist is what refused it')
+
+    def test_an_allowlist_entry_absent_from_the_lock_is_refused(self):
+        """The allowlist is exact in both directions: an entry the lock does
+        not contain is an authorization nothing accounts for."""
+        self.assertRefusedBecause(
+            lock_validation([APPROVED, OUTSIDE_THE_ALLOWLIST],
+                            npm_lock(APPROVED)),
+            f'absent from lock: {OUTSIDE_THE_ALLOWLIST}',
+            'a package was authorized for this call without appearing in the '
+            'lock, so the approved set no longer describes what is acquired')
+
+    def test_an_internal_package_not_pinned_to_github_packages_is_refused(self):
+        """An internal name resolved somewhere else is the substitution the
+        allowlist cannot see: the name is approved, the download is not."""
+        lock = npm_lock(APPROVED)
+        lock['packages'][f'node_modules/{APPROVED}']['resolved'] = (
+            'https://registry.npmjs.org/@verjson/compliance/-/compliance-1.0.0.tgz')
+        self.assertRefusedBecause(
+            lock_validation([APPROVED], lock),
+            f'{APPROVED} is not pinned to its GitHub Packages download URL',
+            'an approved internal package was accepted from a registry the '
+            'lane does not route its scopes to')
+
+    def test_a_nested_manifest_does_not_inherit_the_root_allowlist(self):
+        """`secretless-nested-manifests` authorizes per manifest. A package
+        approved for the root and acquired by a nested manifest is outside
+        *that* manifest's allowlist, and the contract says so explicitly."""
+        nested_manifests = json.dumps(
+            [{'path': 'tools', 'approvedPackages': [], 'scriptPlan': []}])
+        self.assertRefusedBecause(
+            lock_validation([APPROVED], npm_lock(APPROVED),
+                            nested={'tools': npm_lock(APPROVED)},
+                            nested_manifests=nested_manifests),
+            f'unapproved GitHub Packages download in tools: {APPROVED}',
+            'a nested manifest acquired an internal package approved only for '
+            'the root manifest, so per-manifest authorization is not the '
+            'boundary the contract documents')
+
+    def test_a_nested_manifest_with_its_own_approval_is_acquirable(self):
+        nested_manifests = json.dumps(
+            [{'path': 'tools', 'approvedPackages': [APPROVED],
+              'scriptPlan': []}])
+        self.assertAdmitted(
+            lock_validation([APPROVED], npm_lock(APPROVED),
+                            nested={'tools': npm_lock(APPROVED)},
+                            nested_manifests=nested_manifests),
+            'a nested manifest that approved its own internal package was '
+            'refused, so the refusal above proves only that nested manifests '
+            'never work')
 
 
 if __name__ == '__main__':

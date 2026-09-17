@@ -47,6 +47,24 @@ _EXPRESSION = re.compile(r'\$\{\{.*\}\}', re.DOTALL)
 
 
 @dataclass(frozen=True)
+class StepResult:
+    """What a contract step's script did.
+
+    `output` carries both streams, because asserting a *refusal's reason* is
+    what separates "the contract refused this for the reason under test" from
+    "the contract refused this at all" — and the second is satisfied by a
+    fixture that has quietly drifted into being malformed.
+    """
+
+    status: int
+    output: str
+
+    @property
+    def admitted(self) -> bool:
+        return self.status == 0
+
+
+@dataclass(frozen=True)
 class ContractStep:
     job: str
     name: str
@@ -83,8 +101,8 @@ def locate_step(contract: Path, job: str, name: str) -> ContractStep:
 
 
 def execute_step(step: ContractStep, bindings: dict[str, str], *,
-                 workspace: Path | None = None) -> int:
-    """Run `step`'s script and return its exit status.
+                 workspace: Path | None = None) -> StepResult:
+    """Run `step`'s script and return its status and combined output.
 
     `bindings` stands in for the runner: it must name exactly the step's
     expression-valued `env:` entries. Supplying a name the step does not
@@ -104,7 +122,7 @@ def execute_step(step: ContractStep, bindings: dict[str, str], *,
             f'{sorted(supplied)}')
 
     with _sandbox(workspace) as cwd:
-        return subprocess.run(
+        completed = subprocess.run(
             ['bash', '-c', step.script],
             cwd=cwd,
             # A closed environment: the script sees the step's declared inputs
@@ -117,7 +135,8 @@ def execute_step(step: ContractStep, bindings: dict[str, str], *,
             capture_output=True,
             text=True,
             timeout=120,
-        ).returncode
+        )
+    return StepResult(completed.returncode, completed.stdout + completed.stderr)
 
 
 @contextlib.contextmanager
