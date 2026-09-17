@@ -27,6 +27,8 @@ label, status, stderr_path = sys.argv[1:]
 labels = {
     "resolved compatibility consumer",
     "cold-cache compatibility consumer",
+    "verified public cache compatibility consumer",
+    "absent public cache compatibility consumer",
     "probe",
 }
 if label not in labels:
@@ -882,7 +884,7 @@ if [ "$public_cache_status" -eq 0 ] \
 else
   fail "verified public cache content did not reach the sandbox, or exposed the job cache"
   emit_failure_diagnostic \
-    "cold-cache compatibility consumer" \
+    "verified public cache compatibility consumer" \
     "$public_cache_status" \
     "$tmp/archive-cases/public-cache/run.stderr"
 fi
@@ -899,7 +901,7 @@ if [ "$absent_cache_status" -eq 0 ] \
 else
   fail "a caller without a runtime public cache could not start the compatibility sandbox"
   emit_failure_diagnostic \
-    "cold-cache compatibility consumer" \
+    "absent public cache compatibility consumer" \
     "$absent_cache_status" \
     "$tmp/archive-cases/public-cache-absent/run.stderr"
 fi
@@ -983,6 +985,8 @@ PY
     && grep -qFx 'not ok - a caller without a runtime public cache could not start the compatibility sandbox' "$mutation_root/run.log" \
     && grep -qFx 'diagnostic - resolved compatibility consumer return-code=1 stderr-category=bubblewrap-unavailable' "$mutation_root/run.log" \
     && grep -qFx 'diagnostic - cold-cache compatibility consumer return-code=1 stderr-category=bubblewrap-unavailable' "$mutation_root/run.log" \
+    && grep -qFx 'diagnostic - verified public cache compatibility consumer return-code=1 stderr-category=bubblewrap-unavailable' "$mutation_root/run.log" \
+    && grep -qFx 'diagnostic - absent public cache compatibility consumer return-code=1 stderr-category=bubblewrap-unavailable' "$mutation_root/run.log" \
     && ! grep -qF 'trusted bubblewrap compatibility sandbox is unavailable' "$mutation_root/run.log" \
     && ! grep -qF 'consumer-controlled-sentinel' "$mutation_root/run.log"; then
     pass "missing-bwrap mutation reports both positive failures with exact allowlisted categories"
@@ -1021,7 +1025,9 @@ PY
     && grep -qFx 'not ok - cold-cache caret consumer did not preserve its installed dependency graph' "$cache_mutation_root/run.log" \
     && grep -qFx 'not ok - verified public cache content did not reach the sandbox, or exposed the job cache' "$cache_mutation_root/run.log" \
     && grep -qFx 'not ok - a caller without a runtime public cache could not start the compatibility sandbox' "$cache_mutation_root/run.log" \
-    && grep -qFx 'diagnostic - cold-cache compatibility consumer return-code=1 stderr-category=stderr-suppressed' "$cache_mutation_root/run.log"; then
+    && grep -qFx 'diagnostic - cold-cache compatibility consumer return-code=1 stderr-category=stderr-suppressed' "$cache_mutation_root/run.log" \
+    && grep -qFx 'diagnostic - verified public cache compatibility consumer return-code=1 stderr-category=stderr-suppressed' "$cache_mutation_root/run.log" \
+    && grep -qFx 'diagnostic - absent public cache compatibility consumer return-code=1 stderr-category=stderr-suppressed' "$cache_mutation_root/run.log"; then
     pass "ambient read-only npm cache mutation reproduces the silent npm failure"
   else
     fail "ambient read-only npm cache mutation did not reproduce the silent npm failure"
@@ -1057,7 +1063,9 @@ PY
     && grep -qFx 'not ok - cold-cache caret consumer did not preserve its installed dependency graph' "$mask_mutation_root/run.log" \
     && grep -qFx 'not ok - verified public cache content did not reach the sandbox, or exposed the job cache' "$mask_mutation_root/run.log" \
     && grep -qFx 'not ok - a caller without a runtime public cache could not start the compatibility sandbox' "$mask_mutation_root/run.log" \
-    && grep -qFx 'diagnostic - cold-cache compatibility consumer return-code=1 stderr-category=stderr-suppressed' "$mask_mutation_root/run.log"; then
+    && grep -qFx 'diagnostic - cold-cache compatibility consumer return-code=1 stderr-category=stderr-suppressed' "$mask_mutation_root/run.log" \
+    && grep -qFx 'diagnostic - verified public cache compatibility consumer return-code=1 stderr-category=stderr-suppressed' "$mask_mutation_root/run.log" \
+    && grep -qFx 'diagnostic - absent public cache compatibility consumer return-code=1 stderr-category=stderr-suppressed' "$mask_mutation_root/run.log"; then
     pass "removing ambient npm masks exposes the real absolute-path escape probe"
   else
     fail "ambient npm mask mutation did not expose the absolute-path escape probe"
