@@ -5443,6 +5443,12 @@ jobs:
                       raise SystemExit(
                           "compatibility public cache is requested without a runtime cache path")
                   return None
+              # Both sides of the comparison below are built from this step's
+              # own env: block, so this is a drift check between two
+              # workflow-controlled expressions -- it catches RUNTIME_CACHE_DIR
+              # being re-pointed away from the run-scoped path the population
+              # step writes. It is not validation of untrusted input and cannot
+              # detect a wrong RUNNER_TEMP, which it reads as the truth.
               runner_temp = Path(script_environment.get("RUNNER_TEMP", ""))
               runtime_cache = Path(runtime_cache_value)
               expected_runtime = runner_temp / (
