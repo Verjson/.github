@@ -31,5 +31,22 @@ class SupportedWindow(unittest.TestCase):
             cv.supported_versions(releases), {"v3.0.0", "v3.1.0", "v3.2.0"})
 
 
+class DeprecationClock(unittest.TestCase):
+    def test_a_version_pushed_out_of_the_window_expires_90_days_after_the_release_that_did_it(self):
+        # v3.0.0 is still supported at v3.2.0 (it is one of the newest three);
+        # v3.3.0, published 2026-03-01, is what pushes it out. The deprecation
+        # error has to name a date a maintainer can act on, and that date is a
+        # function of release metadata rather than a stored deadline.
+        releases = [
+            rel("v3.0.0", published="2026-01-01"),
+            rel("v3.1.0", published="2026-01-15"),
+            rel("v3.2.0", published="2026-02-01"),
+            rel("v3.3.0", published="2026-03-01"),
+        ]
+        verdict = cv.classify("v3.0.0", releases, today="2026-04-01")
+        self.assertEqual(verdict.state, cv.DEPRECATED)
+        self.assertEqual(verdict.expires_on, "2026-05-30")
+
+
 if __name__ == "__main__":
     unittest.main()
