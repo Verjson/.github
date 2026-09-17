@@ -14,6 +14,7 @@ Step 3 of the contract-distribution sequence (Verjson/.github#1369, ADR 0185).
 """
 
 import base64
+import contextlib
 import hashlib
 import json
 import sys
@@ -774,6 +775,153 @@ class TheAllowlistIsExactlyWhatTheLaneMayAcquire(RefusalAssertions, unittest.Tes
             'a nested manifest that approved its own internal package was '
             'refused, so the refusal above proves only that nested manifests '
             'never work')
+
+
+@contextlib.contextmanager
+def contract_whose_acquisition_refuses():
+    """The contract, with the secretless acquisition job refusing its call.
+
+    The real refusals — an untrusted event, a package outside the allowlist —
+    happen inside a `run:` script, and `model.py` deliberately declines to
+    infer a verdict from one. `TheTwoSecretlessLanesAdmitDisjointEvents` and
+    `TheAllowlistIsExactlyWhatTheLaneMayAcquire` establish by execution *that*
+    those calls are refused; what remains is what the rest of the contract does
+    once the job carrying that refusal concludes unsuccessfully.
+
+    So the boundary step's script is replaced by the bare non-zero exit those
+    refusals produce. Nothing else is touched: the guards, the job graph, and
+    every other step are the published ones, so the failure propagates exactly
+    as it would in an adopter's run.
+    """
+    contract = yaml.safe_load(CONTRACT.read_text(encoding='utf-8'))
+    steps = contract['jobs']['acquire-secretless-dependencies']['steps']
+    refusals = [step for step in steps if step.get('name') == BOUNDARY_STEP]
+    if len(refusals) != 1:
+        raise AssertionError(
+            f'{CONTRACT.name} no longer declares exactly one {BOUNDARY_STEP!r} '
+            'step, so this mutation no longer models a refused acquisition')
+    refusals[0]['run'] = 'exit 1\n'
+    with tempfile.TemporaryDirectory() as scratch:
+        mutant = Path(scratch) / CONTRACT.name
+        mutant.write_text(yaml.safe_dump(contract, sort_keys=False),
+                          encoding='utf-8')
+        yield mutant
+
+
+class ARefusedAcquisitionCannotReportSuccess(unittest.TestCase):
+    """A lane that declines to do work must not publish a check claiming it did.
+
+    This is `Verjson/verjson-ci#184` in the secretless lanes: there the cause
+    was a deferral, here it is a refused acquisition, and the failure mode is
+    identical — `build-test` is a required context, it runs `if: always()`, and
+    it would report SUCCESS having executed no test, lint, type check, or
+    contract guard. Requirement 2 of Verjson/.github#1369 asks for exactly
+    this: the refusal must be a failure, not a silent skip.
+    """
+
+    def test_the_refusal_reaches_the_required_check_as_a_failure(self):
+        with contract_whose_acquisition_refuses() as mutant:
+            for scenario in (SECRETLESS_PR, TRUSTED_REF_PUSH):
+                with self.subTest(scenario=scenario.name):
+                    outcomes = outcomes_for(mutant, SECRETLESS_ADOPTER, scenario)
+                    self.assertEqual(
+                        'failure',
+                        outcomes['acquire-secretless-dependencies'].conclusion,
+                        'the mutation no longer models a refused acquisition')
+                    self.assertTrue(
+                        outcomes['build-test'].ran,
+                        'the required context stopped reporting, which wedges '
+                        'the head on a permanently unsatisfied check (#191)')
+                    self.assertEqual(
+                        'failure', outcomes['build-test'].conclusion,
+                        'the secretless lane refused to acquire its '
+                        'dependencies and the required check still reported a '
+                        'conclusion a merge gate accepts — Verjson/verjson-ci'
+                        '#184 in the secretless lane')
+
+    def test_no_work_step_runs_once_the_acquisition_is_refused(self):
+        """The complement: failing the check is not enough if the lane went on
+        to run PR-controlled code against dependencies nothing authorized."""
+        with contract_whose_acquisition_refuses() as mutant:
+            for scenario in (SECRETLESS_PR, TRUSTED_REF_PUSH):
+                with self.subTest(scenario=scenario.name):
+                    build_test = outcomes_for(mutant, SECRETLESS_ADOPTER,
+                                              scenario)['build-test']
+                    executed = sorted(WORK_STEPS & set(build_test.executed_steps))
+                    self.assertEqual(
+                        [], executed,
+                        'the lane ran work steps after its dependency '
+                        f'acquisition was refused: {executed}')
+                    self.assertEqual(
+                        [], steps_given_the_package_credential(build_test),
+                        'a refused secretless acquisition let a later step '
+                        'fall back to the credentialed path')
+
+    def test_the_unrefused_lane_is_the_control(self):
+        """Without this, every assertion above is satisfied by a contract whose
+        secretless lane fails or executes nothing under all conditions."""
+        for scenario in (SECRETLESS_PR, TRUSTED_REF_PUSH):
+            with self.subTest(scenario=scenario.name):
+                outcomes = outcomes_for(CONTRACT, SECRETLESS_ADOPTER, scenario)
+                self.assertEqual(
+                    'success',
+                    outcomes['acquire-secretless-dependencies'].conclusion)
+                self.assertEqual('success', outcomes['build-test'].conclusion)
+                self.assertEqual(
+                    SECRETLESS,
+                    WORK_STEPS & set(outcomes['build-test'].executed_steps),
+                    'the published secretless lane no longer executes its '
+                    'script plan, so the refusal assertions above cannot tell '
+                    'a refusal from the lane\'s normal behavior')
+
+
+class BothSecretlessLanesTakeTheSameAcquisitionPath(unittest.TestCase):
+    """Requirement 3 of Verjson/.github#1369: what distinguishes the lanes.
+
+    The trusted-ref lane is not a second, weaker implementation of the
+    secretless path — it is the same acquisition, transfer, scrub, and script
+    plan, admitted for a different set of heads. The event boundary is the only
+    difference, and `TheTwoSecretlessLanesAdmitDisjointEvents` is where that
+    difference is asserted; here it is that nothing else differs.
+    """
+
+    def test_neither_lane_enters_the_credentialed_install(self):
+        for scenario in (SECRETLESS_PR, TRUSTED_REF_PUSH):
+            with self.subTest(scenario=scenario.name):
+                outcomes = outcomes_for(CONTRACT, SECRETLESS_ADOPTER, scenario)
+                self.assertTrue(
+                    outcomes['acquire-secretless-dependencies'].ran,
+                    'a secretless lane skipped the acquisition job, so its '
+                    'dependencies were never authorized against the allowlist')
+                executed = set(outcomes['build-test'].executed_steps)
+                self.assertNotIn(
+                    'npm ci', executed,
+                    'the secretless lane ran the credentialed install, which '
+                    'is handed NODE_AUTH_TOKEN in the same job as '
+                    'PR-controlled code')
+
+    def test_both_lanes_execute_the_same_work(self):
+        evidence = [
+            WORK_STEPS & set(outcomes_for(CONTRACT, SECRETLESS_ADOPTER,
+                                          scenario)['build-test'].executed_steps)
+            for scenario in (SECRETLESS_PR, TRUSTED_REF_PUSH)]
+        self.assertEqual(
+            evidence[0], evidence[1],
+            'the two secretless lanes no longer verify the same thing, so one '
+            'of them is a weaker path to the same required check')
+
+    def test_the_credentialed_adopter_still_takes_the_credentialed_path(self):
+        """The control on both assertions above: an adopter opting into neither
+        lane must skip the acquisition job and run the credentialed install."""
+        outcomes = outcomes_for(CONTRACT, CREDENTIALED_ADOPTER, SECRETLESS_PR)
+        self.assertFalse(
+            outcomes['acquire-secretless-dependencies'].ran,
+            'the acquisition job ran for an adopter that opted into neither '
+            'secretless lane, so `ran` no longer distinguishes the paths')
+        self.assertIn(
+            'npm ci', set(outcomes['build-test'].executed_steps),
+            'the credentialed lane no longer runs `npm ci`, so asserting its '
+            'absence in the secretless lane proves nothing')
 
 
 if __name__ == '__main__':
