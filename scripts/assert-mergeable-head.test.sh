@@ -76,6 +76,16 @@ expect_true() { # label
   else fail "$1 (rc=$RC, output: $OUT)"; fi
 }
 
+# A pass that degraded to display-name matching must SAY so. Asserting the
+# warning keeps the degradation from becoming invisible again.
+expect_true_unbound() { # label
+  if [ "$RC" -eq 0 ] \
+    && grep -q '^true$' <<<"$OUT" \
+    && grep -q '::warning::Gate A matched these required contexts on display name alone' <<<"$OUT"
+  then pass "$1"
+  else fail "$1 (rc=$RC, output: $OUT)"; fi
+}
+
 reset_env() {
   unset FAIL_PR_VIEW FAIL_RULES FAIL_CHECK_RUNS FAIL_STATUS FAIL_ANNOTATIONS
   export RULES_FIXTURE="$rules_bound"
@@ -127,7 +137,7 @@ RULES_FIXTURE="$rules_unbound"
 CHECK_RUNS_FIXTURE='{"check_runs":[]}'
 STATUS_FIXTURE='{"statuses":[{"context":"ci / build-test","state":"success"},{"context":"changelog / validate","state":"success"}]}'
 run
-expect_true "an unbound required context is satisfied by a legacy commit status"
+expect_true_unbound "an unbound required context is satisfied by a legacy commit status, and says it matched on name alone"
 
 reset_env
 RULES_FIXTURE="$rules_unbound"
@@ -170,16 +180,32 @@ run
 expect_true "a skipped deferred-ci is the normal exercised path and does not block"
 
 reset_env
-CHECK_RUNS_FIXTURE="$(runs "$green_runs,$(check_run 9 'not-deferred-cindy' completed success "$APP_ID")")"
+CHECK_RUNS_FIXTURE="$(runs "$green_runs,$(check_run 9 'x / deferred-cindy' completed success "$APP_ID")")"
 run
-expect_true "a check whose name merely contains the substring does not falsely trip the gate"
+expect_true "a longer name sharing the prefix after a separator does not falsely trip the gate"
 
 # Gate B must not be relaxable from the environment: an earlier draft exposed
 # these as tunable patterns, which made disabling it a one-variable edit.
 reset_env
 CHECK_RUNS_FIXTURE="$(runs "$green_runs,$(check_run 9 'build-test / deferred-ci' completed failure "$APP_ID")")"
-OUT="$(DEFERRED_CHECK_JOB_PATTERN='$x^' DEFERRED_CHECK_ANNOTATION_PATTERN='$x^' "$script" Verjson/verjson-ci 185 2>&1)"; RC=$?
+# These are the script's OWN constant names. An earlier version of this test
+# used the sibling script's names, which the gate never reads, so it would have
+# passed against a build where the gate really was overridable.
+OUT="$(DEFERRED_JOB_PATTERN='$x^' DEFERRED_ANNOTATION_PATTERN='$x^' "$script" Verjson/verjson-ci 185 2>&1)"; RC=$?
 expect "the deferral gate cannot be switched off from the environment" 4 "was DEFERRED, not verified"
+
+# A commit-status context uses `prefix/deferred-ci` with no space, and a check
+# run may carry a trailing matrix separator. Both are deferrals.
+reset_env
+CHECK_RUNS_FIXTURE="$(runs "$green_runs")"
+STATUS_FIXTURE='{"statuses":[{"context":"ci / build-test","state":"success"},{"context":"changelog / validate","state":"success"},{"context":"continuous-integration/deferred-ci","state":"success"}]}'
+run
+expect "a slash-separated commit-status deferral blocks" 4 "was DEFERRED, not verified"
+
+reset_env
+CHECK_RUNS_FIXTURE="$(runs "$green_runs,$(check_run 9 'deferred-ci / verify' completed success "$APP_ID")")"
+run
+expect "a deferral naming a sub-step still blocks" 4 "was DEFERRED, not verified"
 
 reset_env
 ANNOTATIONS_FIXTURE='[{"title":"CI deferred","message":"nothing ran"}]'

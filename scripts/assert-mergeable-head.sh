@@ -40,6 +40,10 @@
 # made disabling Gate B a one-variable edit — cheaper than the allowlist
 # widening this script exists to prevent, and invisible in the output. A gate
 # whose strictness is configurable at the call site is not a gate.
+# `-e` is deliberately absent: the advisory-check loop below ends on a test that
+# is legitimately false, which would abort under `-e`. Correctness therefore
+# rests on every command substitution carrying its own `|| fault` — do not add
+# an unguarded `$(...)` here.
 set -uo pipefail
 
 usage() { echo "usage: $0 <owner/repo> <pr-number>" >&2; exit 2; }
@@ -50,9 +54,11 @@ pr="$2"
 [[ "$pr" =~ ^[0-9]+$ ]] || usage
 
 # ADR 0178 fixes the job id. A caller renames its own job, not the reusable's,
-# so the deferral surfaces as `deferred-ci` or `<caller-job> / deferred-ci` —
-# and GitHub appends a matrix or `name:` suffix in parentheses to either.
-readonly DEFERRED_JOB_PATTERN='(^|/ )deferred-ci( \(|$)'
+# so the deferral surfaces as `deferred-ci` or `<caller-job> / deferred-ci`, and
+# a matrix value is appended in parentheses. A commit-status context uses the
+# conventional `prefix/deferred-ci` form with no space, so both separators are
+# accepted on each side; the name is trimmed before matching.
+readonly DEFERRED_JOB_PATTERN='(^|[/ ])deferred-ci([ (/]|$)'
 readonly DEFERRED_ANNOTATION_PATTERN='^CI deferred$'
 readonly PASSING='["SUCCESS","NEUTRAL","SKIPPED"]'
 
@@ -76,19 +82,33 @@ base_ref_path="$(jq -rn --arg r "$base_ref" '$r | @uri' | sed 's|%2F|/|g')" \
 # `statusCheckRollup`, because the rollup projection carries no app identity and
 # Gate A has to know WHO produced a required check, not merely that something
 # with the right display name reported.
-check_runs="$(gh api --paginate "repos/$repo/commits/$head_sha/check-runs?per_page=100" </dev/null \
-  | jq -s '[ .[].check_runs[]? | {
+# `total_count` is reconciled against what was actually collected: a truncated
+# pagination would otherwise shrink the inventory silently, and a gate that
+# reasons over a short inventory is the failure this script exists to prevent.
+check_runs_raw="$(gh api --paginate "repos/$repo/commits/$head_sha/check-runs?per_page=100" </dev/null)" \
+  || fault 1 "failed to fetch check runs for $repo@$head_sha"
+jq -se '[.[]] as $pages
+        | ($pages | map(.check_runs? // []) | add // [] | length) as $got
+        | ($pages[0].total_count // $got) as $claimed
+        | if $got == $claimed then true
+          else error("check-run pagination returned \($got) of \($claimed)") end' \
+  >/dev/null <<<"$check_runs_raw" \
+  || fault 1 "check-run pagination for $repo@$head_sha was truncated; the inventory is incomplete"
+check_runs="$(jq -s '[ .[].check_runs[]? | {
       name: (.name // ""),
       status: ((.status // "completed") | ascii_upcase),
       conclusion: ((.conclusion // "") | ascii_upcase),
       app_id: (.app.id // null),
       id: .id,
-      kind: "check_run" } ]')" \
-  || fault 1 "failed to fetch check runs for $repo@$head_sha"
+      kind: "check_run" } ]' <<<"$check_runs_raw")" \
+  || fault 1 "failed to normalize check runs for $repo@$head_sha"
 
 # Legacy commit statuses are a separate endpoint and carry no app id at all.
-statuses="$(gh api "repos/$repo/commits/$head_sha/status" </dev/null \
-  | jq '[ .statuses[]? | {
+# `--paginate` matters here as much as on check runs: this endpoint returns 30
+# statuses per page by default, and a `failure` stranded on page 2 would be
+# invisible to Gate C, which is the gate that exists to see it.
+statuses="$(gh api --paginate "repos/$repo/commits/$head_sha/status?per_page=100" </dev/null \
+  | jq -s '[ .[] | .statuses[]? | {
       name: (.context // ""),
       status: (if ((.state // "") | ascii_upcase) == "PENDING" then "IN_PROGRESS" else "COMPLETED" end),
       conclusion: (((.state // "") | ascii_upcase) | if . == "PENDING" then "" elif . == "ERROR" then "FAILURE" else . end),
@@ -146,6 +166,17 @@ gate_a="$(jq -r --argjson pass "$PASSING" --argjson required "$required" '
 
 [ -z "$gate_a" ] \
   || fault 3 "Gate A: $repo#$pr head $head_sha does not satisfy every required context of $base_ref — $gate_a"
+
+# A ruleset may declare a required context without binding it to an app. Gate A
+# then has nothing to check provenance against and matches on display name
+# alone, which is the ADR 0024 class it otherwise closes. That degradation is
+# real and must be visible rather than silent; it is a warning and not a fault
+# because refusing every unbound context would refuse rulesets that are
+# currently correct, including this organization's own hub.
+unbound="$(jq -r --argjson required "$required" -n '
+  [ $required[] | select(.integration_id == null) | .context ] | join(", ")')"
+[ -z "$unbound" ] \
+  || echo "::warning::Gate A matched these required contexts on display name alone, because $base_ref binds them to no app: $unbound" >&2
 
 # ---------------------------------------------------------------- Gate B ----
 # A check entry proves a check REPORTED; it does not prove the check did work.
