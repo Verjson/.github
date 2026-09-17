@@ -524,6 +524,39 @@ grep -qF 'scripts/gen-adr-index.test.sh' <<<"$adr_test_gate" \
   && pass "the ADR-index suite requirement is gated on adr-index: true" \
   || fail "the ADR-index suite requirement is not confined to the adr-index gate"
 
+# A resolver that produces nothing must pin nothing. `sha256sum` digests an empty
+# stream without complaint, and that empty-string digest is a real-looking pin no
+# adopter file can ever match — it would turn a refusal to emit into a contract
+# test that simply cannot be satisfied, and make the emitted `[ -n ... ]` guards
+# vacuously true. Build a ref whose canonical suite has lost the line the rewrite
+# anchors on, and require an empty pin rather than a digest.
+empty_digest="$(printf '' | sha256sum | cut -d' ' -f1)"
+mutated_index="$(mktemp)"
+GIT_INDEX_FILE="$mutated_index" git -C "$repo_root" read-tree "$sha"
+mutated_suite="$(mktemp)"
+git -C "$repo_root" show "$sha:scripts/ci-gate/gen-adr-index.test.sh" \
+  | sed 's|^repo_root=.*|repo_root="$(git rev-parse --show-toplevel)"|' >"$mutated_suite"
+mutated_blob="$(git -C "$repo_root" hash-object -w "$mutated_suite")"
+GIT_INDEX_FILE="$mutated_index" git -C "$repo_root" update-index \
+  --cacheinfo 100644,"$mutated_blob",scripts/ci-gate/gen-adr-index.test.sh
+mutated_tree="$(GIT_INDEX_FILE="$mutated_index" git -C "$repo_root" write-tree)"
+mutated_sha="$(git -C "$repo_root" commit-tree "$mutated_tree" -p "$sha" -m 'anchor removed')"
+rm -f "$mutated_index" "$mutated_suite"
+
+bash "$gen" adr-index-test "$mutated_sha" >/dev/null 2>&1 \
+  && fail "adr-index-test emitted a suite after the line it rewrites disappeared" \
+  || pass "adr-index-test refuses to emit once its rewrite anchor is gone"
+
+mutated_contract="$(bash "$gen" contract-test "$mutated_sha" 2>/dev/null)"
+mutated_pin="$(grep -m1 '^ADR_INDEX_TEST_SHA256=' <<<"$mutated_contract" | cut -d'"' -f2)"
+if [ -z "$mutated_pin" ]; then
+  pass "an unresolvable ADR-index suite pins nothing rather than the empty digest"
+elif [ "$mutated_pin" = "$empty_digest" ]; then
+  fail "an unresolvable ADR-index suite pinned the empty-string digest, which no adopter file can match"
+else
+  fail "an unresolvable ADR-index suite pinned an unexpected digest: $mutated_pin"
+fi
+
 contract_validation="$(sed -n '/^  contract-test)/,/^    ;;/p' "$gen")"
 if grep -q 'bash -n <"$syntax_input"' <<<"$contract_validation" \
    && ! grep -qE "printf .*\\|[[:space:]]*bash -n" <<<"$contract_validation"; then
@@ -563,11 +596,13 @@ grep -q "CONTRACT_REF=\"$sha\"" "$emitted" \
 
 # Each grep below is one of the four shapes that made a hand-copied test a
 # release time bomb. None may reappear via the generator.
-# The engine digest is exempt, and only it: CONTRACT_SHA256 pins the
-# implementation being executed, which no release changes. The shape this guards
-# against is an assertion pinned to repository CONTENT — a released entry's hash —
-# which every release invalidates (#304, #309).
-grep -vE '^(CONTRACT|ADR_INDEX)_SHA256="[0-9a-f]{64}"$' "$emitted" | grep -qE '[0-9a-f]{64}' \
+# Implementation digests are exempt, and only they: CONTRACT_SHA256,
+# ADR_INDEX_SHA256 and ADR_INDEX_TEST_SHA256 pin code that is executed, which no
+# release changes. The shape this guards against is an assertion pinned to
+# repository CONTENT — a released entry's hash — which every release
+# invalidates (#304, #309).
+grep -vE '^(CONTRACT_SHA256|ADR_INDEX_SHA256|ADR_INDEX_TEST_SHA256)="[0-9a-f]{64}"$' "$emitted" \
+  | grep -qE '[0-9a-f]{64}' \
   && fail "emitted test hardcodes a content hash of a released entry" \
   || pass "no hashed released entries (a release adds sections)"
 grep -qF '[ ! -e "$root/CHANGELOG.md" ]' "$emitted" \
