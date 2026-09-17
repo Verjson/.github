@@ -183,5 +183,106 @@ class DirectoryListingCap(unittest.TestCase):
         self.assertEqual(fci.incomplete_listings, [])
 
 
+
+
+class UnreadTextIsNeverTakenForWorkflowText(unittest.TestCase):
+    """Every path that fails to read a workflow must name its own gap.
+
+    A blob that was not read contributes no `uses:` pins, which is
+    indistinguishable from a workflow that references the hub nowhere. So a
+    silent drop here does not merely lose a file — it reports the file as
+    carrying no drift.
+    """
+
+    def setUp(self):
+        self._gh = fci.gh
+        self._unreadable = list(fci.unreadable)
+        self.addCleanup(lambda: setattr(fci, "gh", self._gh))
+        self.addCleanup(lambda: fci.unreadable.__setitem__(
+            slice(None), self._unreadable))
+        fci.unreadable.clear()
+
+    def _serve(self, blob: str):
+        listing = json.dumps([{"name": "a.yml", "type": "file", "sha": A}])
+        fci.gh = lambda *a: listing if "/contents/" in a[-1] else blob
+
+    def test_a_null_content_field_is_unreadable_not_three_bytes_of_text(self):
+        # `--jq .content` prints the literal string `null` for the `encoding:
+        # none` shape GitHub uses for an oversized blob. It is valid base64.
+        self._serve("null\n")
+        self.assertEqual(fci.workflows("Verjson/example"), {})
+        self.assertEqual(fci.unreadable, ["Verjson/example:.github/workflows/a.yml"])
+
+    def test_an_undecodable_blob_is_unreadable_not_silently_dropped(self):
+        self._serve("!!!not-base64!!!")
+        self.assertEqual(fci.workflows("Verjson/example"), {})
+        self.assertEqual(fci.unreadable, ["Verjson/example:.github/workflows/a.yml"])
+
+    def test_a_listing_that_is_not_an_array_is_unreachable_not_empty(self):
+        # `{"message": "Not Found"}` must not read as "this repo has no
+        # workflows"; that is the conflation the docstring forbids.
+        fci.gh = lambda *a: '{"message": "Not Found"}'
+        self.assertIsNone(fci.workflows("Verjson/example"))
+
+
+class TruncatedHubTreeIsAGap(unittest.TestCase):
+    def setUp(self):
+        self._gh = fci.gh
+        self._truncated = list(fci.truncated_trees)
+        fci._tree_cache.clear()
+        self.addCleanup(lambda: setattr(fci, "gh", self._gh))
+        self.addCleanup(fci._tree_cache.clear)
+        self.addCleanup(lambda: fci.truncated_trees.__setitem__(
+            slice(None), self._truncated))
+        fci.truncated_trees.clear()
+
+    def test_a_truncated_tree_names_itself_rather_than_only_going_unknown(self):
+        # Every row resolved against a short tree is an unsupported conclusion,
+        # not an observation. UNKNOWN in the tally does not distinguish it from
+        # a ref that simply does not resolve, and does not reach the exit code.
+        fci.gh = lambda *a: json.dumps({"truncated": True, "tree": []})
+        self.assertIsNone(fci.hub_tree(A))
+        self.assertTrue(any(A in gap for gap in fci.truncated_trees))
+
+
+class ExitCodeReportsIncompleteness(unittest.TestCase):
+    """The whole point of naming a gap kind is that it reaches the exit code.
+
+    Without this, the gap lists could be deleted from the predicate and every
+    collection test would still pass while the sweep reported a clean run.
+    """
+
+    def setUp(self):
+        # `unreachable` is a local of `main()` rather than a module list, so
+        # it cannot be seeded from here; the three module-level gap kinds are
+        # what this covers.
+        for name in ("unreadable", "incomplete_listings", "truncated_trees"):
+            saved = list(getattr(fci, name))
+            self.addCleanup(
+                lambda n=name, s=saved: getattr(fci, n).__setitem__(slice(None), s))
+            getattr(fci, name).clear()
+        self._gh = fci.gh
+        self.addCleanup(lambda: setattr(fci, "gh", self._gh))
+        fci._tree_cache.clear()
+        self.addCleanup(fci._tree_cache.clear)
+
+    def _run(self):
+        # No repositories to sweep: the rows are irrelevant to the predicate,
+        # and this keeps the test about the exit code alone.
+        fci.gh = lambda *a: (json.dumps({"truncated": False, "tree": []})
+                             if "/git/trees/" in a[-1] else "[]")
+        return fci.main()
+
+    def test_a_sweep_with_no_gaps_exits_zero(self):
+        self.assertEqual(self._run(), 0)
+
+    def test_each_gap_kind_alone_makes_the_sweep_exit_nonzero(self):
+        for name in ("unreadable", "incomplete_listings", "truncated_trees"):
+            with self.subTest(gap=name):
+                getattr(fci, name).append("Verjson/example")
+                self.assertEqual(self._run(), 1)
+                getattr(fci, name).clear()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
