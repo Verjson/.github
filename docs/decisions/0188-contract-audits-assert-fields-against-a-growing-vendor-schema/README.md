@@ -90,6 +90,16 @@ pull request gates on it.
 - Live required checks bind to `integration_id: 15368` and the reviewed images do
   not pin it. That app binding is #1381's subject and is deliberately untouched
   here; this comparison neither asserts nor weakens it.
+- **The residual this design accepts, stated plainly:** a key GitHub *adds* is
+  invisible to the audit by construction, and that includes a key that weakens
+  protection. If a future `parameters.allow_*` field were to appear defaulted in a
+  way that loosens a contracted ruleset, every assertion here would still pass.
+  Tolerating unknown keys is what makes the audit survive a vendor schema that
+  grows; the cost is that it can only detect drift in fields someone has decided
+  to pin. That is not mitigated by anything in this decision. It is mitigated by
+  periodically re-reading the live ruleset schema against the contract images and
+  pinning newly-security-relevant fields — a review task with an owner, not a
+  property the code can assert about itself.
 - Adopter conformance — caller presence, the `ai-review-app` environment, its
   branch policy — remains outside the audit. It is #1401's follow-up, and it was
   blocked behind this decision because it would have sat after an unreachable

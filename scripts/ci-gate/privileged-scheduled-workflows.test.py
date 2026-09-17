@@ -19,7 +19,6 @@ WATCHDOG_SOURCE = f".fleet-watchdog-source-{UNIQUE_SUFFIX}"
 ADMISSION_SOURCE = f".runner-admission-reconcile-source-{UNIQUE_SUFFIX}"
 SECRET_SCOPE_SOURCE = f".org-secret-scope-audit-source-{UNIQUE_SUFFIX}"
 RULESET_CONFORMANCE_SOURCE = f".org-ruleset-conformance-source-{UNIQUE_SUFFIX}"
-ARM_AUDIT_SOURCE = f".org-ruleset-conformance-source-{UNIQUE_SUFFIX}"
 SETUP_PYTHON = re.compile(r"^actions/setup-python@[0-9a-f]{40}$")
 
 
@@ -297,7 +296,7 @@ def validate_arm_audit(document: object) -> None:
         {"runs-on", "defaults", "timeout-minutes", "steps"},
         "jobs.arm-audit",
     )
-    validate_isolation(job, ARM_AUDIT_SOURCE, "jobs.arm-audit")
+    validate_isolation(job, RULESET_CONFORMANCE_SOURCE, "jobs.arm-audit")
     require(
         job["runs-on"]
         == "${{ fromJSON(vars.CI_LANE_PRIVILEGED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]') }}",
@@ -309,7 +308,7 @@ def validate_arm_audit(document: object) -> None:
         steps[0].get("name") == "Check out the authorization arm audit",
         "arm-audit checkout name changed",
     )
-    validate_checkout(steps[0], "arm-audit checkout", ARM_AUDIT_SOURCE)
+    validate_checkout(steps[0], "arm-audit checkout", RULESET_CONFORMANCE_SOURCE)
     provision = require_keys(steps[1], {"name", "uses", "with"}, "arm-audit python")
     require(
         SETUP_PYTHON.fullmatch(provision["uses"]) is not None,
@@ -332,7 +331,7 @@ def validate_arm_audit(document: object) -> None:
         audit["run"] == "python3 scripts/ai-review-required-workflow-audit.py",
         "arm-audit command must remain the read-only audit",
     )
-    validate_cleanup(steps[4], "arm-audit cleanup", ARM_AUDIT_SOURCE)
+    validate_cleanup(steps[4], "arm-audit cleanup", RULESET_CONFORMANCE_SOURCE)
 
 
 def validate_ruleset_conformance(document: object) -> None:
