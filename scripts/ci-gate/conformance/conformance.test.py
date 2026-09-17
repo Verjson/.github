@@ -286,6 +286,50 @@ class TheAdopterSurfaceIsTheContractSurface(unittest.TestCase):
                 bind_inputs(CONTRACT, drifted)
 
 
+# Both shipped contracts declare a default for every optional input, so the
+# implicit-default path is unreachable from them. It is still the value the
+# harness would model an adopter as running with the moment one input loses its
+# default, which is exactly when nobody is looking — hence a synthetic pair.
+_SYNTHETIC_CONTRACT = """
+on:
+  workflow_call:
+    inputs:
+      flag: {type: boolean}
+      count: {type: number}
+      label: {type: string}
+jobs:
+  only: {steps: [{run: 'true'}]}
+"""
+_SYNTHETIC_CALLER = """
+on: push
+jobs:
+  call:
+    uses: Verjson/.github/.github/workflows/synthetic.yml@%s
+""" % ('0' * 40)
+
+
+class AnOmittedOptionalInputTakesTheRuntimesValue(unittest.TestCase):
+    def _bind(self, contract_text):
+        with tempfile.TemporaryDirectory() as scratch:
+            contract = Path(scratch) / 'synthetic.yml'
+            caller = Path(scratch) / 'synthetic-caller.yml'
+            contract.write_text(contract_text, encoding='utf-8')
+            caller.write_text(_SYNTHETIC_CALLER, encoding='utf-8')
+            return bind_inputs(contract, caller)
+
+    def test_each_declared_type_gets_the_value_the_runtime_supplies(self):
+        self.assertEqual(
+            {'inputs.flag': False, 'inputs.count': 0, 'inputs.label': ''},
+            self._bind(_SYNTHETIC_CONTRACT),
+            'a number bound as the empty string compares unequal to every '
+            'number a guard could test it against, so the guard is modelled '
+            'false for a reason the contract never expressed')
+
+    def test_a_type_with_no_known_runtime_value_is_rejected(self):
+        with self.assertRaises(AdopterContractMismatch):
+            self._bind(_SYNTHETIC_CONTRACT.replace('type: string', 'type: environment'))
+
+
 class TheHarnessFailsClosed(unittest.TestCase):
     """The harness's own #184: a model that guesses cannot assert anything."""
 
