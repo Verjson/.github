@@ -73,7 +73,7 @@ gen "$d"
 idx="$d/docs/decisions/README.md"
 begin_line="$(grep -n '^<!-- BEGIN ADR INDEX -->$' "$idx" | cut -d: -f1)"
 end_line="$(grep -n '^<!-- END ADR INDEX -->$' "$idx" | cut -d: -f1)"
-[ "$(sed -n "$((begin_line + 1))p" "$idx")" = '<!-- prettier-ignore -->' ] \
+[ -n "$begin_line" ] && [ "$(sed -n "$((begin_line + 1))p" "$idx")" = '<!-- prettier-ignore -->' ] \
   && pass "the generated region opens with the prettier-ignore guard (#1382)" \
   || fail "the generated region does not open with the prettier-ignore guard (#1382)"
 [ -n "$end_line" ] && [ -z "$(sed -n "$((end_line - 1))p" "$idx")" ] \
@@ -92,12 +92,27 @@ cmp -s "$d/index-first-pass" "$idx" \
 # above pin the shape that produces it; this one proves the shape is the right
 # one against the formatter itself, under each proseWrap setting — the padded
 # table prettier emits by default, and the compact one it emits for `never`.
+#
+# No hub workflow installs prettier, so a bare `command -v` would skip the only
+# assertion that tests this change's actual claim in exactly the environment
+# that has to catch a regression. Fall back to `npx`, which the runners carry.
+# An `npx` that cannot reach the registry is reported as a skip rather than a
+# failure: this suite must stay runnable offline, and the shape assertions above
+# still cover the mechanism.
+prettier_cmd=''
 if command -v prettier >/dev/null 2>&1; then
+  prettier_cmd='prettier'
+elif command -v npx >/dev/null 2>&1 \
+  && npx --yes prettier@3 --version >/dev/null 2>&1; then
+  prettier_cmd='npx --yes prettier@3'
+fi
+
+if [ -n "$prettier_cmd" ]; then
   prettier_agrees=1
   for prose_wrap in preserve never always; do
     printf '{"proseWrap":"%s"}\n' "$prose_wrap" >"$d/.prettierrc"
     cp "$idx" "$d/index-before-prettier"
-    prettier --write "$idx" >/dev/null 2>&1 || prettier_agrees=0
+    $prettier_cmd --write "$idx" >/dev/null 2>&1 || prettier_agrees=0
     cmp -s "$d/index-before-prettier" "$idx" || prettier_agrees=0
     gen "$d" --check || prettier_agrees=0
   done
@@ -106,7 +121,7 @@ if command -v prettier >/dev/null 2>&1; then
     && pass "prettier leaves the generated index byte-identical and --check current (#1382)" \
     || fail "prettier reformatted the generated index or left --check stale (#1382)"
 else
-  pass "skipped prettier agreement check — prettier not installed"
+  pass "skipped prettier agreement check — no reachable prettier"
 fi
 
 # 2. ADR directory with no README -> fail fast.
