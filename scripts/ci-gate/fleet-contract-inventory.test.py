@@ -129,6 +129,13 @@ class UnreachableIsNotEmpty(unittest.TestCase):
         self._serve("[]")
         self.assertEqual(fci.workflows("Verjson/example"), {})
 
+    def test_a_successful_call_returning_no_bytes_is_empty_not_unreachable(self):
+        # `out is not None` and `out` are not the same test. A call that
+        # succeeded with an empty body is an answer, and downgrading it to
+        # unreachable is the conflation this class forbids, just inverted.
+        self._serve("")
+        self.assertEqual(fci.workflows("Verjson/example"), {})
+
 
 class DirectoryListingCap(unittest.TestCase):
     """The contents endpoint is unpaginated, and silently caps at 1,000 entries.
@@ -264,16 +271,22 @@ class ExitCodeReportsIncompleteness(unittest.TestCase):
             self.addCleanup(
                 lambda n=name, s=saved: getattr(fci, n).__setitem__(slice(None), s))
             getattr(fci, name).clear()
-        self._gh = fci.gh
+        self._gh, self._gh_run = fci.gh, fci.gh_run
         self.addCleanup(lambda: setattr(fci, "gh", self._gh))
+        self.addCleanup(lambda: setattr(fci, "gh_run", self._gh_run))
         fci._tree_cache.clear()
         self.addCleanup(fci._tree_cache.clear)
 
     def _run(self):
         # No repositories to sweep: the rows are irrelevant to the predicate,
         # and this keeps the test about the exit code alone.
-        fci.gh = lambda *a: (json.dumps({"truncated": False, "tree": []})
-                             if "/git/trees/" in a[-1] else "[]")
+        # Both seams, or an unstubbed one reaches the network: `workflows()`
+        # lists through `gh_run` and only reads blobs through `gh`.
+        def stub(*a):
+            return (json.dumps({"truncated": False, "tree": []})
+                    if "/git/trees/" in a[-1] else "[]")
+        fci.gh = stub
+        fci.gh_run = lambda *a: (stub(*a), "")
         return fci.main()
 
     def test_a_sweep_with_no_gaps_exits_zero(self):
@@ -297,21 +310,63 @@ class AnAbsentDirectoryIsNotAGap(unittest.TestCase):
     """
 
     def setUp(self):
-        self._gh_run = fci.gh_run
+        self._gh, self._gh_run = fci.gh, fci.gh_run
+        self._absent = list(fci.absent_directories)
+        self.addCleanup(lambda: setattr(fci, "gh", self._gh))
         self.addCleanup(lambda: setattr(fci, "gh_run", self._gh_run))
+        self.addCleanup(lambda: fci.absent_directories.__setitem__(
+            slice(None), self._absent))
+        fci.absent_directories.clear()
 
-    def _fails_with(self, stderr: str):
-        fci.gh_run = lambda *a: (None, stderr)
+    def _fails_with(self, stderr: str, root=("[]", ""), repo_readable=True):
+        """The workflows listing fails; the confirming calls answer as given."""
+        fci.gh = lambda *a: "Verjson/example" if repo_readable else None
+
+        def gh_run(*args):
+            target = args[-1]
+            if target.endswith("/contents/"):
+                return root
+            if "/commits" in target:
+                return None, "gh: Git Repository is empty. (HTTP 409)\n"
+            return None, stderr
+
+        fci.gh_run = gh_run
 
     def test_a_missing_workflows_directory_is_no_workflows(self):
         self._fails_with("gh: Not Found (HTTP 404)\n")
         self.assertEqual(fci.workflows("Verjson/example"), {})
 
     def test_an_empty_repository_is_no_workflows(self):
-        # GitHub words this one differently from a missing path. The
-        # discriminator is the status, so the wording must not matter.
-        self._fails_with("gh: This repository is empty. (HTTP 404)\n")
+        # GitHub words this one differently from a missing path, and its root
+        # 404s too -- the 409 from `commits` is what confirms it has no commits
+        # rather than no permission.
+        self._fails_with("gh: This repository is empty. (HTTP 404)\n",
+                         root=(None, "gh: This repository is empty. (HTTP 404)\n"))
         self.assertEqual(fci.workflows("Verjson/example"), {})
+
+    def test_an_absent_directory_is_named_in_the_report(self):
+        self._fails_with("gh: Not Found (HTTP 404)\n")
+        self.assertEqual(fci.workflows("Verjson/example"), {})
+        self.assertEqual(fci.absent_directories,
+                         ["Verjson/example:.github/workflows"])
+
+    def test_a_repo_that_vanished_mid_sweep_is_unreachable_not_absent(self):
+        # Deleted, made private, transferred, or dropped from an App
+        # installation: all answer 404 exactly like a missing directory, and
+        # all are real gaps. Only the confirming call separates them.
+        self._fails_with("gh: Not Found (HTTP 404)\n", repo_readable=False)
+        self.assertIsNone(fci.workflows("Verjson/example"))
+        self.assertEqual(fci.absent_directories, [])
+
+    def test_a_lost_contents_grant_is_unreachable_not_absent(self):
+        # The repo still reads, but its root 404s and it is not empty either --
+        # so Contents access went away rather than the directory.
+        self._fails_with("gh: Not Found (HTTP 404)\n",
+                         root=(None, "gh: Not Found (HTTP 404)\n"))
+        fci.gh_run = (lambda inner: lambda *a: (
+            (None, "gh: Not Found (HTTP 404)\n") if "/commits" in a[-1]
+            else inner(*a)))(fci.gh_run)
+        self.assertIsNone(fci.workflows("Verjson/example"))
 
     def test_a_forbidden_listing_is_still_unreachable(self):
         # The org enumeration that produced this repo used the same token, so
@@ -330,9 +385,36 @@ class AnAbsentDirectoryIsNotAGap(unittest.TestCase):
         self.assertIsNone(fci.workflows("Verjson/example"))
 
     def test_a_404_in_the_prose_does_not_stand_in_for_the_status(self):
-        # Only the parenthesized status counts; a body that merely mentions the
-        # number must not downgrade a real failure to a benign absence.
-        self._fails_with("gh: error 404 was not the status here (HTTP 502)\n")
+        # gh puts its status last on the line, so the trailing one is the
+        # verdict and a `(HTTP 404)` earlier in the same message is prose. The
+        # decoy has to be spelled that way round or it proves nothing.
+        self._fails_with("gh: see the docs about (HTTP 404) (HTTP 502)\n")
+        self.assertIsNone(fci.workflows("Verjson/example"))
+
+    def test_only_ghs_own_verdict_line_is_read_as_the_status(self):
+        # Taking the last `(HTTP nnn)` anywhere in stderr is not the same as
+        # taking gh's verdict: anything gh echoes after it -- a response body,
+        # a hint -- would outrank the verdict and turn a 502 into a benign
+        # absence. Only a line gh itself prefixed counts.
+        self._fails_with("gh: failed (HTTP 502)\nthe server said: (HTTP 404)\n")
+        self.assertIsNone(fci.workflows("Verjson/example"))
+
+    def test_a_verdict_line_in_an_unrecognized_shape_fails_closed(self):
+        # The status must end the line, as gh writes it. A line that carries
+        # more after it is a shape this code has not seen, and an unrecognized
+        # shape resolves to "could not tell" -- never to benign absence.
+        self._fails_with("gh: failed (HTTP 404) [retrying]\n")
+        self.assertIsNone(fci.workflows("Verjson/example"))
+
+    def test_the_last_verdict_wins_not_the_first(self):
+        # A retrying or paginating caller produces several verdict lines. Taking
+        # the first makes the classification depend on their order: "404 then
+        # 500" would read as a benign absence.
+        self._fails_with("gh: gone (HTTP 404)\ngh: server error (HTTP 500)\n")
+        self.assertIsNone(fci.workflows("Verjson/example"))
+
+    def test_a_three_digit_status_is_required(self):
+        self._fails_with("gh: nonsense (HTTP 4)\n")
         self.assertIsNone(fci.workflows("Verjson/example"))
 
 
