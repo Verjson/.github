@@ -131,6 +131,10 @@ jobs:
             "repositories": [{"full_name": repository} for repository in repositories],
         }]
 
+    def live_pull_request_parameters(self, path=None):
+        rules = self.fixture[path or self.ruleset_path][0]["rules"]
+        return next(rule for rule in rules if rule["type"] == "pull_request")["parameters"]
+
     def assert_audit_error(self, text):
         with self.assertRaisesRegex(AUDIT.AuditError, text):
             AUDIT.audit(self.contract, self.read)
@@ -332,6 +336,15 @@ jobs:
         self.assert_audit_error("differs from both full reviewed preimage and postimage")
         with self.assertRaisesRegex(AUDIT.AuditError, "differs from both"):
             AUDIT.render_payload(self.contract, "retarget", self.read)
+
+    def test_a_field_github_adds_to_its_own_schema_is_not_drift(self):
+        # GitHub extended `pull_request` parameters with
+        # `require_extra_approval_for_unattributed_changes` long after the images
+        # were frozen (#1404). Whole-object equality read the vendor's schema
+        # growth as collateral drift and killed the audit at its first
+        # precondition, where it stayed invisible for as long as nothing ran it.
+        self.live_pull_request_parameters()["require_extra_approval_for_unattributed_changes"] = True
+        self.assertEqual(AUDIT.audit(self.contract, self.read)["state"], "ready")
 
     def test_rendered_payloads_are_verified_and_the_tool_has_no_mutation_path(self):
         self.assertEqual(
