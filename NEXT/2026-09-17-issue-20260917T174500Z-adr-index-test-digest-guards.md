@@ -48,3 +48,13 @@ commands checked only the first one's status, so a failure in any later command
 was reported as a misbehavior of the branch under test. Each construction step is
 now checked, and the assertions that consume the fixture are skipped rather than
 run against an empty ref.
+
+A resolver can also succeed and yield nothing at all — an empty blob at the ref,
+or a 200 with an empty body. `emit_adr_index_generator` turned that into a lone
+newline, which is non-empty enough to satisfy `digest_of_resolved` and would pin
+a real-looking digest over a one-byte generator, and the `adr-index-generator`
+mode bypassed that emitter entirely, so the mode and its pin could disagree
+about what an adopter must have on disk. The emitter now refuses empty content
+and the mode goes through it. The pin-agreement assertions capture each mode's
+status and require it to have written bytes, because a mode that emits nothing
+otherwise makes the pin agree with itself.

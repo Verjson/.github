@@ -568,6 +568,11 @@ resolve_adr_index_test() {
 emit_adr_index_generator() {
   local canonical
   canonical="$(resolve_adr_index_generator)" || return 1
+  # A resolver can succeed and still yield nothing — an empty blob at the ref, or
+  # a 200 with an empty body. `printf` would turn that into a single newline,
+  # which is non-empty enough to satisfy every downstream guard and would pin a
+  # real-looking digest over a one-byte generator.
+  [ -n "$canonical" ] || return 1
   printf '%s\n' "$canonical"
 }
 
@@ -2107,7 +2112,11 @@ digest_of_resolved() { # "$@" = the resolver command
     echo "$(basename "$0"): cannot create a temporary file to digest $1" >&2
     return 1
   }
-  err="$(mktemp)" || { rm -f "$tmp"; return 1; }
+  err="$(mktemp)" || {
+    echo "$(basename "$0"): cannot create a temporary file to capture $1's diagnostics" >&2
+    rm -f "$tmp"
+    return 1
+  }
   if "$@" >"$tmp" 2>"$err" && [ -s "$tmp" ]; then
     digest="$(digest_of <"$tmp")" || digest=''
   fi
@@ -3874,7 +3883,9 @@ case "$mode" in
     fi
     ;;
   adr-index-generator)
-    out="$(resolve_adr_index_generator)" \
+    # The same emitter the pin digests, so the mode and `ADR_INDEX_SHA256` cannot
+    # disagree about what an adopter is supposed to have on disk.
+    out="$(emit_adr_index_generator)" \
       || { echo "$(basename "$0"): cannot resolve gen-adr-index.sh at $ref" >&2; exit 1; }
     printf '%s\n' "$out" | bash -n 2>/dev/null \
       || { echo "internal error: generated ADR index generator is not valid bash; refusing to emit" >&2; exit 3; }

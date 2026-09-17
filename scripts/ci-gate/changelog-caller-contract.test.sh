@@ -534,17 +534,29 @@ grep -qF 'scripts/gen-adr-index.test.sh' <<<"$adr_test_gate" \
 # bytes: the two agree only while the canonical file ends in exactly one
 # newline, and the day one did not, every adopter would fail a contract test
 # against a file it had just regenerated correctly.
+empty_digest="$(printf '' | sha256sum | cut -d' ' -f1)"
+# A mode that emits nothing makes this comparison agree with itself: the pin and
+# the mode would both digest an empty stream, so the assertion has to establish
+# that bytes were written before it can read anything into them matching.
 for pinned in "ADR_INDEX_SHA256:adr-index-generator" "ADR_INDEX_TEST_SHA256:adr-index-test"; do
   pin_name="${pinned%%:*}"
   pin_mode="${pinned#*:}"
   pin_recorded="$(grep -m1 "^$pin_name=" "$emitted" | cut -d'"' -f2)"
-  pin_emitted="$(bash "$gen" "$pin_mode" "$sha" | sha256sum | cut -d' ' -f1)"
-  [ -n "$pin_recorded" ] && [ "$pin_recorded" = "$pin_emitted" ] \
-    && pass "$pin_name digests the bytes $pin_mode writes to disk" \
-    || fail "$pin_name does not match what $pin_mode emits ($pin_recorded vs $pin_emitted)"
+  pin_bytes="$tmproot/pin-$pin_mode.out"
+  pin_mode_status=0
+  bash "$gen" "$pin_mode" "$sha" >"$pin_bytes" 2>/dev/null || pin_mode_status=$?
+  pin_emitted="$(sha256sum <"$pin_bytes" | cut -d' ' -f1)"
+  if [ "$pin_mode_status" != 0 ] || [ ! -s "$pin_bytes" ]; then
+    fail "$pin_mode emitted nothing, so $pin_name cannot be checked against it"
+  elif [ "$pin_emitted" = "$empty_digest" ]; then
+    fail "$pin_mode emitted the empty digest, which no adopter file can match"
+  elif [ -n "$pin_recorded" ] && [ "$pin_recorded" = "$pin_emitted" ]; then
+    pass "$pin_name digests the bytes $pin_mode writes to disk"
+  else
+    fail "$pin_name does not match what $pin_mode emits ($pin_recorded vs $pin_emitted)"
+  fi
+  rm -f "$pin_bytes"
 done
-
-empty_digest="$(printf '' | sha256sum | cut -d' ' -f1)"
 # The fixture commit is written into a scratch object store: `hash-object -w`
 # and `commit-tree` would otherwise leave dangling objects in the real
 # repository for a test that only needs them for the length of this block.
@@ -628,6 +640,55 @@ if [ "$staged_fixture" = true ]; then
     fail "an unresolvable ADR-index suite pinned an unexpected digest: $mutated_pin"
   fi
 fi
+# The other end of the same fault: a resolver can succeed and yield nothing — an
+# empty blob at the ref, or a 200 with an empty body. `printf` would turn that
+# into a lone newline, non-empty enough to satisfy every downstream guard while
+# pinning a real-looking digest over a one-byte generator.
+newline_digest="$(printf '\n' | sha256sum | cut -d' ' -f1)"
+empty_sha=""
+empty_index="$(mktemp)"
+empty_staged=true
+GIT_INDEX_FILE="$empty_index" git -C "$repo_root" read-tree "$sha" \
+  || { fail "could not stage the pinned tree for the empty-generator fixture"; empty_staged=false; }
+if [ "$empty_staged" = true ]; then
+  empty_blob="$(git -C "$repo_root" hash-object -w -t blob /dev/null)"
+  if [ -z "$empty_blob" ]; then
+    fail "could not write the empty generator blob"
+  elif ! GIT_INDEX_FILE="$empty_index" git -C "$repo_root" update-index \
+    --cacheinfo 100644,"$empty_blob",scripts/gen-adr-index.sh; then
+    fail "could not replace gen-adr-index.sh in the empty-generator fixture"
+  else
+    empty_tree="$(GIT_INDEX_FILE="$empty_index" git -C "$repo_root" write-tree)"
+    empty_sha="$(
+      GIT_AUTHOR_NAME='changelog-caller-contract' \
+      GIT_AUTHOR_EMAIL='changelog-caller-contract@invalid' \
+      GIT_COMMITTER_NAME='changelog-caller-contract' \
+      GIT_COMMITTER_EMAIL='changelog-caller-contract@invalid' \
+      git -C "$repo_root" commit-tree "$empty_tree" -p "$sha" -m 'generator emptied'
+    )"
+    [ -n "$empty_sha" ] || fail "could not build the empty-generator fixture commit"
+  fi
+fi
+rm -f "$empty_index"
+
+if [ -n "$empty_sha" ]; then
+  bash "$gen" adr-index-generator "$empty_sha" >/dev/null 2>&1 \
+    && fail "adr-index-generator emitted a lone newline for an empty canonical generator" \
+    || pass "adr-index-generator refuses an empty canonical generator rather than emitting a newline"
+
+  empty_contract="$(bash "$gen" contract-test "$empty_sha" 2>/dev/null)"
+  empty_pin="$(grep -m1 '^ADR_INDEX_SHA256=' <<<"$empty_contract" | cut -d'"' -f2)"
+  if ! grep -q "^CONTRACT_REF=\"$empty_sha\"$" <<<"$empty_contract"; then
+    fail "contract-test emitted nothing for a ref whose ADR-index generator is empty"
+  elif [ -z "$empty_pin" ]; then
+    pass "an empty canonical generator pins nothing rather than the digest of a newline"
+  elif [ "$empty_pin" = "$newline_digest" ]; then
+    fail "an empty canonical generator pinned the digest of a lone newline"
+  else
+    fail "an empty canonical generator pinned an unexpected digest: $empty_pin"
+  fi
+fi
+
 unset GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
 
 contract_validation="$(sed -n '/^  contract-test)/,/^    ;;/p' "$gen")"
