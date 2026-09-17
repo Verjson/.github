@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+import urllib.parse
 from pathlib import Path
 
 import yaml
@@ -591,9 +592,14 @@ def verify_adopter_conformance(contract: dict, read, repositories: list[dict], c
     for full_name in covered:
         branch = default_branches.get(full_name)
         require(isinstance(branch, str) and branch, f"{full_name} reports no default branch")
+        # Git permits `#` and `&` in a ref name. Raw in a query string the first
+        # truncates it and the second starts another parameter, so an unencoded
+        # probe reads a branch nobody asked about and reports what it finds
+        # there as this adopter's state.
+        reference = urllib.parse.quote(branch, safe="/")
         entries = paginated_items(
             read,
-            f"repos/{full_name}/contents/.github/workflows?ref={branch}",
+            f"repos/{full_name}/contents/.github/workflows?ref={reference}",
             allow_missing=True,
         )
         present = {entry.get("path") for entry in entries if entry.get("type") == "file"}

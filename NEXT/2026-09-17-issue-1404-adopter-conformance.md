@@ -71,6 +71,13 @@ adopter-controlled workflow text becomes an input to hub automation, and the
 file name asked about comes from the reviewed contract. No adopter is in that
 state today, so the check adds no findings to the current fleet report.
 
+The branch the probe names is percent-encoded. Git permits `#` and `&` in a ref
+name, and raw in a query string the first truncates it while the second starts
+another parameter, so an unencoded probe reads a branch nobody asked about and
+reports what it finds there as the adopter's state — against an adopter whose
+default branch carries either character, as a fabricated non-adoption on the
+one signal that must not produce false positives.
+
 Membership is asserted by path, for regular files only; the audit does not read
 or compare caller contents, so a caller present at a stale contract SHA is out
 of scope here and remains ADR 0185's problem.

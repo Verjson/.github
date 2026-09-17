@@ -842,6 +842,21 @@ jobs:
                     rf"ai-review-merge\.yml:{state}",
                 )
 
+    def test_a_default_branch_needing_encoding_still_probes_that_branch(self):
+        # Git permits `#` and `&` in a ref name. Interpolated raw into a query
+        # string, `#` truncates it and `&` starts another parameter, so the
+        # audit would silently probe a branch nobody asked about and report
+        # whatever it found there. The probe must name the branch it means.
+        repositories = self.fixture["orgs/Verjson/repos?per_page=100&type=all"][0]
+        beta = next(item for item in repositories if item["full_name"] == "Verjson/beta")
+        listing = self.fixture.pop("repos/Verjson/beta/contents/.github/workflows?ref=develop/next")
+        beta["default_branch"] = "release#1&2"
+        self.fixture["repos/Verjson/beta/contents/.github/workflows?ref=release%231%262"] = listing
+        self.fixture["repos/Verjson/beta/environments/ai-review-app/deployment-branch-policies"] = [
+            {"branch_policies": [{"name": "release#1&2", "type": "branch"}]}
+        ]
+        self.assertEqual(AUDIT.audit(self.contract, self.read)["armed_repositories"], 2)
+
     def test_malformed_contract_fails_with_controlled_diagnostics(self):
         for section, key, value, diagnostic in (
             (None, "ruleset_id", True, "ruleset ID"),
