@@ -5581,9 +5581,11 @@ jobs:
           GOOGLE_APPLICATION_CREDENTIALS: ''
           NODE_AUTH_TOKEN: ''
           NPM_TOKEN: ''
+          RESTORE_PERSISTED_PUBLIC_CACHE: ${{ inputs.cache && inputs.package-manager == 'npm' }}
           RUNTIME_CACHE_DIR: ${{ runner.temp }}/secretless-runtime-cache-${{ github.run_id }}-${{ github.run_attempt }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           RUN_ID: ${{ github.run_id }}
+          SECRETLESS_RUNTIME_PUBLIC_CACHE: ${{ inputs.secretless-runtime-public-cache }}
         run: |
           unset -v GH_TOKEN GITHUB_TOKEN NODE_AUTH_TOKEN NPM_TOKEN AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN GOOGLE_APPLICATION_CREDENTIALS AZURE_CREDENTIALS ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
           python3 - <<'PY'
@@ -6239,9 +6241,36 @@ jobs:
               # RUNTIME_CACHE_DIR rather than the ambient cache variables this
               # sandbox exists to mask, and only ever from content-v2: no
               # ambient npm config, index, or credential state is eligible.
+              # The install step populates the runtime cache when
+              # SECRETLESS_RUNTIME_PUBLIC_CACHE is true *or* when
+              # RESTORE_PERSISTED_PUBLIC_CACHE is -- the latter being
+              # `inputs.cache && inputs.package-manager == 'npm'`. Gating on the
+              # first alone would leave an ordinary `cache: true` npm caller
+              # resolving to a silent None with the cache populated and bound,
+              # which is Verjson/.github#1372 unchanged for that caller.
+              requested = any(
+                  script_environment.get(name, "") == "true"
+                  for name in (
+                      "RESTORE_PERSISTED_PUBLIC_CACHE",
+                      "SECRETLESS_RUNTIME_PUBLIC_CACHE",
+                  )
+              )
               runtime_cache_value = script_environment.get("RUNTIME_CACHE_DIR", "")
               if not runtime_cache_value:
+                  # The step sets RUNTIME_CACHE_DIR from an unconditional
+                  # expression, so an empty value means the env key itself was
+                  # dropped. Starting the sandbox with no cache bind here would
+                  # silently reproduce Verjson/.github#1372.
+                  if requested:
+                      raise SystemExit(
+                          "compatibility public cache is requested without a runtime cache path")
                   return None
+              # Both sides of the comparison below are built from this step's
+              # own env: block, so this is a drift check between two
+              # workflow-controlled expressions -- it catches RUNTIME_CACHE_DIR
+              # being re-pointed away from the run-scoped path the population
+              # step writes. It is not validation of untrusted input and cannot
+              # detect a wrong RUNNER_TEMP, which it reads as the truth.
               runner_temp = Path(script_environment.get("RUNNER_TEMP", ""))
               runtime_cache = Path(runtime_cache_value)
               expected_runtime = runner_temp / (
@@ -6258,6 +6287,13 @@ jobs:
                   try:
                       candidate_metadata = candidate.lstat()
                   except (FileNotFoundError, NotADirectoryError):
+                      # A caller that asked for the cache must get it: a missing
+                      # component means the population step renamed or relocated
+                      # the runtime cache and is otherwise indistinguishable from
+                      # the feature being off.
+                      if requested:
+                          raise SystemExit(
+                              "compatibility public cache is requested but was never populated")
                       # secretless-runtime-public-cache is off, so the runtime
                       # cache was never created. Start the sandbox without it.
                       return None
@@ -6315,7 +6351,55 @@ jobs:
                       ],
                   )
               finally:
-                  shutil.rmtree(staging, ignore_errors=True)
+                  try:
+                      shutil.rmtree(staging)
+                  except OSError:
+                      # Consumer code runs as the runner's uid inside the
+                      # sandbox and can seal a staged directory, so cleanup can
+                      # legitimately fail. The residue outlives this step --
+                      # the job-end cleanup does not cover the staging prefix --
+                      # so report the staging root rather than swallowing it.
+                      # Only this step's own mkdtemp path is named: no
+                      # consumer-chosen path reaches the log.
+                      print(
+                          "::warning::compatibility public cache staging was not "
+                          f"removed: {staging}",
+                          file=sys.stderr,
+                      )
+
+
+          # bwrap consumes each of these flags with a fixed arity, and only the
+          # offset named here becomes a mountpoint inside the sandbox. Walking
+          # the list by that table is what makes the ambient-mask guard below
+          # actually derived from the bind arguments: a positional slice holds
+          # only while every element is a `--bind src dst` triple, and silently
+          # re-indexes onto a source path or a flag the moment an argument of
+          # different arity is added. An unrecognized or truncated argument
+          # fails closed rather than yielding a guard that covers nothing.
+          PUBLIC_CACHE_MOUNT_ARITY = {
+              "--bind": (2, 2),
+              "--dir": (1, 1),
+              "--ro-bind": (2, 2),
+              "--ro-bind-try": (2, 2),
+              "--tmpfs": (1, 1),
+          }
+
+
+          def public_cache_bind_targets(public_cache_arguments):
+              targets = []
+              index = 0
+              while index < len(public_cache_arguments):
+                  arity, destination = PUBLIC_CACHE_MOUNT_ARITY.get(
+                      public_cache_arguments[index], (None, None))
+                  if arity is None:
+                      raise SystemExit(
+                          "compatibility public cache bind argument is unrecognized")
+                  if index + arity >= len(public_cache_arguments):
+                      raise SystemExit(
+                          "compatibility public cache bind argument is truncated")
+                  targets.append(Path(public_cache_arguments[index + destination]))
+                  index += arity + 1
+              return targets
 
 
           def run_sandboxed_consumer(
@@ -6374,6 +6458,13 @@ jobs:
                       str(ambient_home / ".npmrc"),
                   ))
               ambient_masks.update(("/etc/npmrc", "/usr/local/etc/npmrc"))
+              # Masks are applied after the public cache bind, so a mask that
+              # covers the bind target would shadow it and fail open to
+              # Verjson/.github#1372. Derive the guarded paths from the bind
+              # arguments themselves, by the arity of each flag rather than by
+              # position, so the two cannot drift apart when the argument list
+              # changes shape.
+              public_cache_binds = public_cache_bind_targets(public_cache_arguments)
               masked_targets = set()
               masked_directories = []
               for candidate in sorted(
@@ -6394,6 +6485,11 @@ jobs:
                       pass
                   else:
                       raise SystemExit("ambient npm path overlaps compatibility workspace")
+                  for bind_target in public_cache_binds:
+                      if (bind_target.is_relative_to(candidate_path)
+                              or candidate_path.is_relative_to(bind_target)):
+                          raise SystemExit(
+                              "ambient npm path overlaps compatibility public cache bind")
                   try:
                       candidate_metadata = candidate_path.lstat()
                   except FileNotFoundError:

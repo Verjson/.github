@@ -20,6 +20,20 @@ ADMISSION_SOURCE = f".runner-admission-reconcile-source-{UNIQUE_SUFFIX}"
 SECRET_SCOPE_SOURCE = f".org-secret-scope-audit-source-{UNIQUE_SUFFIX}"
 RULESET_CONFORMANCE_SOURCE = f".org-ruleset-conformance-source-{UNIQUE_SUFFIX}"
 SETUP_PYTHON = re.compile(r"^actions/setup-python@[0-9a-f]{40}$")
+# The arm audit reports through the finding-state adjudicator so a newly
+# appearing finding is loud and a recorded one is quiet (#1409). Both the audit
+# and its reviewed expectation are repository-controlled paths; neither may be
+# redirected to an inherited or untrusted one.
+ARM_AUDIT_COMMAND = (
+    "python3 scripts/audit-finding-state.py"
+    " --audit ai-review-arm"
+    " --expectations config/audit-expected-findings.json"
+    # The audit declares the exit statuses it uses, so any other status is a
+    # crash rather than a verdict. Pinned here because widening the declared
+    # set is how a crashed privileged audit would start reading as conformance.
+    " --expect-status 0 --expect-status 1"
+    " -- python3 scripts/ai-review-required-workflow-audit.py"
+)
 
 
 class ContractError(Exception):
@@ -328,8 +342,8 @@ def validate_arm_audit(document: object) -> None:
     env = require_keys(audit["env"], {"GH_TOKEN"}, "arm audit env")
     require(env["GH_TOKEN"] == "${{ secrets.ORG_ADMIN_TOKEN }}", "arm-audit token binding changed")
     require(
-        audit["run"] == "python3 scripts/ai-review-required-workflow-audit.py",
-        "arm-audit command must remain the read-only audit",
+        audit["run"] == ARM_AUDIT_COMMAND,
+        "arm-audit command must remain the read-only audit behind its reviewed expectation",
     )
     validate_cleanup(steps[4], "arm-audit cleanup", RULESET_CONFORMANCE_SOURCE)
 
@@ -529,6 +543,16 @@ def main() -> int:
             "          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}\n",
             "          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}\n"
             "          ORG_RULESET_POLICY: /tmp/untrusted.json\n",
+            1,
+        ),
+        "inherited expectation path": ruleset_conformance_text.replace(
+            "--expectations config/audit-expected-findings.json",
+            "--expectations /tmp/untrusted.json",
+            1,
+        ),
+        "unadjudicated arm audit": ruleset_conformance_text.replace(
+            ARM_AUDIT_COMMAND,
+            "python3 scripts/ai-review-required-workflow-audit.py",
             1,
         ),
         "test policy argument": ruleset_conformance_text.replace(
