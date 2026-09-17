@@ -156,6 +156,24 @@ Path(sys.argv[2], "protected-run-lanes.sh").write_text(
 for name in ("GH_TOKEN", "GITHUB_TOKEN", "NODE_AUTH_TOKEN", "NPM_TOKEN",
              "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL"):
     assert runner["env"][name] == ""
+# The sandbox resolves its verified public cache bind from these keys alone, so
+# deleting them reproduces Verjson/.github#1372 with every consumer-facing case
+# still green: the harness injects its own values and never reads the workflow's.
+runtime_cache_keys = {
+    "RUNTIME_CACHE_DIR": (
+        "${{ runner.temp }}/secretless-runtime-cache-"
+        "${{ github.run_id }}-${{ github.run_attempt }}"
+    ),
+    "RUN_ATTEMPT": "${{ github.run_attempt }}",
+    "RUN_ID": "${{ github.run_id }}",
+    "SECRETLESS_RUNTIME_PUBLIC_CACHE": "${{ inputs.secretless-runtime-public-cache }}",
+}
+for current_runner in (runner, protected_runner):
+    for name, expression in runtime_cache_keys.items():
+        assert current_runner["env"][name] == expression, name
+    assert sorted(current_runner["env"]) == list(current_runner["env"]), (
+        "compatibility step env keys are no longer alphabetically ordered"
+    )
 assert "tarfile.open" in runner["run"] and "O_NOFOLLOW" in runner["run"]
 assert 'subprocess.run(["npm", "install"' not in runner["run"]
 assert "artifact.read_bytes" not in runner["run"]
