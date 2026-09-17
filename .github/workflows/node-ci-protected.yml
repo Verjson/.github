@@ -6332,7 +6332,21 @@ jobs:
                       ],
                   )
               finally:
-                  shutil.rmtree(staging, ignore_errors=True)
+                  try:
+                      shutil.rmtree(staging)
+                  except OSError:
+                      # Consumer code runs as the runner's uid inside the
+                      # sandbox and can seal a staged directory, so cleanup can
+                      # legitimately fail. The residue outlives this step --
+                      # the job-end cleanup does not cover the staging prefix --
+                      # so report the staging root rather than swallowing it.
+                      # Only this step's own mkdtemp path is named: no
+                      # consumer-chosen path reaches the log.
+                      print(
+                          "::warning::compatibility public cache staging was not "
+                          f"removed: {staging}",
+                          file=sys.stderr,
+                      )
 
 
           def run_sandboxed_consumer(

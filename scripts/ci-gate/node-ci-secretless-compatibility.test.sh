@@ -618,7 +618,8 @@ prepare_archive_case() {
     "$fixture/cold-cache/_cacache/content-v2/sha512"
   rm -rf "$tmp/archive-cases/runner-temps/$mutation"
   mkdir -p "$tmp/archive-cases/runner-temps/$mutation"
-  if [ "$mutation" = public-cache ] || [ "$mutation" = public-cache-masked ]; then
+  if [ "$mutation" = public-cache ] || [ "$mutation" = public-cache-masked ] \
+    || [ "$mutation" = public-cache-residue ]; then
     local content_root="$tmp/archive-cases/runner-temps/$mutation/$runtime_cache_name/_cacache/content-v2"
     mkdir -p "$content_root/${public_cache_sentinel%/*}"
     printf '%s\n' verified-public-blob > "$content_root/$public_cache_sentinel"
@@ -671,6 +672,10 @@ if (process.env.PUBLIC_CACHE_SENTINEL) {
   );
   fs.writeFileSync(`${contentRoot}/${process.env.PUBLIC_CACHE_SENTINEL}`, 'rewritten\n');
   fs.writeFileSync(`${contentRoot}/intruder`, 'consumer-write');
+  if (process.env.PUBLIC_CACHE_RESIDUE) {
+    fs.mkdirSync(`${contentRoot}/sealed`, {recursive: true});
+    fs.chmodSync(`${contentRoot}/sealed`, 0o000);
+  }
 }
 const mountRemoval = childProcess.spawnSync('rmdir', ['.cjs-build'], {encoding: 'utf8'});
 assert.notEqual(mountRemoval.status, 0);
@@ -850,7 +855,7 @@ run_public_cache_case() {
   if [ "$#" -gt 0 ]; then
     archive_case_env+=("$@")
   fi
-  if [ "$mutation" = public-cache ]; then
+  if [ "$mutation" = public-cache ] || [ "$mutation" = public-cache-residue ]; then
     archive_case_env+=("PUBLIC_CACHE_SENTINEL=$public_cache_sentinel")
   fi
   run_archive_case "$mutation"
@@ -940,6 +945,27 @@ fi
 
 # An ambient mask equal to the sandbox bind target would append its --tmpfs
 # after the bind and shadow it, failing open to Verjson/.github#1372.
+# Consumer code runs as the runner's uid and can seal a staged directory, so
+# the staging copy's cleanup must report residue rather than swallow it.
+if run_public_cache_case public-cache-residue \
+  "$tmp/archive-cases/runner-temps/public-cache-residue/$runtime_cache_name" true \
+  PUBLIC_CACHE_RESIDUE=1; then
+  residue_status=0
+else
+  residue_status=$?
+fi
+if [ "$residue_status" -ne 0 ]; then
+  fail "sealing a staged directory broke the compatibility run instead of leaving residue"
+elif [ ! -f "$tmp/archive-cases/public-cache-residue/compat-results/consumer-ran" ]; then
+  fail "the staging-residue case never ran consumer code"
+elif grep -qF '::warning::compatibility public cache staging was not removed' \
+  "$tmp/archive-cases/public-cache-residue/run.stderr"; then
+  pass "staging residue a consumer sealed is reported rather than silently left behind"
+else
+  fail "staging residue a consumer sealed was swallowed instead of reported"
+fi
+chmod -R u+rwX "$tmp/archive-cases/runner-temps/public-cache-residue" 2>/dev/null || true
+
 if run_public_cache_case public-cache-masked \
   "$tmp/archive-cases/runner-temps/public-cache-masked/$runtime_cache_name" true \
   NPM_CONFIG_CACHE=/dev/shm/npm-cache; then
@@ -1027,9 +1053,10 @@ PY
   else
     mutation_status=$?
   fi
-  if [ "$mutation_status" -eq 8 ] \
+  if [ "$mutation_status" -eq 9 ] \
     && grep -qFx 'not ok - verified public cache content did not reach the sandbox, or exposed the job cache' "$mutation_root/run.log" \
     && grep -qFx 'not ok - a caller without a runtime public cache could not start the compatibility sandbox' "$mutation_root/run.log" \
+    && grep -qFx 'not ok - sealing a staged directory broke the compatibility run instead of leaving residue' "$mutation_root/run.log" \
     && grep -qFx 'not ok - an ambient mask shadowing the public cache bind failed without naming its reason' "$mutation_root/run.log" \
     && grep -qFx 'diagnostic - resolved compatibility consumer return-code=1 stderr-category=bubblewrap-unavailable' "$mutation_root/run.log" \
     && grep -qFx 'diagnostic - cold-cache compatibility consumer return-code=1 stderr-category=bubblewrap-unavailable' "$mutation_root/run.log" \
@@ -1069,10 +1096,11 @@ PY
   else
     cache_mutation_status=$?
   fi
-  if [ "$cache_mutation_status" -eq 3 ] \
+  if [ "$cache_mutation_status" -eq 4 ] \
     && grep -qFx 'not ok - cold-cache caret consumer did not preserve its installed dependency graph' "$cache_mutation_root/run.log" \
     && grep -qFx 'not ok - verified public cache content did not reach the sandbox, or exposed the job cache' "$cache_mutation_root/run.log" \
     && grep -qFx 'not ok - a caller without a runtime public cache could not start the compatibility sandbox' "$cache_mutation_root/run.log" \
+    && grep -qFx 'not ok - sealing a staged directory broke the compatibility run instead of leaving residue' "$cache_mutation_root/run.log" \
     && grep -qFx 'diagnostic - cold-cache compatibility consumer return-code=1 stderr-category=stderr-suppressed' "$cache_mutation_root/run.log" \
     && grep -qFx 'diagnostic - verified public cache compatibility consumer return-code=1 stderr-category=stderr-suppressed' "$cache_mutation_root/run.log" \
     && grep -qFx 'diagnostic - absent public cache compatibility consumer return-code=1 stderr-category=stderr-suppressed' "$cache_mutation_root/run.log"; then
@@ -1107,10 +1135,11 @@ PY
   else
     mask_mutation_status=$?
   fi
-  if [ "$mask_mutation_status" -eq 4 ] \
+  if [ "$mask_mutation_status" -eq 5 ] \
     && grep -qFx 'not ok - cold-cache caret consumer did not preserve its installed dependency graph' "$mask_mutation_root/run.log" \
     && grep -qFx 'not ok - verified public cache content did not reach the sandbox, or exposed the job cache' "$mask_mutation_root/run.log" \
     && grep -qFx 'not ok - a caller without a runtime public cache could not start the compatibility sandbox' "$mask_mutation_root/run.log" \
+    && grep -qFx 'not ok - sealing a staged directory broke the compatibility run instead of leaving residue' "$mask_mutation_root/run.log" \
     && grep -qFx 'not ok - an ambient mask shadowing the public cache bind failed without naming its reason' "$mask_mutation_root/run.log" \
     && grep -qFx 'diagnostic - cold-cache compatibility consumer return-code=1 stderr-category=stderr-suppressed' "$mask_mutation_root/run.log" \
     && grep -qFx 'diagnostic - verified public cache compatibility consumer return-code=1 stderr-category=stderr-suppressed' "$mask_mutation_root/run.log" \
