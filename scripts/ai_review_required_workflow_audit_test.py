@@ -698,7 +698,7 @@ jobs:
         # hard-requires and every pull request in the repository fails the arm.
         self.remove_adopter_caller("Verjson/alpha", ".github/workflows/ai-review-merge.yml")
         self.assert_audit_error(
-            r"adopter caller set.*Verjson/alpha:\.github/workflows/ai-review-merge\.yml",
+            r"cannot satisfy the arm.*Verjson/alpha:\.github/workflows/ai-review-merge\.yml",
         )
 
     def test_an_armed_adopter_without_the_review_environment_is_reported(self):
@@ -792,7 +792,34 @@ jobs:
             if entry["path"] == ".github/workflows/ai-review-merge.yml":
                 entry["type"] = "dir"
         self.assert_audit_error(
-            r"adopter caller set.*Verjson/alpha:\.github/workflows/ai-review-merge\.yml",
+            r"cannot satisfy the arm.*Verjson/alpha:\.github/workflows/ai-review-merge\.yml",
+        )
+
+    def test_an_adopter_the_arm_blocks_is_reported_apart_from_an_incomplete_one(self):
+        # Measured against the live fleet on 2026-09-17: 4 of 29 armed adopters
+        # lack the caller `gate-rearm.yml` hard-requires and every pull request
+        # in them fails, while 19 merely lack the lifecycle re-arm caller and
+        # merge normally. Reported in one bucket, the 4 arrive as 8 of 31 sorted
+        # strings — the signal #1401 needs, buried under the backlog ADR 0187
+        # predicted from the pin skew.
+        self.remove_adopter_caller("Verjson/alpha", ".github/workflows/ai-review-merge.yml")
+        self.remove_adopter_caller("Verjson/beta", ".github/workflows/ai-review-label-rearm.yml")
+        message = self.audit_error_message()
+        blocked, incomplete = (part.strip() for part in message.split(" | ")[:2])
+        self.assertIn("cannot satisfy the arm", blocked)
+        self.assertIn("Verjson/alpha:.github/workflows/ai-review-merge.yml", blocked)
+        self.assertNotIn("Verjson/beta", blocked)
+        self.assertIn("incomplete generated adopter caller set", incomplete)
+        self.assertIn("Verjson/beta:.github/workflows/ai-review-label-rearm.yml", incomplete)
+
+    def test_the_declared_sets_partition_the_generated_caller_family(self):
+        # The two sets differ in what their absence costs, not in what is
+        # expected: together they are still the whole generated family, so
+        # splitting the report can never quietly drop a member from the audit.
+        callers = self.contract["adopter_conformance"]["caller_workflows"]
+        self.assertEqual(
+            sorted(callers["admission"] + callers["completeness"]),
+            sorted(ADOPTER_CALLERS),
         )
 
     def test_malformed_contract_fails_with_controlled_diagnostics(self):
@@ -801,21 +828,46 @@ jobs:
             ("authorization", "variables", [{}], "authorization variables"),
             ("authorization", "app_permissions", {"checks": "write"}, "permission contract"),
             ("authorization", "app_events", ["pull_request"], "event contract"),
-            ("adopter_conformance", "caller_workflows", [], "adopter caller workflows"),
-            ("adopter_conformance", "caller_workflows", ["ai-review-merge.yml"], "adopter caller workflows"),
             (
                 "adopter_conformance",
                 "caller_workflows",
-                [".github/workflows/a.yml", ".github/workflows/a.yml"],
-                "adopter caller workflows",
+                {"admission": [".github/workflows/ai-review-merge.yml"]},
+                "must declare an admission and a completeness set",
             ),
-            # A caller set that omits the one member `gate-rearm.yml` hard-requires
-            # would let the audit certify the exact state #1401 reported.
             (
                 "adopter_conformance",
                 "caller_workflows",
-                [".github/workflows/ai-privileged-merge.yml"],
-                "omits the review caller",
+                {"admission": [], "completeness": [".github/workflows/a.yml"]},
+                "adopter admission caller workflows are invalid",
+            ),
+            (
+                "adopter_conformance",
+                "caller_workflows",
+                {
+                    "admission": [".github/workflows/ai-review-merge.yml"],
+                    "completeness": ["ai-review-label-rearm.yml"],
+                },
+                "adopter completeness caller workflows are invalid",
+            ),
+            (
+                "adopter_conformance",
+                "caller_workflows",
+                {
+                    "admission": [".github/workflows/ai-review-merge.yml"],
+                    "completeness": [".github/workflows/ai-review-merge.yml"],
+                },
+                "declared in both sets",
+            ),
+            # An admission set that is not the file `gate-rearm.yml` reads would
+            # let the audit certify the exact state #1401 reported.
+            (
+                "adopter_conformance",
+                "caller_workflows",
+                {
+                    "admission": [".github/workflows/ai-privileged-merge.yml"],
+                    "completeness": [".github/workflows/ai-review-merge.yml"],
+                },
+                "admission set must be exactly the caller",
             ),
             ("adopter_conformance", "environment", "ai-review", "review environment contract"),
             (

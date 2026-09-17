@@ -50,11 +50,19 @@ appearance of confinement with none of its effect.
 class at a time would make the fleet take as many scheduled days to become
 visible as there are classes, which is the failure shape #1404 exists to remove.
 
-The declared set is the full generated caller family — `ai-review-merge.yml`,
-`ai-review-label-rearm.yml`, `ai-privileged-merge.yml`, `ai-promotion-retry.yml`
-— so the first scheduled run will report adopters that are merely incomplete
-alongside the four that are broken. That is the fleet state ADR 0187 predicted
-from the pin skew, not a defect in the audit. Membership is asserted by path for
-regular files only; the audit does not read or compare caller contents, so a
-caller present at a stale contract SHA is out of scope here and remains ADR
-0185's problem.
+**The family is reported in two classes, because its members fail differently.**
+The contract declares an `admission` set — exactly the `ai-review-merge.yml`
+that `gate-rearm.yml` reads out of the target repository and treats as fatal —
+and a `completeness` set holding the rest of the generated family. Absence from
+the first is why every pull request in a repository fails; absence from the
+second degrades the lifecycle while merges continue. Run against the live fleet
+on 2026-09-17, one flat bucket reported 31 findings in which the four
+repositories #1401 measured arrived as 8 sorted strings; split, the admission
+class names those four repositories and nothing else, and the 27 remaining
+findings are the adoption backlog ADR 0187 predicted from the pin skew. A
+control that buries its own signal under a backlog is the failure shape #1404
+exists to remove, so the split is part of the fix rather than a refinement of it.
+
+Membership is asserted by path, for regular files only; the audit does not read
+or compare caller contents, so a caller present at a stale contract SHA is out
+of scope here and remains ADR 0185's problem.

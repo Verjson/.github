@@ -222,19 +222,31 @@ def read_contract(path: Path = CONTRACT) -> dict:
     require(isinstance(conformance, dict), "adopter conformance contract is missing")
     callers = conformance.get("caller_workflows")
     require(
-        isinstance(callers, list)
-        and callers
-        and all(
-            isinstance(value, str)
-            and re.fullmatch(r"\.github/workflows/[A-Za-z0-9._-]+\.ya?ml", value) is not None
-            for value in callers
-        )
-        and len(callers) == len(set(callers)),
-        "adopter caller workflows are invalid",
+        isinstance(callers, dict) and set(callers) == {"admission", "completeness"},
+        "adopter caller workflows must declare an admission and a completeness set",
     )
+    declared = []
+    for kind in ("admission", "completeness"):
+        values = callers[kind]
+        require(
+            isinstance(values, list)
+            and values
+            and all(
+                isinstance(value, str)
+                and re.fullmatch(r"\.github/workflows/[A-Za-z0-9._-]+\.ya?ml", value) is not None
+                for value in values
+            )
+            and len(values) == len(set(values)),
+            f"adopter {kind} caller workflows are invalid",
+        )
+        declared.extend(values)
+    require(len(declared) == len(set(declared)), "an adopter caller is declared in both sets")
+    # Admission is not a severity label chosen here: it is exactly the file
+    # `gate-rearm.yml` reads out of the target repository and treats as fatal,
+    # which is the same path this contract already pins as `retired_path`.
     require(
-        contract["retired_path"] in callers,
-        "adopter caller set omits the review caller the arm hard-requires",
+        callers["admission"] == [contract["retired_path"]],
+        "adopter admission set must be exactly the caller the arm hard-requires",
     )
     require(
         conformance.get("environment") == "ai-review-app",
@@ -558,7 +570,11 @@ def verify_adopter_conformance(contract: dict, read, repositories: list[dict], c
     The whole generated family is asserted, not any one member: `verjson-agents`
     carries the merge lane without the review caller `gate-rearm.yml`
     hard-requires, which satisfies a presence check while the arm still cannot
-    run at all (ADR 0187).
+    run at all (ADR 0187). The family is reported in two classes because its
+    members fail differently. Absence of the admission caller is what makes
+    every pull request in a repository fail; absence of the rest degrades the
+    lifecycle. Measured on 2026-09-17 that is 4 adopters against 19, so one
+    bucket would deliver the finding #1401 needs as a minority of a backlog.
 
     The adopter's workflow listing is adopter-controlled text. It is used only to
     test membership against the paths this contract declares — never parsed,
@@ -569,6 +585,7 @@ def verify_adopter_conformance(contract: dict, read, repositories: list[dict], c
         repository["full_name"]: repository.get("default_branch") for repository in repositories
     }
     environment = conformance["environment"]
+    blocked = []
     findings = []
     environment_findings = []
     for full_name in covered:
@@ -580,11 +597,12 @@ def verify_adopter_conformance(contract: dict, read, repositories: list[dict], c
             allow_missing=True,
         )
         present = {entry.get("path") for entry in entries if entry.get("type") == "file"}
-        findings.extend(
-            f"{full_name}:{caller}"
-            for caller in conformance["caller_workflows"]
-            if caller not in present
-        )
+        for kind, bucket in (("admission", blocked), ("completeness", findings)):
+            bucket.extend(
+                f"{full_name}:{caller}"
+                for caller in conformance["caller_workflows"][kind]
+                if caller not in present
+            )
         label = f"{full_name}:{environment}"
         pages = read(f"repos/{full_name}/environments/{environment}", allow_missing=True)
         if not pages:
@@ -626,6 +644,10 @@ def verify_adopter_conformance(contract: dict, read, repositories: list[dict], c
     reported = [
         concise_findings(name, items)
         for name, items in (
+            (
+                "armed adopters that cannot satisfy the arm: the admission caller is absent",
+                sorted(blocked),
+            ),
             ("armed adopters with an incomplete generated adopter caller set", sorted(findings)),
             ("armed adopters without a conforming review environment", sorted(environment_findings)),
         )
