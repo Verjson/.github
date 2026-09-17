@@ -15,8 +15,10 @@ out to fix — when `RUNTIME_CACHE_DIR` was empty, or when any component of the
 runtime cache path was missing. Neither branch could fire from the workflow,
 whose `env:` key is an unconditional expression, so the lenient path fired only
 on the regression it should have shouted about, or when the population step
-relocated the cache under an unchanged key. Both branches are now gated on
-`secretless-runtime-public-cache`: a caller that asked for the cache gets a
+relocated the cache under an unchanged key. Both branches are now gated on the
+condition that populates the cache — `RESTORE_PERSISTED_PUBLIC_CACHE` or
+`secretless-runtime-public-cache`, widened below after review found the first
+form of this gate too narrow: a caller that asked for the cache gets a
 named failure, a caller that did not still starts the sandbox without one.
 
 **The assertions that vanished are restored.** Nothing tested the compatibility
@@ -76,3 +78,11 @@ fold width it had been dumped at; `scripts/gen-conformance-regression-fixture.py
 now owns those round-trip parameters. It reproduces the previously committed
 fixture byte for byte from the pre-change contract, and the existing
 conformance assertion remains the check — no new validation was enabled.
+
+Review also found the new fixture generator splitting on its body marker without
+checking the marker was there. `str.split` returns the whole text when the
+separator is absent, so the entire fixture became the header and a second full
+dump was appended beneath it — and nothing caught it, because the conformance
+assertion parses the result and PyYAML keeps the last of duplicate keys. The
+fixture doubled in size on each run while every check stayed green. The marker is
+now required.

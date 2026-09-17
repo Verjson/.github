@@ -22,7 +22,18 @@ DUMP = {"sort_keys": False, "width": 1000}
 
 
 def render() -> str:
-    header = FIXTURE.read_text(encoding="utf-8").split(BODY_START, 1)[0]
+    # `str.split` returns the whole text when the separator is absent, so an
+    # unguarded `[0]` would make the entire fixture the "header" and append a
+    # second full dump beneath it. The conformance assertion parses the result
+    # and PyYAML takes the last of duplicate keys, so the fixture would double
+    # in size on every run while every check kept passing.
+    parts = FIXTURE.read_text(encoding="utf-8").split(BODY_START, 1)
+    if len(parts) != 2:
+        raise SystemExit(
+            f"{FIXTURE} does not contain the body marker {BODY_START!r}; "
+            "refusing to regenerate a fixture whose header cannot be located"
+        )
+    header = parts[0]
     document = yaml.safe_load(CONTRACT.read_text(encoding="utf-8"))
     if document["jobs"].pop("deferred-ci", None) is None:
         raise SystemExit("the contract no longer declares deferred-ci")
