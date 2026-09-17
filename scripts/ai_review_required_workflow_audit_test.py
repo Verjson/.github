@@ -368,6 +368,22 @@ jobs:
         self.live_pull_request_parameters()["require_extra_approval_for_unattributed_changes"] = True
         self.assertEqual(AUDIT.audit(self.contract, self.read)["state"], "ready")
 
+    def test_the_report_names_the_live_protection_fields_no_reviewed_image_pins(self):
+        # ADR 0188 accepts that a key GitHub adds is invisible to the comparison
+        # by construction — including one that weakens protection — and mitigates
+        # it with a periodic review that pins newly security-relevant fields. A
+        # review that starts by re-reading a whole vendor schema by eye does not
+        # happen, so the audit reports the exact candidate set instead (#1410).
+        # It still never judges them: an unpinned key is reported, never drift.
+        self.assertEqual(AUDIT.audit(self.contract, self.read)["unpinned_live_fields"], [])
+        self.live_pull_request_parameters()["require_extra_approval_for_unattributed_changes"] = True
+        report = AUDIT.audit(self.contract, self.read)
+        self.assertEqual(report["state"], "ready")
+        self.assertIn(
+            "main-protection.rules[3].parameters.require_extra_approval_for_unattributed_changes",
+            report["unpinned_live_fields"],
+        )
+
     def test_the_arm_image_tolerates_a_vendor_key_but_not_a_changed_value(self):
         # The live arm ruleset carries a `sha` GitHub resolves for the selected
         # workflow, which no reviewed image can contain. The same comparison that
@@ -378,6 +394,79 @@ jobs:
         self.assertEqual(AUDIT.audit(self.contract, self.read)["state"], "split")
         live_arm["enforcement"] = "evaluate"
         self.assert_audit_error("arm ruleset drifted from the fields its reviewed image asserts")
+
+    def test_the_report_names_the_unpinned_fields_of_every_contracted_ruleset(self):
+        # The review this feeds has to cover the whole contracted set, not just
+        # main-protection: the arm and both core-checks rulesets carry the same
+        # residual. The live arm's resolved `sha` and the live required checks'
+        # `integration_id` are the unpinned fields that exist today (#1410).
+        self.enter_split_state()
+        # main-protection is the first surface generated but sorts after the
+        # arm ruleset's label, so giving it a residual too makes generation
+        # order and sorted order differ -- without that the ordering assertion
+        # below holds for either implementation and proves nothing.
+        self.fixture[self.ruleset_path][0]["allow_force_pushes_for_maintainers"] = False
+        arm = self.fixture[f"orgs/Verjson/rulesets/{self.arm_id}"][0]
+        arm["rules"][0]["parameters"]["workflows"][0]["sha"] = "c597d69"
+        node = next(
+            declaration for declaration in self.contract["deterministic_rulesets"]
+            if declaration["stack"] == "node"
+        )
+        live_node = self.fixture[f"orgs/Verjson/rulesets/{node['id']}"][0]
+        live_node["rules"][0]["parameters"]["required_status_checks"][0]["integration_id"] = 15368
+        unpinned = AUDIT.audit(self.contract, self.read)["unpinned_live_fields"]
+        self.assertIn("ai-authorization-arm-required.rules[0].parameters.workflows[0].sha", unpinned)
+        self.assertIn(
+            "core-checks-node.rules[0].parameters.required_status_checks[0].integration_id",
+            unpinned,
+        )
+        # Ordered, so the review diff this feeds shows only what actually
+        # changed rather than every field moving whenever one is added.
+        self.assertEqual(unpinned, sorted(unpinned))
+
+    def test_a_contracted_ruleset_missing_from_the_listing_fails_rather_than_under_reporting(self):
+        """An absent candidate must be loud, because its residual reads as none.
+
+        The candidate lookup fell back to the normalized live ruleset, which by
+        construction carries no top-level key outside `RULESET_FIELDS` — so a
+        contracted ruleset missing from the org listing produced an empty
+        residual and the audit passed. That is the silence ADR 0188 rules out:
+        the report would say a ruleset pins everything precisely when it could
+        not be read at all.
+        """
+        self.enter_split_state()
+        listing = self.fixture["orgs/Verjson/rulesets"][0]
+        self.fixture["orgs/Verjson/rulesets"][0] = [
+            entry for entry in listing if entry["id"] != self.contract["ruleset_id"]
+        ]
+
+        with self.assertRaises(AUDIT.AuditError) as caught:
+            AUDIT.audit(self.contract, self.read)
+
+        self.assertIn(str(self.contract["ruleset_id"]), str(caught.exception))
+
+    def test_the_report_names_a_top_level_field_github_adds_but_not_its_metadata(self):
+        # `normalize_ruleset` keeps only the mutation payload, so a policy field
+        # GitHub adds at the top level is invisible to the comparison *and* would
+        # be invisible to the review this report feeds — the exact class ADR 0188
+        # warns about. Identity, provenance, and timestamps are not candidates.
+        live = self.fixture[self.ruleset_path][0]
+        live.update({
+            "node_id": "RRS_lACkfake",
+            "source": "Verjson",
+            "source_type": "Organization",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-09-17T00:00:00Z",
+            "_links": {"self": {"href": "https://api.github.com/orgs/Verjson/rulesets/18098028"}},
+            "current_user_can_bypass": "always",
+            "allow_force_pushes_for_maintainers": True,
+        })
+        unpinned = AUDIT.audit(self.contract, self.read)["unpinned_live_fields"]
+        self.assertIn("main-protection.allow_force_pushes_for_maintainers", unpinned)
+        self.assertEqual(
+            [field for field in unpinned if "allow_force_pushes_for_maintainers" not in field],
+            [],
+        )
 
     def test_the_deterministic_images_tolerate_a_vendor_key_but_not_a_changed_check(self):
         # Live required status checks carry the resolving App's `integration_id`,
