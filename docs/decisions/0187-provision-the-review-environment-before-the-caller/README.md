@@ -15,7 +15,7 @@ made the App private key environment-scoped precisely so it is reachable only fr
 default branch.
 
 `scripts/gen-ai-review-caller.sh` emits `with: {ai_review_environment: ai-review-app}`.
-Nothing creates that environment. Only this repository has one; no adopter does.
+Nothing creates that environment as part of adopting the caller.
 
 GitHub creates a referenced environment on first use, **with no protection rules**. So an
 adopter that installs the generated caller without first creating `ai-review-app` gets a
@@ -29,8 +29,22 @@ the required arm. The obvious fix — generate the caller and land it — would 
 created four unprotected environments while closing a visible failure. A remediation that
 trades a loud failure for a silent one is worse than the failure.
 
-The existing working adopters do not hit this because they are pinned at `27ede55e`, which
-predates the input. They will hit it the moment they advance.
+Measured on 2026-09-17 across the 29 repositories carrying `verjson-core-checks=enforced`:
+
+- **2 adopters name the input** — `verjson-ai` (pinned `881f7827`) and
+  `verjson-git-runners` (pinned `aecfb932`) — and both do have an `ai-review-app`
+  environment, so nothing is breaking today.
+- **22 carry a caller pinned before the input existed**, spread across **eleven distinct
+  contract SHAs**. None has the environment. Each acquires the exposure the moment it
+  advances its pin.
+- The remaining 5 have no review caller at all: `verjson-agents`, plus the four
+  remediated under #1401.
+
+The skew matters more than the count: the fleet does not advance together, so this is not
+one scheduled migration but 22 independent bumps, each capable of creating an unprotected
+environment on a green run without anyone deciding to. A Renovate-style pin bump is
+exactly such a change, and it is reviewed as a dependency update, not as a change to
+credential confinement.
 
 ## Decision
 
