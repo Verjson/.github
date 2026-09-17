@@ -6,7 +6,9 @@ ref must report UNKNOWN, never CURRENT. The invalid predecessor test reported
 "current" whenever both of its API calls failed, which is how the `#184` drift
 survived a sweep written to find it.
 """
+import base64
 import importlib.util
+import json
 import pathlib
 import unittest
 
@@ -122,6 +124,51 @@ class UnreachableIsNotEmpty(unittest.TestCase):
     def test_an_empty_listing_is_empty_not_unreachable(self):
         fci.gh = lambda *a: "[]"
         self.assertEqual(fci.workflows("Verjson/example"), {})
+
+
+class DirectoryListingCap(unittest.TestCase):
+    """The contents endpoint is unpaginated, and silently caps at 1,000 entries.
+
+    It returns a whole directory in one response — 49 entries for the hub's own
+    `.github/workflows` with no `Link` header — so there is no page to follow
+    and `--paginate` would change nothing. What it does do is stop at 1,000
+    entries, and a sweep that reports completeness cannot take a capped listing
+    for the whole directory.
+    """
+
+    def setUp(self):
+        self._gh = fci.gh
+        self._unreadable = list(fci.unreadable)
+        self.addCleanup(lambda: setattr(fci, "gh", self._gh))
+        self.addCleanup(lambda: fci.unreadable.__setitem__(
+            slice(None), self._unreadable))
+        fci.unreadable.clear()
+
+    @staticmethod
+    def _listing(count: int) -> str:
+        return json.dumps([{"name": f"w{i}.yml", "type": "file", "sha": A}
+                           for i in range(count)])
+
+    def _serve(self, count: int):
+        listing = self._listing(count)
+
+        def gh(*args: str):
+            return listing if "contents" in args[-1] else base64.b64encode(
+                b"on: push\n").decode()
+
+        fci.gh = gh
+
+    def test_a_listing_at_the_cap_is_reported_as_a_gap(self):
+        self._serve(fci.CONTENTS_DIR_LIMIT)
+        fci.workflows("Verjson/example")
+        self.assertTrue(any("Verjson/example:.github/workflows" in gap
+                            for gap in fci.unreadable),
+                        "a capped listing must name itself as a gap")
+
+    def test_a_listing_below_the_cap_reports_no_gap(self):
+        self._serve(3)
+        self.assertEqual(len(fci.workflows("Verjson/example")), 3)
+        self.assertEqual(fci.unreadable, [])
 
 
 if __name__ == "__main__":
