@@ -16,4 +16,4 @@ also validates the `required_status_checks` rule shape, so a malformed parameter
 block fails closed rather than raising.
 
 Applying the pending `core-checks-actions` binding is an organization ruleset
-mutation held for human application; see ADR 0186.
+mutation held for human application; see ADR 0190.
