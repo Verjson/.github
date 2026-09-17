@@ -348,5 +348,67 @@ class TheHarnessFailsClosed(unittest.TestCase):
             Evaluator({}, functions={}).evaluate('success()')
 
 
+# The credential the secretless lanes exist to keep away from PR-controlled
+# code. A reference to `secrets.NODE_AUTH_TOKEN` anywhere in a step definition
+# — `env:`, a `with:` token, an inline expression — is that credential reaching
+# the step, so the detector reads the whole definition rather than `env` alone.
+PACKAGE_CREDENTIAL = 'secrets.NODE_AUTH_TOKEN'
+
+
+def steps_given_the_package_credential(outcome):
+    """The executed steps whose definition references NODE_AUTH_TOKEN."""
+    return sorted(
+        _step_label_of(definition)
+        for definition in outcome.executed_step_definitions
+        if PACKAGE_CREDENTIAL in yaml.safe_dump(definition))
+
+
+def _step_label_of(definition):
+    return definition.get('name') or definition.get('uses') or str(
+        definition.get('run', ''))[:60]
+
+
+def build_test_in(contract, caller, scenario):
+    return outcomes_for(contract, caller, scenario)['build-test']
+
+
+SECRETLESS_PR = SCENARIOS[1]
+TRUSTED_REF_PUSH = SCENARIOS[2]
+SECRETLESS_ADOPTER = ADOPTERS / 'typescript-service.yml'
+CREDENTIALED_ADOPTER = ADOPTERS / 'minimal-defaults.yml'
+
+
+class TheSecretlessLaneNeverReceivesThePackageCredential(unittest.TestCase):
+    """Requirement 2 of Verjson/.github#1369: no job on the secretless path
+    receives NODE_AUTH_TOKEN. The acquisition job holds the credential and
+    executes nothing PR-controlled; `build-test` runs PR-controlled code and
+    must therefore never see it, on either secretless lane."""
+
+    def test_no_executed_build_step_references_the_package_credential(self):
+        for scenario in (SECRETLESS_PR, TRUSTED_REF_PUSH):
+            with self.subTest(scenario=scenario.name):
+                outcome = build_test_in(CONTRACT, SECRETLESS_ADOPTER, scenario)
+                self.assertEqual(
+                    [], steps_given_the_package_credential(outcome),
+                    'a step executing in the credentialless build job was '
+                    'handed the package credential the secretless lane exists '
+                    'to withhold from PR-controlled code')
+
+    def test_the_detector_finds_the_credential_where_the_contract_does_pass_it(self):
+        """Otherwise the assertion above passes because nothing is detected.
+
+        The credentialed lane is the positive control: the same detector, the
+        same contract, the opposite verdict. Without it a detector that never
+        matches — a renamed secret, a serialization that drops `env` — would
+        report every lane as clean.
+        """
+        outcome = build_test_in(CONTRACT, CREDENTIALED_ADOPTER, SECRETLESS_PR)
+        self.assertIn(
+            'npm ci', steps_given_the_package_credential(outcome),
+            'the credentialed lane no longer passes NODE_AUTH_TOKEN to any '
+            'step this detector can see, so the secretless assertion above '
+            'proves nothing')
+
+
 if __name__ == '__main__':
     unittest.main()
