@@ -396,6 +396,29 @@ jobs:
             unpinned,
         )
 
+    def test_the_report_names_a_top_level_field_github_adds_but_not_its_metadata(self):
+        # `normalize_ruleset` keeps only the mutation payload, so a policy field
+        # GitHub adds at the top level is invisible to the comparison *and* would
+        # be invisible to the review this report feeds — the exact class ADR 0188
+        # warns about. Identity, provenance, and timestamps are not candidates.
+        live = self.fixture[self.ruleset_path][0]
+        live.update({
+            "node_id": "RRS_lACkfake",
+            "source": "Verjson",
+            "source_type": "Organization",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-09-17T00:00:00Z",
+            "_links": {"self": {"href": "https://api.github.com/orgs/Verjson/rulesets/18098028"}},
+            "current_user_can_bypass": "always",
+            "allow_force_pushes_for_maintainers": True,
+        })
+        unpinned = AUDIT.audit(self.contract, self.read)["unpinned_live_fields"]
+        self.assertIn("main-protection.allow_force_pushes_for_maintainers", unpinned)
+        self.assertEqual(
+            [field for field in unpinned if "allow_force_pushes_for_maintainers" not in field],
+            [],
+        )
+
     def test_the_deterministic_images_tolerate_a_vendor_key_but_not_a_changed_check(self):
         # Live required status checks carry the resolving App's `integration_id`,
         # which the reviewed images do not pin. Ignoring it must not extend to

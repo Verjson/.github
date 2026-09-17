@@ -18,3 +18,8 @@ begins by re-reading a whole vendor schema by eye does not get done; this makes
 it a diff of a short list. The decision itself is unchanged: an unpinned key is
 reported, never treated as drift, because judging whether a new key matters
 stays the reviewer's call rather than something the code asserts about itself.
+
+The report covers the mutation payload and the top level beside it, because
+`normalize_ruleset` keeps only the payload and a policy field GitHub adds
+next to it would otherwise be invisible here too. Ruleset identity,
+provenance, and timestamps are excluded as non-policy.

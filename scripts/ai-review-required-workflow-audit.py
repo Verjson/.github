@@ -23,6 +23,13 @@ RULESET_FIELDS = ("name", "target", "enforcement", "bypass_actors", "conditions"
 # The only events GitHub will start a ruleset-required workflow on. A selected
 # workflow declaring none of them is inert, however valid its YAML is.
 RULESET_ELIGIBLE_TRIGGERS = frozenset({"pull_request", "pull_request_target", "merge_group"})
+# What the rulesets API returns beside the mutation payload: identity,
+# provenance, and timestamps. Any other top-level key is a candidate policy
+# field the contract does not pin, so it belongs in the review report.
+RULESET_METADATA_FIELDS = frozenset({
+    "id", "node_id", "source", "source_type", "created_at", "updated_at",
+    "_links", "links", "current_user_can_bypass",
+})
 
 
 class AuditError(Exception):
@@ -587,28 +594,41 @@ def verify_replacement_workflow(contract: dict, read) -> None:
     require(arm.get("runs-on") == expected_runner, "required arm is not routed through the trusted lane")
 
 
+def unpinned_ruleset_fields(ruleset: dict, image: dict) -> list[str]:
+    beside_the_payload = [
+        key for key in ruleset
+        if key not in RULESET_FIELDS and key not in RULESET_METADATA_FIELDS
+    ]
+    return unpinned_keys(normalize_ruleset(ruleset), image) + beside_the_payload
+
+
 def unpinned_live_fields(contract: dict, live: dict, candidates: dict[int, dict], state: str) -> list[str]:
     """Report, per contracted ruleset, the live fields no reviewed image pins.
 
     Every contracted ruleset carries the same residual, so a review fed only
     main-protection would leave the arm and both core-checks rulesets exactly as
-    unreviewable as before.
+    unreviewable as before. Top-level keys are read from the unnormalized
+    ruleset: `normalize_ruleset` keeps the mutation payload, so a policy field
+    GitHub adds beside it would otherwise be invisible to this report as well as
+    to the comparison. Identity, provenance, and timestamps are not candidates.
     """
     matched = contract["preimage" if state == "ready" else "postimage"]
-    surfaces = [(matched["name"], live, matched)]
+    surfaces = [(matched["name"], candidates.get(contract["ruleset_id"], live), matched)]
     if state != "ready":
-        arm = next(
-            candidate for candidate in candidates.values()
-            if candidate.get("name") == contract["arm_ruleset_name"]
-        )
-        surfaces.append((contract["arm_ruleset_name"], normalize_ruleset(arm), contract["arm_ruleset"]))
+        surfaces.append((
+            contract["arm_ruleset_name"],
+            next(
+                candidate for candidate in candidates.values()
+                if candidate.get("name") == contract["arm_ruleset_name"]
+            ),
+            contract["arm_ruleset"],
+        ))
     for declaration in contract["deterministic_rulesets"]:
-        image = declaration["image"]
-        surfaces.append((image["name"], normalize_ruleset(candidates[declaration["id"]]), image))
+        surfaces.append((declaration["image"]["name"], candidates[declaration["id"]], declaration["image"]))
     return sorted(
         f"{label}.{field}"
-        for label, live_ruleset, image in surfaces
-        for field in unpinned_keys(live_ruleset, image)
+        for label, ruleset, image in surfaces
+        for field in unpinned_ruleset_fields(ruleset, image)
     )
 
 
