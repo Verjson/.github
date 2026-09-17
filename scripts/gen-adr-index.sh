@@ -49,19 +49,32 @@ valid_date() {
 }
 
 validate_unique_numbers() {
-  local d slug num
+  local d slug num rc=0
   declare -A first_path=()
+  declare -A colliding=()
 
+  # Every colliding directory is named, not just the first pair. Aborting on the
+  # first pair hides the third member of a three-way collision, so whoever fixes
+  # the two that were named hits the same error again on a directory nothing
+  # mentioned.
   while IFS= read -r d; do
     slug="$(basename "$d")"
     num="${slug%%-*}"
     if [ -n "${first_path[$num]:-}" ]; then
-      echo "gen-adr-index: duplicate ADR number $num: ${first_path[$num]} and $d" >&2
-      return 1
+      colliding[$num]="${colliding[$num]:-${first_path[$num]}} and $d"
+      rc=1
+    else
+      first_path[$num]="$d"
     fi
-    first_path[$num]="$d"
   done < <(find "$dec_dir" -mindepth 1 -maxdepth 1 -type d \
     -name '[0-9][0-9][0-9][0-9]-*' | LC_ALL=C sort)
+
+  if [ "$rc" -ne 0 ]; then
+    for num in $(printf '%s\n' "${!colliding[@]}" | LC_ALL=C sort); do
+      echo "gen-adr-index: duplicate ADR number $num: ${colliding[$num]}" >&2
+    done
+  fi
+  return "$rc"
 }
 
 gen_table() {

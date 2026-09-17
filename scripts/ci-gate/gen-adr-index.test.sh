@@ -131,6 +131,41 @@ else
   fail "--check duplicate failure did not name both conflicting paths: $duplicate_check_output"
 fi
 
+# A three-way collision names all three. Stopping at the first pair means
+# whoever fixes the two that were named hits the same error again on a directory
+# nothing mentioned (Verjson/.github#1371, found via verjson-cli-cloud#234).
+d="$(new_fixture)"
+adr "$d" "0007-alpha" "0007 — Alpha" "2026-07-03"
+adr "$d" "0007-beta" "0007 — Beta" "2026-07-04"
+adr "$d" "0007-gamma" "0007 — Gamma" "2026-07-05"
+adr "$d" "0008-unrelated" "0008 — Unrelated" "2026-07-06"
+if three_way_output="$(bash "$d/scripts/gen-adr-index.sh" 2>&1)"; then
+  fail "a three-way ADR collision must fail before rendering"
+elif grep -qF "$d/docs/decisions/0007-alpha" <<<"$three_way_output" \
+  && grep -qF "$d/docs/decisions/0007-beta" <<<"$three_way_output" \
+  && grep -qF "$d/docs/decisions/0007-gamma" <<<"$three_way_output" \
+  && ! grep -qF "0008-unrelated" <<<"$three_way_output"; then
+  pass "a three-way collision names every colliding directory and nothing else"
+else
+  fail "a three-way collision did not name all three: $three_way_output"
+fi
+
+# Two independent collisions are both reported in one run, so a repository does
+# not discover them one regeneration at a time.
+d="$(new_fixture)"
+adr "$d" "0011-a" "0011 — A" "2026-07-03"
+adr "$d" "0011-b" "0011 — B" "2026-07-04"
+adr "$d" "0022-a" "0022 — A" "2026-07-05"
+adr "$d" "0022-b" "0022 — B" "2026-07-06"
+if multi_output="$(bash "$d/scripts/gen-adr-index.sh" 2>&1)"; then
+  fail "independent ADR collisions must fail before rendering"
+elif grep -qF "duplicate ADR number 0011" <<<"$multi_output" \
+  && grep -qF "duplicate ADR number 0022" <<<"$multi_output"; then
+  pass "independent collisions are both named in one run"
+else
+  fail "independent collisions were not both named: $multi_output"
+fi
+
 # Supersession is a relationship between distinct decisions, not duplicate
 # numbering. Preserve that valid shape while rejecting number collisions.
 d="$(new_fixture)"
