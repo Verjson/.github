@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import json
+import pathlib
 import re
 
 VERSION_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
@@ -147,3 +149,133 @@ def classify(version: str, releases, today: str) -> Verdict:
     return Verdict(EXPIRED,
                    f"{version} left the supported window at {superseder.version} "
                    f"and expired on {expires_on}", expires_on)
+
+
+DECLARATION_PATH = ".github/verjson-contract.json"
+# One adopter-controlled field. A declaration that also carried the commit would
+# reintroduce the skew it exists to remove, with the version and the commit free
+# to disagree; the commit is resolved from the hub's release metadata instead.
+DECLARATION_KEY = "contract_version"
+
+# Anchored on the hub, so an adopter's own SHA-pinned third-party actions are not
+# contract references. Case-insensitive because GitHub resolves owner/repo that
+# way and a completeness check must not drop a lowercase reference.
+USES_RE = re.compile(
+    r"uses:\s*Verjson/\.github/(?P<path>[^@\s]+)@(?P<ref>[^\s\"']+)", re.IGNORECASE)
+# The trailing boundary matters: without it a 64-hex container digest in the same
+# header yields its first 40 characters as a bogus contract SHA.
+HEADER_RE = re.compile(
+    r"Verjson/\.github[^\n]*?\b(?P<sha>[0-9a-f]{40})(?![0-9a-f])", re.IGNORECASE)
+SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+MAX_SCAN_BYTES = 1 << 20
+SKIP_DIRS = {".git", "node_modules"}
+
+
+@dataclasses.dataclass(frozen=True)
+class Finding:
+    kind: str
+    detail: str
+
+
+def _scan_files(root):
+    """Every readable text file in the tree, because totality is the point.
+
+    Scoping the scan to a list of known adopter files would reproduce the defect
+    it is meant to catch: a contract reference somewhere the list did not name is
+    exactly the intra-repository skew ADR 0185 measured.
+    """
+    for path in sorted(pathlib.Path(root).rglob("*")):
+        if not path.is_file() or path.is_symlink():
+            continue
+        if SKIP_DIRS & set(path.relative_to(root).parts):
+            continue
+        try:
+            if path.stat().st_size > MAX_SCAN_BYTES:
+                continue
+            yield path.relative_to(root).as_posix(), path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            # Not decodable as text, so it carries no contract reference to read.
+            continue
+
+
+def references(root):
+    """(file, kind, ref) for every contract reference on disk.
+
+    Generated headers are read as *claims* alongside the pins, never as
+    instructions: adopter-controlled text is an input to this comparison, not to
+    anything privileged.
+    """
+    found = []
+    for relative, text in _scan_files(root):
+        for match in USES_RE.finditer(text):
+            found.append((relative, "uses", match.group("ref")))
+        # Comment lines only. A header is a comment; scanning the raw first six
+        # lines would read a `uses:` pin a second time as a header claim and
+        # report one reference as two.
+        head = "\n".join(line for line in text.splitlines()[:6]
+                          if line.lstrip().startswith("#"))
+        for match in HEADER_RE.finditer(head):
+            found.append((relative, "header", match.group("sha")))
+    return found
+
+
+def read_declaration(root):
+    """(version, finding). Exactly one of the two is None."""
+    path = pathlib.Path(root) / DECLARATION_PATH
+    if not path.is_file():
+        return None, Finding("DECLARATION_MISSING",
+                             f"{DECLARATION_PATH} is absent, so no contract version is declared")
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        return None, Finding("DECLARATION_UNREADABLE", f"{DECLARATION_PATH}: {error}")
+    if not isinstance(document, dict) or not isinstance(document.get(DECLARATION_KEY), str):
+        return None, Finding("DECLARATION_UNREADABLE",
+                             f"{DECLARATION_PATH} has no string {DECLARATION_KEY!r}")
+    return document[DECLARATION_KEY], None
+
+
+def verify(root, releases, today: str):
+    """Assert the declared version against the references the repository really has.
+
+    The comparison is a version lookup followed by an equality on one resolved
+    object id, not a blob diff of each file against the hub's default branch. The
+    diff was rejected in ADR 0185 for failing open, for being the wrong
+    granularity, and for reporting comment-only upstream edits as drift; none of
+    those apply once there is a version to compare.
+    """
+    version, finding = read_declaration(root)
+    found = references(root)
+    if finding is not None:
+        return [finding] if found else [finding]
+    verdict = classify(version, releases, today)
+    if verdict.state in (UNKNOWN, EXPIRED):
+        return [Finding(verdict.state, verdict.reason)]
+
+    commit = next((r.commit for r in releases if r.version == version), "")
+    if not SHA_RE.match(commit or ""):
+        # `target_commitish` is a branch name for many releases. Treating one as a
+        # commit would compare a pin against the string "main" and report every
+        # adopter broken, so an unresolved release fails closed instead.
+        return [Finding(UNKNOWN,
+                        f"{version} resolved to {commit!r}, not a 40-hex commit")]
+
+    findings = []
+    if verdict.state == DEPRECATED:
+        findings.append(Finding(DEPRECATED, verdict.reason))
+    if not found:
+        findings.append(Finding("UNGOVERNED_DECLARATION",
+                                f"{DECLARATION_PATH} declares {version} but the repository "
+                                "carries no Verjson/.github reference for it to govern"))
+    for relative, kind, ref in found:
+        if ref == commit:
+            continue
+        if not SHA_RE.match(ref):
+            findings.append(Finding("UNPINNED_REFERENCE",
+                                    f"{relative}: {kind} names {ref!r}, which is not an "
+                                    "immutable commit"))
+            continue
+        findings.append(Finding("PIN_MISMATCH",
+                                f"{relative}: {kind} names {ref}, but the declared {version} "
+                                f"is {commit}"))
+    return findings

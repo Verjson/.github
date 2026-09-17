@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Regression suite for scripts/contract-version.py (Verjson/.github#1374)."""
 import importlib.util
+import json
 import pathlib
 import sys
+import tempfile
 import unittest
 
 _root = pathlib.Path(__file__).resolve().parents[2]
@@ -46,6 +48,30 @@ class DeprecationClock(unittest.TestCase):
         verdict = cv.classify("v3.0.0", releases, today="2026-04-01")
         self.assertEqual(verdict.state, cv.DEPRECATED)
         self.assertEqual(verdict.expires_on, "2026-05-30")
+
+
+class DeclarationVersusReality(unittest.TestCase):
+    def write_repo(self, declaration, workflow):
+        root = pathlib.Path(tempfile.mkdtemp())
+        (root / ".github" / "workflows").mkdir(parents=True)
+        if declaration is not None:
+            (root / ".github" / "verjson-contract.json").write_text(
+                json.dumps(declaration))
+        (root / ".github" / "workflows" / "ci.yml").write_text(workflow)
+        return root
+
+    def test_a_pin_that_is_not_the_declared_release_commit_is_a_finding(self):
+        # The failure mode a declared version exists to close: the declaration
+        # says v3.2.0 while the repository actually runs some other contract
+        # commit. A version nothing reads back is a pin nobody advances.
+        releases = [rel("v3.2.0", commit_char="a", published="2026-02-01")]
+        root = self.write_repo(
+            {"contract_version": "v3.2.0"},
+            "jobs:\n  ci:\n    uses: Verjson/.github/.github/workflows/node-ci.yml@"
+            + "b" * 40 + "\n")
+        findings = cv.verify(root, releases, today="2026-02-02")
+        self.assertEqual([f.kind for f in findings], ["PIN_MISMATCH"])
+        self.assertIn(".github/workflows/ci.yml", findings[0].detail)
 
 
 if __name__ == "__main__":
