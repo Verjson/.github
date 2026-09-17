@@ -591,14 +591,30 @@ def verify_adopter_conformance(contract: dict, read, repositories: list[dict], c
             f"unexpected environment response shape for {label}",
         )
         live = pages[0]
-        environment_findings.extend(
-            f"{label}:{mismatch}"
-            for mismatch in image_mismatches(
-                live.get("deployment_branch_policy"),
-                conformance["environment_deployment_branch_policy"],
-                "deployment_branch_policy",
-            )
+        mismatches = image_mismatches(
+            live.get("deployment_branch_policy"),
+            conformance["environment_deployment_branch_policy"],
+            "deployment_branch_policy",
         )
+        if mismatches:
+            environment_findings.extend(f"{label}:{mismatch}" for mismatch in mismatches)
+            continue
+        # `custom_branch_policies: true` says the policy is custom, not what it
+        # admits. The App key is confined to where the review lane actually runs
+        # only if the policy names this adopter's own default branch — which is
+        # not always `main`, and is not checkable by mirroring this repository's
+        # policy field by field.
+        policies = paginated_items(
+            read,
+            f"repos/{full_name}/environments/{environment}/deployment-branch-policies",
+            "branch_policies",
+            allow_missing=True,
+        )
+        admitted = sorted({policy.get("name") for policy in policies})
+        if admitted != [branch]:
+            environment_findings.append(
+                f"{label}:branch_policies {admitted} do not admit only {branch!r}"
+            )
     concise_missing("armed adopters with an incomplete generated adopter caller set", sorted(findings))
     concise_missing(
         "armed adopters without a conforming review environment",

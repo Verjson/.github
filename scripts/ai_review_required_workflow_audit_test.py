@@ -722,6 +722,18 @@ jobs:
             r"review environment.*Verjson/alpha:ai-review-app:deployment_branch_policy: expected an object",
         )
 
+    def test_a_branch_policy_naming_someone_elses_default_branch_is_reported(self):
+        # `custom_branch_policies: true` says only that the policy is custom, not
+        # what it admits. An adopter whose default branch is `develop/next` and
+        # whose policy names `main` confines the review App key to a branch the
+        # review lane never runs on, and the mirrored-from-`.github` shape makes
+        # that look conformant field by field.
+        path = "repos/Verjson/beta/environments/ai-review-app/deployment-branch-policies"
+        self.fixture[path][0]["branch_policies"] = [{"name": "main", "type": "branch"}]
+        self.assert_audit_error(
+            r"review environment.*Verjson/beta:ai-review-app:branch_policies.*'main'.*develop/next",
+        )
+
     def test_malformed_contract_fails_with_controlled_diagnostics(self):
         for section, key, value, diagnostic in (
             (None, "ruleset_id", True, "ruleset ID"),
