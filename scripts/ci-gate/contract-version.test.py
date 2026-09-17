@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Regression suite for scripts/contract-version.py (Verjson/.github#1374)."""
+import contextlib
 import importlib.util
+import io
 import json
 import pathlib
 import sys
@@ -74,12 +76,12 @@ class DeclarationVersusReality(unittest.TestCase):
         self.assertIn(".github/workflows/ci.yml", findings[0].detail)
 
     def test_a_moving_tag_is_not_an_immutable_contract_reference(self):
-        # `@v3` resolves to whatever the hub last re-pointed it at, so it can
+        # `@v2` resolves to whatever the hub last re-pointed it at, so it can
         # name a different contract tomorrow while the declaration stays put.
         releases = [rel("v3.2.0", commit_char="a", published="2026-02-01")]
         root = self.write_repo(
             {"contract_version": "v3.2.0"},
-            "jobs:\n  ci:\n    uses: Verjson/.github/.github/workflows/node-ci.yml@v3\n")
+            "jobs:\n  ci:\n    uses: Verjson/.github/.github/workflows/node-ci.yml@v2\n")
         findings = cv.verify(root, releases, today="2026-02-02")
         self.assertEqual([f.kind for f in findings], ["UNPINNED_REFERENCE"])
 
@@ -199,16 +201,19 @@ class CommandLine(unittest.TestCase):
             + "b" * 40 + "\n")
         releases = self.releases_file(
             [{"version": "v3.2.0", "commit": "a" * 40, "published": "2026-02-01"}])
-        self.assertEqual(
-            cv.main(["verify", "--repo-root", str(root), "--releases", releases,
-                     "--today", "2026-02-02"]), 1)
+        with contextlib.redirect_stdout(io.StringIO()) as captured:
+            status = cv.main(["verify", "--repo-root", str(root), "--releases", releases,
+                              "--today", "2026-02-02"])
+        self.assertEqual(status, 1)
+        self.assertIn("PIN_MISMATCH", captured.getvalue())
 
     def test_a_releases_file_that_cannot_be_read_is_a_usage_failure_not_a_verdict(self):
         # A sweep that lost its input must not report the tree it never compared
         # as conformant; exit 2 is "the question could not be asked".
-        self.assertEqual(
-            cv.main(["verify", "--repo-root", ".", "--releases", "/nonexistent.json",
-                     "--today", "2026-02-02"]), 2)
+        with contextlib.redirect_stderr(io.StringIO()):
+            status = cv.main(["verify", "--repo-root", ".", "--releases",
+                              "/nonexistent.json", "--today", "2026-02-02"])
+        self.assertEqual(status, 2)
 
 
 if __name__ == "__main__":

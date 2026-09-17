@@ -17,6 +17,7 @@ import argparse
 import dataclasses
 import datetime
 import json
+import os
 import pathlib
 import re
 import sys
@@ -186,18 +187,24 @@ def _scan_files(root):
     it is meant to catch: a contract reference somewhere the list did not name is
     exactly the intra-repository skew ADR 0185 measured.
     """
-    for path in sorted(pathlib.Path(root).rglob("*")):
-        if not path.is_file() or path.is_symlink():
-            continue
-        if SKIP_DIRS & set(path.relative_to(root).parts):
-            continue
-        try:
-            if path.stat().st_size > MAX_SCAN_BYTES:
+    root = pathlib.Path(root)
+    for directory, subdirectories, names in os.walk(root):
+        # Pruned in place rather than filtered afterwards: walking a large `.git`
+        # only to discard every entry is the cost, not the correctness problem.
+        subdirectories[:] = sorted(d for d in subdirectories if d not in SKIP_DIRS)
+        for name in sorted(names):
+            path = pathlib.Path(directory) / name
+            if path.is_symlink() or not path.is_file():
+                # A symlink is followed nowhere: it can point outside the tree
+                # being verified, and its target is not this repository's state.
                 continue
-            yield path.relative_to(root).as_posix(), path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            # Not decodable as text, so it carries no contract reference to read.
-            continue
+            try:
+                if path.stat().st_size > MAX_SCAN_BYTES:
+                    continue
+                yield path.relative_to(root).as_posix(), path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                # Not decodable as text, so it carries no contract reference.
+                continue
 
 
 def references(root):
