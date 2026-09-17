@@ -587,10 +587,29 @@ def verify_replacement_workflow(contract: dict, read) -> None:
     require(arm.get("runs-on") == expected_runner, "required arm is not routed through the trusted lane")
 
 
-def unpinned_live_fields(contract: dict, live: dict, state: str) -> list[str]:
-    """Report, per contracted ruleset, the live fields no reviewed image pins."""
+def unpinned_live_fields(contract: dict, live: dict, candidates: dict[int, dict], state: str) -> list[str]:
+    """Report, per contracted ruleset, the live fields no reviewed image pins.
+
+    Every contracted ruleset carries the same residual, so a review fed only
+    main-protection would leave the arm and both core-checks rulesets exactly as
+    unreviewable as before.
+    """
     matched = contract["preimage" if state == "ready" else "postimage"]
-    return sorted(f"main-protection.{field}" for field in unpinned_keys(live, matched))
+    surfaces = [(matched["name"], live, matched)]
+    if state != "ready":
+        arm = next(
+            candidate for candidate in candidates.values()
+            if candidate.get("name") == contract["arm_ruleset_name"]
+        )
+        surfaces.append((contract["arm_ruleset_name"], normalize_ruleset(arm), contract["arm_ruleset"]))
+    for declaration in contract["deterministic_rulesets"]:
+        image = declaration["image"]
+        surfaces.append((image["name"], normalize_ruleset(candidates[declaration["id"]]), image))
+    return sorted(
+        f"{label}.{field}"
+        for label, live_ruleset, image in surfaces
+        for field in unpinned_keys(live_ruleset, image)
+    )
 
 
 def audit(contract: dict, read=gh_pages, allow_unschedulable_selection: bool = False) -> dict:
@@ -633,7 +652,7 @@ def audit(contract: dict, read=gh_pages, allow_unschedulable_selection: bool = F
     verify_authorization(contract, read, {name: governed[name] for name in covered})
     verify_replacement_workflow(contract, read)
     return {
-        "unpinned_live_fields": unpinned_live_fields(contract, live, state),
+        "unpinned_live_fields": unpinned_live_fields(contract, live, candidates, state),
         "organization": contract["organization"],
         "ruleset_id": contract["ruleset_id"],
         "current_path": current_path,

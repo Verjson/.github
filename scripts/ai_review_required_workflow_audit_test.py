@@ -375,6 +375,27 @@ jobs:
         live_arm["enforcement"] = "evaluate"
         self.assert_audit_error("arm ruleset drifted from its full reviewed image")
 
+    def test_the_report_names_the_unpinned_fields_of_every_contracted_ruleset(self):
+        # The review this feeds has to cover the whole contracted set, not just
+        # main-protection: the arm and both core-checks rulesets carry the same
+        # residual. The live arm's resolved `sha` and the live required checks'
+        # `integration_id` are the unpinned fields that exist today (#1410).
+        self.enter_split_state()
+        arm = self.fixture[f"orgs/Verjson/rulesets/{self.arm_id}"][0]
+        arm["rules"][0]["parameters"]["workflows"][0]["sha"] = "c597d69"
+        node = next(
+            declaration for declaration in self.contract["deterministic_rulesets"]
+            if declaration["stack"] == "node"
+        )
+        live_node = self.fixture[f"orgs/Verjson/rulesets/{node['id']}"][0]
+        live_node["rules"][0]["parameters"]["required_status_checks"][0]["integration_id"] = 15368
+        unpinned = AUDIT.audit(self.contract, self.read)["unpinned_live_fields"]
+        self.assertIn("ai-authorization-arm-required.rules[0].parameters.workflows[0].sha", unpinned)
+        self.assertIn(
+            "core-checks-node.rules[0].parameters.required_status_checks[0].integration_id",
+            unpinned,
+        )
+
     def test_the_deterministic_images_tolerate_a_vendor_key_but_not_a_changed_check(self):
         # Live required status checks carry the resolving App's `integration_id`,
         # which the reviewed images do not pin. Ignoring it must not extend to
