@@ -51,6 +51,11 @@ on:
         required: false
         type: string
         default: '["."]'
+      require-package-preparation:
+        description: Require executable scripts/release-prepare-packages.sh before the publish build and script-disabled npm pack
+        required: false
+        type: boolean
+        default: false
       release-assets:
         description: JSON array of committed repository-relative files to attach to the GitHub Release
         required: false
@@ -292,13 +297,19 @@ jobs:
       - name: Prepare release package metadata
         env:
           PACKAGE_VERSION: ${{ steps.release-tag.outputs.package-version }}
+          REQUIRE_PACKAGE_PREPARATION: ${{ inputs.require-package-preparation }}
         run: |
+          set -euo pipefail
           # RELEASE_PREPARE_PACKAGES_BEGIN
+          if [ "$REQUIRE_PACKAGE_PREPARATION" = true ] && [ ! -e scripts/release-prepare-packages.sh ]; then
+            echo "::error::This release requires executable scripts/release-prepare-packages.sh so package metadata and generated distributions are prepared in the publish job."
+            exit 1
+          fi
           if [ -e scripts/release-prepare-packages.sh ] && [ ! -x scripts/release-prepare-packages.sh ]; then
             echo "::error::scripts/release-prepare-packages.sh exists but is not executable."
             exit 1
           fi
-          if [ -x scripts/release-prepare-packages.sh ]; then
+          if [ "$REQUIRE_PACKAGE_PREPARATION" = true ] || [ -x scripts/release-prepare-packages.sh ]; then
             scripts/release-prepare-packages.sh "$PACKAGE_VERSION"
           fi
           # RELEASE_PREPARE_PACKAGES_END

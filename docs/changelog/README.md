@@ -338,15 +338,45 @@ scripts/gen-changelog-caller.sh contract-test "$PIN" --only-package-dir packages
 Only selected manifests are stamped and passed to Node publication. Verification
 still runs the repository suite; an adopter-owned preparation hook remains
 responsible for its own changes. Dispatch `component: schema` and, for example,
-`prefix: schema-v` to select the independent changelog/version stream: those inputs
-do not select publication directories. Exact selection also applies to the package
-stamping performed by `release-artifact` and `release-snapshot`.
+`prefix: schema-v` to select the independent changelog/version stream on the normal
+root caller: those inputs do not select publication directories. Exact selection
+also applies to the package stamping performed by `release-artifact` and
+`release-snapshot`.
 
-Before stamping and packing the configured directories, the caller runs an
-executable `scripts/release-prepare-packages.sh <version>` when present. Use
-that adopter-owned hook to update compatibility dependencies or generate
-secondary manifests; the caller itself applies the dispatched version to every
-package and gives each artifact the same restart-safe integrity proof.
+When a repository publishes a nested package as an independent stream, keep the
+root caller and generate a second caller with the component mode. The mode requires
+both a component and a non-root prefix, plus an exact package-directory selection;
+the generated defaults and runtime binding check prevent the caller from being
+reused for another stream:
+
+```bash
+scripts/gen-changelog-caller.sh release-node "$PIN" \
+  > .github/workflows/release.yml
+scripts/gen-changelog-caller.sh release-node-component "$PIN" \
+  --component cli-schema --prefix schema-v \
+  --only-package-dir packages/cli-schema \
+  > .github/workflows/release-cli-schema.yml
+scripts/gen-changelog-caller.sh contract-test "$PIN" \
+  > scripts/changelog-contract.test.sh
+scripts/gen-changelog-caller.sh contract-test "$PIN" \
+  --component cli-schema --prefix schema-v \
+  --only-package-dir packages/cli-schema \
+  > scripts/changelog-contract-cli-schema.test.sh
+```
+
+The root caller therefore keeps `prefix: v`, an empty component, and package
+directory `.` by default. The component caller passes
+`require-package-preparation: true` to `node-release.yml`. Its tagged publish job
+must find an executable `scripts/release-prepare-packages.sh <version>`, run it
+after checkout and installation, and only then build and run script-disabled
+`npm pack`; an absent or failing hook stops publication before packing. Root
+callers retain the optional hook behavior for existing adopters.
+
+Before stamping and packing the configured directories, the caller runs the same
+hook when present. Use that adopter-owned hook to update compatibility dependencies
+or generate secondary manifests; the reusable publish job repeats it in the exact
+tagged tree because verification output is not an artifact handoff. The hook step
+does not receive either npm publication or private-dependency credentials.
 
 ### Adopters with nothing to publish to a registry (#975)
 

@@ -17,6 +17,7 @@
 #   scripts/gen-changelog-caller.sh codeowners <sha> > .github/CODEOWNERS
 #   scripts/gen-changelog-caller.sh pr-gate <sha> [--untrusted-runner <label>[,<label>...]] > .github/workflows/changelog-contract.yml
 #   scripts/gen-changelog-caller.sh release-node <sha> [--scope <scope>] [--node-version <version>] [--release-asset <path>]... > .github/workflows/release.yml
+#   scripts/gen-changelog-caller.sh release-node-component <sha> --component <name> --prefix <stream-v> --only-package-dir <relative-dir>... > .github/workflows/release-component.yml
 #   scripts/gen-changelog-caller.sh release-artifact <sha> --build-runner <selector>... [--approved-internal-package <@verjson/name>]... [--scope <scope>] [--node-version <version>] > .github/workflows/release.yml
 #   scripts/gen-changelog-caller.sh release-snapshot <sha> [--scope <scope>] [--node-version <version>] [--package-dir <relative-dir>]... [--only-package-dir <relative-dir>]... > .github/workflows/release.yml
 #   scripts/gen-changelog-caller.sh release-propose <sha> --autonomy {propose|dispatch} > .github/workflows/release-propose.yml
@@ -72,7 +73,7 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $(basename "$0") {workflow|generated-artifacts|generated-artifacts-with-adr-index|renovate-attribution|adr-index-generator|codeowners|renderer|contract-test|pr-gate|release-node|release-artifact|release-snapshot|release-propose} <40-hex-commit> [--scope <npm-scope>] [--node-version <version>] [--package-dir <relative-dir>]... [--only-package-dir <relative-dir>]... [--release-asset <path>]... [--build-runner <selector>]... [--approved-internal-package <@verjson/name>]... [--autonomy {propose|dispatch}] [--untrusted-runner <label>[,<label>...]]" >&2
+  echo "usage: $(basename "$0") {workflow|generated-artifacts|generated-artifacts-with-adr-index|renovate-attribution|adr-index-generator|codeowners|renderer|contract-test|pr-gate|release-node|release-node-component|release-artifact|release-snapshot|release-propose} <40-hex-commit> [--scope <npm-scope>] [--node-version <version>] [--prefix <stream-v>] [--component <name>] [--package-dir <relative-dir>]... [--only-package-dir <relative-dir>]... [--release-asset <path>]... [--build-runner <selector>]... [--approved-internal-package <@verjson/name>]... [--autonomy {propose|dispatch}] [--untrusted-runner <label>[,<label>...]]" >&2
   echo "required check: changelog / validate" >&2
   exit 2
 }
@@ -84,8 +85,13 @@ shift 2
 
 release_scope="@verjson"
 release_node_version="24"
+release_prefix="v"
+release_component=""
 release_scope_set=false
 release_node_version_set=false
+release_prefix_set=false
+release_component_set=false
+release_node_component_mode=false
 release_package_dirs=(".")
 release_package_dirs_set=false
 release_package_dirs_exact=false
@@ -107,6 +113,18 @@ while [ "$#" -gt 0 ]; do
       [ "$#" -ge 2 ] && [ "$release_node_version_set" = false ] || usage
       release_node_version="$2"
       release_node_version_set=true
+      shift 2
+      ;;
+    --prefix)
+      [ "$#" -ge 2 ] && [ "$release_prefix_set" = false ] || usage
+      release_prefix="$2"
+      release_prefix_set=true
+      shift 2
+      ;;
+    --component)
+      [ "$#" -ge 2 ] && [ "$release_component_set" = false ] || usage
+      release_component="$2"
+      release_component_set=true
       shift 2
       ;;
     --package-dir)
@@ -160,9 +178,14 @@ done
 
 if { [ "$release_scope_set" = true ] || [ "$release_node_version_set" = true ] \
   || [ "$release_package_dirs_set" = true ]; } \
-  && [ "$mode" != release-node ] && [ "$mode" != release-artifact ] \
+  && [ "$mode" != release-node ] && [ "$mode" != release-node-component ] && [ "$mode" != release-artifact ] \
   && [ "$mode" != release-snapshot ] && [ "$mode" != contract-test ]; then
   echo "$(basename "$0"): release parameters are accepted only by release-node, release-artifact, release-snapshot and contract-test" >&2
+  exit 2
+fi
+if { [ "$release_prefix_set" = true ] || [ "$release_component_set" = true ]; } \
+  && [ "$mode" != release-node-component ] && [ "$mode" != contract-test ]; then
+  echo "$(basename "$0"): --prefix and --component are accepted only by release-node-component and contract-test" >&2
   exit 2
 fi
 if [ "${#release_build_runners[@]}" -gt 0 ] \
@@ -262,6 +285,41 @@ if [ "$mode" = release-propose ]; then
   }
 elif [ -n "$release_autonomy" ]; then
   usage
+fi
+if [ "$mode" = release-node-component ]; then
+  release_node_component_mode=true
+  [ "$release_prefix_set" = true ] && [ "$release_component_set" = true ] || {
+    echo "$(basename "$0"): release-node-component requires --prefix and --component" >&2
+    exit 2
+  }
+  [ "$release_package_dirs_exact" = true ] || {
+    echo "$(basename "$0"): release-node-component requires at least one --only-package-dir" >&2
+    exit 2
+  }
+elif [ "$mode" = contract-test ] && { [ "$release_prefix_set" = true ] || [ "$release_component_set" = true ]; }; then
+  [ "$release_prefix_set" = true ] && [ "$release_component_set" = true ] || {
+    echo "$(basename "$0"): contract-test requires both --prefix and --component for a component caller" >&2
+    exit 2
+  }
+  [ "$release_package_dirs_exact" = true ] || {
+    echo "$(basename "$0"): component contract-test requires at least one --only-package-dir" >&2
+    exit 2
+  }
+  release_node_component_mode=true
+fi
+if [ "$release_node_component_mode" = true ]; then
+  [[ "$release_component" =~ ^[a-z0-9]([a-z0-9._-]{0,62}[a-z0-9])?$ ]] || {
+    echo "$(basename "$0"): component must be a 1-64 character lowercase identifier" >&2
+    exit 2
+  }
+  [ "$release_prefix" != v ] || {
+    echo "$(basename "$0"): component callers require a component-specific prefix, not v" >&2
+    exit 2
+  }
+  [[ "$release_prefix" =~ ^([a-z0-9][a-z0-9._-]*-)?v$ ]] || {
+    echo "$(basename "$0"): prefix must be a lowercase stream-v namespace such as schema-v" >&2
+    exit 2
+  }
 fi
 [[ "$release_scope" =~ ^@[a-z0-9][a-z0-9._~-]*$ ]] \
   && [ "${#release_scope}" -le 214 ] || {
@@ -565,6 +623,32 @@ emit_release_node() {
   local package_dirs_json="$selected_package_dirs_json"
   local package_dirs_shell=''
   local release_assets_json='[' release_asset_sep=''
+  local caller_prefix="$release_prefix" caller_component="$release_component"
+  local preparation_required=false component_binding_step='' preparation_requirement_input=''
+  local prefix_description='Exact version namespace prefix; independent from component'
+  local component_description='Optional component stream; empty selects only unscoped fragments'
+  if [ "$release_node_component_mode" = true ]; then
+    generation_command="release-node-component ${ref} --component $release_component --prefix $release_prefix"
+    preparation_required=true
+    component_binding_step="$(cat <<EOF
+      - name: Require the generated component release binding
+        env:
+          EXPECTED_COMPONENT: ${release_component}
+          EXPECTED_PREFIX: ${release_prefix}
+          COMPONENT: \${{ inputs.component }}
+          PREFIX: \${{ inputs.prefix }}
+        run: |
+          if [ "\$PREFIX" != "\$EXPECTED_PREFIX" ] || [ "\$COMPONENT" != "\$EXPECTED_COMPONENT" ]; then
+            echo "::error::This generated component caller is bound to ${release_component} at ${release_prefix}; refusing a different prefix or component."
+            exit 1
+          fi
+          echo "Using component ${release_component} with prefix ${release_prefix}."
+EOF
+)"
+    preparation_requirement_input='      require-package-preparation: true'
+    prefix_description="Exact version namespace prefix; this caller is bound to $release_prefix"
+    component_description="Exact component stream; this caller is bound to $release_component"
+  fi
   [ "$release_scope" = "@verjson" ] \
     || generation_command="$generation_command --scope $release_scope"
   [ "$release_node_version" = "24" ] \
@@ -646,10 +730,10 @@ on:
         required: true
         type: string
       prefix:
-        description: Exact version namespace prefix; independent from component
+        description: ${prefix_description}
         required: false
         type: string
-        default: v
+        default: ${caller_prefix}
       expected_head:
         description: Optional exact default-branch head derived by release-propose
         required: false
@@ -666,10 +750,10 @@ on:
         type: string
         default: ''
       component:
-        description: Optional component stream; empty selects only unscoped fragments
+        description: ${component_description}
         required: false
         type: string
-        default: ''
+        default: '${caller_component}'
 
 permissions:
   contents: read
@@ -736,6 +820,7 @@ jobs:
           fi
           printf 'package-version=%s\n' "\$package_version" >>"\$GITHUB_OUTPUT"
           echo "Cutting \$VERSION."
+${component_binding_step}
       - name: Check out the tree that will be released
         uses: ${release_checkout}
         with:
@@ -844,6 +929,10 @@ jobs:
         env:
           PACKAGE_VERSION: \${{ steps.release-version.outputs.package-version }}
         run: |
+          if [ "${preparation_required}" = true ] && [ ! -e scripts/release-prepare-packages.sh ]; then
+            echo "::error::This generated component caller requires executable scripts/release-prepare-packages.sh so the selected package is built again in the publish job."
+            exit 1
+          fi
           if [ -e scripts/release-prepare-packages.sh ] && [ ! -x scripts/release-prepare-packages.sh ]; then
             echo "::error::scripts/release-prepare-packages.sh exists but is not executable."
             exit 1
@@ -929,6 +1018,7 @@ jobs:
       node-version: \${{ '${release_node_version}' }}
       scope: '${release_scope}'
       package-dirs: '${package_dirs_json}'
+${preparation_requirement_input}
       release-assets: '${release_assets_json}'
     secrets:
       NODE_AUTH_TOKEN: \${{ secrets.NODE_AUTH_TOKEN }}
@@ -2034,6 +2124,8 @@ emit_contract_test() {
   local release_assets_json='[' release_asset_sep=''
   local release_approved_packages_csv='' release_approved_package=''
   local release_lane_names='' release_lane_env='' release_lane_preflight='' release_lane_preflight_sha256=''
+  local release_mode_expected='release-node'
+  [ "$release_node_component_mode" = true ] && release_mode_expected='release-node-component'
   printf -v release_package_dirs_shell '%q ' "${release_package_dirs[@]}"
   release_package_dirs_shell="${release_package_dirs_shell% }"
   for release_asset in "${release_assets[@]}"; do
@@ -2099,6 +2191,9 @@ CONTRACT_SHA256="${contract_sha256}"
 ADR_INDEX_SHA256="${adr_index_sha256}"
 EXPECTED_RELEASE_SCOPE="${release_scope}"
 EXPECTED_RELEASE_NODE_VERSION="${release_node_version}"
+EXPECTED_RELEASE_PREFIX="${release_prefix}"
+EXPECTED_RELEASE_COMPONENT="${release_component}"
+EXPECTED_RELEASE_MODE="${release_mode_expected}"
 EXPECTED_RELEASE_PACKAGE_DIRS_JSON='${release_package_dirs_json}'
 EXPECTED_RELEASE_PACKAGE_DIRS_SHELL='${release_package_dirs_shell}'
 EXPECTED_RELEASE_ASSETS_JSON='${release_assets_json}'
@@ -2604,14 +2699,47 @@ while IFS= read -r release_workflow; do
   # modes — the mode name in its own provenance comment selects which shape the
   # rest of this loop enforces; nothing here infers the mode from file content.
   release_mode=""
-  if grep -q "gen-changelog-caller.sh release-node $CONTRACT_REF" "$release_workflow"; then
+  if grep -q "gen-changelog-caller.sh release-node-component $CONTRACT_REF" "$release_workflow"; then
+    release_mode=release-node-component
+  elif grep -q "gen-changelog-caller.sh release-node $CONTRACT_REF" "$release_workflow"; then
     release_mode=release-node
   elif grep -q "gen-changelog-caller.sh release-artifact $CONTRACT_REF" "$release_workflow"; then
     release_mode=release-artifact
   elif grep -q "gen-changelog-caller.sh release-snapshot $CONTRACT_REF" "$release_workflow"; then
     release_mode=release-snapshot
   else
-    fail "$release_workflow is not a generated release caller at $CONTRACT_REF. Regenerate it: scripts/gen-changelog-caller.sh release-node $CONTRACT_REF > .github/workflows/release.yml (or release-artifact for GitHub Release assets, or release-snapshot when the repository publishes nothing from the release workflow)"
+    fail "$release_workflow is not a generated release caller at $CONTRACT_REF. Regenerate it: scripts/gen-changelog-caller.sh release-node $CONTRACT_REF > .github/workflows/release.yml (or release-node-component for an independent component caller, release-artifact for GitHub Release assets, or release-snapshot when the repository publishes nothing from the release workflow)"
+  fi
+  # A consumer may keep its ordinary root caller beside one or more
+  # component callers. Each generated contract test focuses on the release
+  # shape it was generated with; the paired component contract test owns the
+  # component caller's exact package selection and binding.
+  if [ "$EXPECTED_RELEASE_MODE" = release-node ] && [ "$release_mode" = release-node-component ]; then
+    continue
+  fi
+  if [ "$EXPECTED_RELEASE_MODE" = release-node-component ] && [ "$release_mode" = release-node ]; then
+    continue
+  fi
+  if [ "$release_mode" = release-node-component ]; then
+    grep -qF "gen-changelog-caller.sh release-node-component $CONTRACT_REF --component $EXPECTED_RELEASE_COMPONENT --prefix $EXPECTED_RELEASE_PREFIX" "$release_workflow" \
+      || fail "$release_workflow is not bound to the generated component and prefix"
+    grep -qF "        default: $EXPECTED_RELEASE_PREFIX" "$release_workflow" \
+      || fail "$release_workflow does not preserve the generated component prefix default"
+    grep -qF "        default: '$EXPECTED_RELEASE_COMPONENT'" "$release_workflow" \
+      || fail "$release_workflow does not preserve the generated component default"
+    grep -qF 'Require the generated component release binding' "$release_workflow" \
+      || fail "$release_workflow does not enforce its component and prefix binding"
+    grep -qF 'require-package-preparation: true' "$release_workflow" \
+      || fail "$release_workflow does not require package preparation in the publish job"
+  elif [ "$release_mode" = release-node ]; then
+    grep -qF "gen-changelog-caller.sh release-node $CONTRACT_REF" "$release_workflow" \
+      || fail "$release_workflow is not the canonical root release caller"
+    grep -qF '        default: v' "$release_workflow" \
+      || fail "$release_workflow changed the canonical root prefix default"
+    grep -qF "        default: ''" "$release_workflow" \
+      || fail "$release_workflow changed the canonical root unscoped component default"
+    ! grep -qF 'require-package-preparation: true' "$release_workflow" \
+      || fail "$release_workflow made package preparation mandatory for the root caller"
   fi
   grep -qF "run-name: Release \${{ inputs.version }} \${{ inputs.selector_digest || 'manual' }}" "$release_workflow" \
     || fail "$release_workflow lacks the exact-version run title required for idempotent dispatch"
@@ -2746,7 +2874,7 @@ while IFS= read -r release_workflow; do
     <<<"$verify_job" | cut -d: -f1)"
   [ -n "$prepare_line" ] && [ -n "$stamp_line" ] && [ "$prepare_line" -lt "$stamp_line" ] \
     || fail "$release_workflow does not prepare package metadata before stamping and verifying the release tree (#550)"
-  if [ "$release_mode" = release-node ]; then
+  if [ "$release_mode" = release-node ] || [ "$release_mode" = release-node-component ]; then
     grep -qF "uses: Verjson/.github/.github/workflows/node-release.yml@$CONTRACT_REF" \
       <<<"$publish_job" \
       || fail "$release_workflow does not delegate publication to node-release.yml at the immutable contract pin (#455)"
@@ -3046,7 +3174,7 @@ PY
     || fail "$release_workflow does not condition resumed verification on an existing snapshot"
   grep -qF 'ref: ${{ inputs.version }}' <<<"$verify_job" \
     || fail "$release_workflow verifies the later dispatch tree instead of the existing tagged snapshot"
-  if [ "$release_mode" = release-node ]; then
+  if [ "$release_mode" = release-node ] || [ "$release_mode" = release-node-component ]; then
     for publish_input in \
       'version: ${{ inputs.version }}' \
       'prefix: ${{ inputs.prefix }}' \
@@ -3715,7 +3843,7 @@ case "$mode" in
     printf '%s\n' "$out" | bash -n 2>/dev/null \
       || { echo "internal error: generated ADR index generator is not valid bash; refusing to emit" >&2; exit 3; }
     ;;
-  release-node)
+  release-node|release-node-component)
     out="$(emit_release_node)"
     if command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null; then
       printf '%s\n' "$out" | python3 -c 'import sys, yaml; yaml.safe_load(sys.stdin)' 2>/dev/null \

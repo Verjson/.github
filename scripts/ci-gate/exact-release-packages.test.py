@@ -73,6 +73,51 @@ class ExactReleasePackagesTests(unittest.TestCase):
                 self.assertEqual(result.stdout, '')
         self.assertEqual(generate('renderer', '--only-package-dir', 'schema').returncode, 2)
 
+    def test_component_mode_is_independent_and_keeps_root_defaults(self):
+        component = generate('release-node-component', '--component', 'cli-schema',
+                             '--prefix', 'schema-v', '--only-package-dir', 'packages/cli-schema')
+        self.assertEqual(component.returncode, 0, component.stderr)
+        component_doc = yaml.safe_load(component.stdout)
+        component_on = component_doc.get('on', component_doc.get(True))
+        component_inputs = component_on['workflow_dispatch']['inputs']
+        self.assertEqual(component_inputs['prefix']['default'], 'schema-v')
+        self.assertEqual(component_inputs['component']['default'], 'cli-schema')
+        self.assertEqual(component_doc['jobs']['publish']['with']['package-dirs'],
+                         '["packages/cli-schema"]')
+        self.assertEqual(component_doc['jobs']['publish']['with']['require-package-preparation'], True)
+        self.assertIn('Require the generated component release binding', component.stdout)
+        self.assertIn('release-node-component ' + SHA + ' --component cli-schema --prefix schema-v',
+                      component.stdout)
+
+        root = generate('release-node')
+        self.assertEqual(root.returncode, 0, root.stderr)
+        root_doc = yaml.safe_load(root.stdout)
+        root_on = root_doc.get('on', root_doc.get(True))
+        root_inputs = root_on['workflow_dispatch']['inputs']
+        self.assertEqual(root_inputs['prefix']['default'], 'v')
+        self.assertEqual(root_inputs['component']['default'], '')
+        self.assertEqual(root_doc['jobs']['publish']['with']['package-dirs'], '["."]')
+        self.assertNotIn('require-package-preparation', root_doc['jobs']['publish']['with'])
+        self.assertNotIn('Require the generated component release binding', root.stdout)
+
+    def test_component_mode_requires_explicit_binding_and_exact_packages(self):
+        cases = [
+            [],
+            ['--component', 'cli-schema'],
+            ['--prefix', 'schema-v'],
+            ['--component', 'cli-schema', '--prefix', 'v',
+             '--only-package-dir', 'packages/cli-schema'],
+            ['--component', 'CLI-SCHEMA', '--prefix', 'schema-v',
+             '--only-package-dir', 'packages/cli-schema'],
+            ['--component', 'cli-schema', '--prefix', 'schema-v',
+             '--package-dir', 'packages/cli-schema'],
+        ]
+        for args in cases:
+            with self.subTest(args=args):
+                result = generate('release-node-component', *args)
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(result.stdout, '')
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -137,6 +137,10 @@ justified = {
         "consumer": "Resolve restart-safe release state",
         "requires": ("git ls-remote", "git fetch"),
     },
+    ("release-node-component", "Check out the tree that will be released"): {
+        "consumer": "Resolve restart-safe release state",
+        "requires": ("git ls-remote", "git fetch"),
+    },
 }
 workflow = yaml.safe_load(os.environ["WORKFLOW"])
 checkouts = 0
@@ -177,10 +181,11 @@ if violations:
 print()
 PY
 }
-for audited_mode in pr-gate release-node release-propose workflow \
+for audited_mode in pr-gate release-node release-node-component release-propose workflow \
   generated-artifacts generated-artifacts-with-adr-index renovate-attribution; do
   audit_args=("$audited_mode" "$sha")
   [ "$audited_mode" != release-propose ] || audit_args+=(--autonomy propose)
+  [ "$audited_mode" != release-node-component ] || audit_args+=(--component schema --prefix schema-v --only-package-dir packages/schema)
   audit_report="$(audit_checkout_credentials "$audited_mode" \
     "$(bash "$gen" "${audit_args[@]}")" 2>&1)" \
     && pass "generated $audited_mode keeps no job credential in the checked-out tree, #959 ($audit_report)" \
@@ -739,6 +744,23 @@ sed -i 's/\["packages\/cli-schema"\]/[".","packages\/cli-schema"]/' "$nested_ado
 run_adopter "$nested_adopter" \
   && fail "nested-only contract accepted root publication" \
   || pass "nested-only contract rejects extra root publication (#1286)"
+
+component_adopter="$tmproot/adopter-independent-component-release"
+build_adopter "$component_adopter"
+bash "$gen" release-node-component "$sha" \
+  --component cli-schema --prefix schema-v --only-package-dir packages/cli-schema \
+  >"$component_adopter/.github/workflows/release.yml"
+bash "$gen" contract-test "$sha" \
+  --component cli-schema --prefix schema-v --only-package-dir packages/cli-schema \
+  >"$component_adopter/scripts/changelog-contract.test.sh"
+chmod +x "$component_adopter/scripts/changelog-contract.test.sh"
+run_adopter "$component_adopter" \
+  && pass "independent component caller and contract enforce their generated binding" \
+  || fail "independent component generated contract failed: $(tail -2 "$tmproot/run.out")"
+sed -i 's/default: schema-v/default: other-v/' "$component_adopter/.github/workflows/release.yml"
+run_adopter "$component_adopter" \
+  && fail "component contract accepted a prefix drift" \
+  || pass "component contract rejects a prefix drift"
 
 custom_adopter="$tmproot/adopter-custom-release"
 build_adopter "$custom_adopter"

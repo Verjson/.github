@@ -115,7 +115,7 @@ STUB
 chmod +x "$work/bin/npm" "$work/bin/gh"
 
 run_publish() {
-  ( cd "$work/repo" && PATH="$work/bin:$PATH" TEST_STATE="$work/state" PACKAGE_VERSION=1.2.3 \
+  ( cd "$work/repo" && PATH="$work/bin:$PATH" TEST_STATE="$work/state" PACKAGE_VERSION=1.2.3 REQUIRE_PACKAGE_PREPARATION=false \
       bash -euo pipefail "$work/prepare.sh" && \
     PATH="$work/bin:$PATH" TEST_STATE="$work/state" \
       REQUESTED_TAG=v1.2.3 PACKAGE_VERSION=1.2.3 NODE_AUTH_TOKEN=test PACKAGE_DIRS_JSON='[".","compat"]' \

@@ -24,6 +24,8 @@ assert inputs["prefix"]["default"] == "v"
 assert inputs["scope"]["default"] == "@verjson"
 assert "Required lowercase npm scope" in inputs["scope"]["description"]
 assert inputs["package-dirs"]["default"] == '["."]'
+assert inputs["require-package-preparation"]["default"] is False
+assert "release-prepare-packages.sh" in inputs["require-package-preparation"]["description"]
 assert inputs["release-assets"]["default"] == '[]'
 assert inputs["contract-ref"]["required"] is True
 assert set(doc["jobs"]) == {"release", "retention"}
@@ -44,6 +46,10 @@ assert all("node -" not in (step.get("run") or "") for step in steps[:setup_node
     "no JavaScript may run before setup-node on bootstrap-clean runners"
 publish = next(step for step in steps if "npm publish" in (step.get("run") or ""))
 assert publish["env"]["NODE_AUTH_TOKEN"] == "${{ secrets.GITHUB_TOKEN }}"
+prepare = next(step for step in steps if step.get("name") == "Prepare release package metadata")
+pack = next(step for step in steps if 'npm pack "$package_path" --json --ignore-scripts' in (step.get("run") or ""))
+assert steps.index(prepare) < steps.index(pack), "package preparation must run before script-disabled packing"
+assert "${{ inputs.require-package-preparation }}" in prepare["env"]["REQUIRE_PACKAGE_PREPARATION"]
 install = next(step for step in steps if (step.get("run") or "").strip() == "npm ci")
 assert install["env"]["NODE_AUTH_TOKEN"] == "${{ secrets.NODE_AUTH_TOKEN }}"
 release = next(step for step in steps if "gh release create" in (step.get("run") or ""))
@@ -67,6 +73,8 @@ assert "--allow-same-version" in steps[stamp_index]["run"], \
     "publisher stamp must accept a scaffold already at the dispatched first version"
 for guard in (
     'scripts/release-prepare-packages.sh "$PACKAGE_VERSION"',
+    'REQUIRE_PACKAGE_PREPARATION',
+    'This release requires executable scripts/release-prepare-packages.sh',
     'for package_dir in "${package_dirs[@]}"',
     'package_path="./$package_dir"',
     'npm pack "$package_path" --json --ignore-scripts',

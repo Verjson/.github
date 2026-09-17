@@ -428,6 +428,16 @@ claim public-npm support while its credentials and restart proof target GitHub
 Packages. Regenerate the caller and its contract test together when any of
 those parameters change; never use `@main`.
 
+Component callers generated with `release-node-component` also pass
+`require-package-preparation: true`. In the actual publish job,
+`node-release.yml` requires and executes the tagged tree's executable
+`scripts/release-prepare-packages.sh <version>` before building and packing with
+`--ignore-scripts`; a missing or failing hook fails the job before any package is
+packed. The default remains `false` for the root caller, preserving adopters that
+do not need package-specific preparation. The preparation step has no npm token
+environment; installation and publication credentials remain scoped to their
+existing steps.
+
 Two properties to respect:
 
 - **Compare against `'true'`, never against `'false'`.** Workflow outputs are
