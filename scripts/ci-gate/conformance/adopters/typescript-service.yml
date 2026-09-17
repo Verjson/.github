@@ -1,0 +1,31 @@
+# Synthetic adopter — not a real repository's workflow, and not installed anywhere.
+#
+# It is deliberately the shape a real adopter commits (Verjson/verjson-ci's own
+# ci.yml, reduced to the contract call), so that renaming or removing a
+# `workflow_call` input breaks the conformance matrix at the hub rather than a
+# hundred adopter builds after publication.
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+  statuses: read
+jobs:
+  build-test:
+    permissions:
+      contents: read
+      packages: read
+      statuses: read
+    uses: Verjson/.github/.github/workflows/node-ci.yml@CONFORMANCE
+    secrets:
+      NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+    with:
+      node-version: '24.20.0'
+      package-manager: npm
+      secretless-pr: ${{ github.event_name == 'pull_request' }}
+      secretless-trusted-ref: ${{ github.event_name == 'push' }}
+      approved-internal-packages: |
+        @verjson/compliance
+      secretless-ci-script-plan: '["verify:ci"]'

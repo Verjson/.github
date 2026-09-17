@@ -1,0 +1,13 @@
+# Synthetic adopter that supplies nothing but the required inputs.
+#
+# Every other input is exercised at its declared default, so a default that
+# stops being valid — or an input that quietly becomes required — fails here
+# rather than in the one adopter that never overrode it.
+name: CI
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  build-test:
+    uses: Verjson/.github/.github/workflows/node-ci.yml@CONFORMANCE
