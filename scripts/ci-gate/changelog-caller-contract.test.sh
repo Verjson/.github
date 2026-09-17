@@ -574,8 +574,28 @@ if [ "$staged_fixture" = true ]; then
   GIT_INDEX_FILE="$mutated_index" git -C "$repo_root" update-index \
     --cacheinfo 100644,"$mutated_blob",scripts/ci-gate/gen-adr-index.test.sh
   mutated_tree="$(GIT_INDEX_FILE="$mutated_index" git -C "$repo_root" write-tree)"
-  mutated_sha="$(git -C "$repo_root" commit-tree "$mutated_tree" -p "$sha" -m 'anchor removed')"
+  # commit-tree refuses without a committer identity, and a CI runner has none
+  # configured: it dies with "unable to auto-detect email address". Supply one
+  # through the environment rather than writing git config, so the fixture needs
+  # nothing of the host and leaves nothing behind.
+  mutated_sha="$(
+    GIT_AUTHOR_NAME='changelog-caller-contract' \
+    GIT_AUTHOR_EMAIL='changelog-caller-contract@invalid' \
+    GIT_COMMITTER_NAME='changelog-caller-contract' \
+    GIT_COMMITTER_EMAIL='changelog-caller-contract@invalid' \
+    git -C "$repo_root" commit-tree "$mutated_tree" -p "$sha" -m 'anchor removed'
+  )"
   rm -f "$mutated_index" "$mutated_suite"
+  # Without this the block continues with an empty ref, the generator refuses it
+  # on ref validation, and the assertions below report that refusal as though the
+  # branch under test had misbehaved. Every verdict past here needs a real ref.
+  [ -n "$mutated_sha" ] || {
+    fail "could not build the ADR-index refusal fixture commit"
+    staged_fixture=false
+  }
+fi
+
+if [ "$staged_fixture" = true ]; then
   # The scratch store stays exported until the last assertion below: the fixture
   # commit lives only there, so a child generator that cannot read it fails at
   # digest resolution instead of reaching the refusal branch being asserted.

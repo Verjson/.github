@@ -33,5 +33,18 @@ with no `objects` under it. The alternate therefore pointed nowhere, the fixture
 could not be staged, and every assertion that consumes it reported its own
 unrelated failure, so the suite blamed the refusal branch for a staging fault.
 It now uses `rev-parse --path-format=absolute --git-common-dir`, the idiom the
-rest of `scripts/` already uses, and the assertions that depend on the fixture
-are skipped when staging fails rather than run against an empty ref.
+rest of `scripts/` already uses.
+
+That was only the local symptom. On a CI runner the staging step always
+succeeded, and the fixture failed one step later: `git commit-tree` refuses
+without a committer identity, which a runner's checkout does not configure, so
+it died with `unable to auto-detect email address` and yielded an empty ref. The
+generator then refused that empty ref on *ref validation*, and the suite reported
+the refusal branch as misbehaving. The identity is now supplied through the
+environment, needing nothing of the host and leaving nothing behind.
+
+Both faults shared one shape worth naming: a fixture built by several plumbing
+commands checked only the first one's status, so a failure in any later command
+was reported as a misbehavior of the branch under test. Each construction step is
+now checked, and the assertions that consume the fixture are skipped rather than
+run against an empty ref.
