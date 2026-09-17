@@ -1,4 +1,5 @@
 ---
+date: 2026-09-17
 id: 20260917T061500Z
 title: The fleet inventory no longer reports an absent workflows directory as a gap
 impact: patch
