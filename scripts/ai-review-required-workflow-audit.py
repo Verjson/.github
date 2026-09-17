@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+import urllib.parse
 from pathlib import Path
 
 import yaml
@@ -224,10 +225,50 @@ def read_contract(path: Path = CONTRACT) -> dict:
         "authorization App permission contract drifted",
     )
     require(authorization.get("app_events") == [], "authorization App event contract drifted")
+
+    conformance = contract.get("adopter_conformance")
+    require(isinstance(conformance, dict), "adopter conformance contract is missing")
+    callers = conformance.get("caller_workflows")
+    require(
+        isinstance(callers, dict) and set(callers) == {"admission", "completeness"},
+        "adopter caller workflows must declare an admission and a completeness set",
+    )
+    declared = []
+    for kind in ("admission", "completeness"):
+        values = callers[kind]
+        require(
+            isinstance(values, list)
+            and values
+            and all(
+                isinstance(value, str)
+                and re.fullmatch(r"\.github/workflows/[A-Za-z0-9._-]+\.ya?ml", value) is not None
+                for value in values
+            )
+            and len(values) == len(set(values)),
+            f"adopter {kind} caller workflows are invalid",
+        )
+        declared.extend(values)
+    require(len(declared) == len(set(declared)), "an adopter caller is declared in both sets")
+    # Admission is not a severity label chosen here: it is exactly the file
+    # `gate-rearm.yml` reads out of the target repository and treats as fatal,
+    # which is the same path this contract already pins as `retired_path`.
+    require(
+        callers["admission"] == [contract["retired_path"]],
+        "adopter admission set must be exactly the caller the arm hard-requires",
+    )
+    require(
+        conformance.get("environment") == "ai-review-app",
+        "adopter review environment contract drifted",
+    )
+    require(
+        conformance.get("environment_deployment_branch_policy")
+        == {"protected_branches": False, "custom_branch_policies": True},
+        "adopter review environment branch-policy contract drifted",
+    )
     return contract
 
 
-def gh_pages(path: str) -> list:
+def gh_pages(path: str, allow_missing: bool = False) -> list:
     result = subprocess.run(
         ["gh", "api", "--paginate", "--slurp", path],
         capture_output=True,
@@ -235,6 +276,13 @@ def gh_pages(path: str) -> list:
         check=False,
     )
     if result.returncode:
+        # A per-adopter probe asks a question whose "no" is a finding, not an
+        # infrastructure failure. Only a 404 means that; any other status is
+        # still an unreadable API and must stop the audit, because reporting
+        # "absent" for an expired token would turn the whole fleet green-to-red
+        # on a credential problem and vice versa.
+        if allow_missing and "(HTTP 404)" in result.stderr:
+            return []
         raise AuditError(f"GitHub API read failed for {path}")
     try:
         pages = json.loads(result.stdout)
@@ -250,9 +298,9 @@ def single_object(read, path: str) -> dict:
     return pages[0]
 
 
-def paginated_items(read, path: str, field: str | None = None) -> list[dict]:
+def paginated_items(read, path: str, field: str | None = None, allow_missing: bool = False) -> list[dict]:
     items = []
-    for index, page in enumerate(read(path)):
+    for index, page in enumerate(read(path, allow_missing=True) if allow_missing else read(path)):
         values = page.get(field) if field and isinstance(page, dict) else page
         require(isinstance(values, list), f"unexpected page {index} shape for {path}")
         require(all(isinstance(value, dict) for value in values), f"invalid item in {path}")
@@ -340,10 +388,14 @@ def concise_mismatches(mismatches: list[str]) -> str:
     return f"{'; '.join(sample)}{suffix}"
 
 
+def concise_findings(name: str, findings: list[str]) -> str:
+    sample = findings[:8]
+    suffix = f" (plus {len(findings) - len(sample)} more)" if len(findings) > len(sample) else ""
+    return f"{name}: missing={len(findings)} sample={sample}{suffix}"
+
+
 def concise_missing(name: str, missing: list[str]) -> None:
-    sample = missing[:8]
-    suffix = f" (plus {len(missing) - len(sample)} more)" if len(missing) > len(sample) else ""
-    require(not missing, f"{name}: missing={len(missing)} sample={sample}{suffix}")
+    require(not missing, concise_findings(name, missing))
 
 
 def selected_repositories(read, organization: str, kind: str, name: str) -> set[str]:
@@ -546,6 +598,125 @@ def verify_authorization(contract: dict, read, governed: dict[str, bool]) -> Non
     require(installation.get("events") == authorization["app_events"], "authorization App event subscriptions drifted")
 
 
+def verify_adopter_conformance(contract: dict, read, repositories: list[dict], covered: list[str]) -> None:
+    """Report armed adopters that cannot satisfy the arm they are required to pass.
+
+    Enrollment is granted by a repository property and admission requires a
+    repository-local caller the property says nothing about, so the two can
+    diverge silently until an adopter's next pull request discovers it (#1401).
+    The whole generated family is asserted, not any one member: `verjson-agents`
+    carries the merge lane without the review caller `gate-rearm.yml`
+    hard-requires, which satisfies a presence check while the arm still cannot
+    run at all (ADR 0187). The family is reported in two classes because its
+    members fail differently. Absence of the admission caller is what makes
+    every pull request in a repository fail; absence of the rest degrades the
+    lifecycle. Measured on 2026-09-17 that is 4 adopters against 19, so one
+    bucket would deliver the finding #1401 needs as a minority of a backlog.
+
+    The adopter's workflow listing is adopter-controlled text. It is used only to
+    test membership against the paths this contract declares — never parsed,
+    interpolated, or executed.
+    """
+    conformance = contract["adopter_conformance"]
+    default_branches = {
+        repository["full_name"]: repository.get("default_branch") for repository in repositories
+    }
+    environment = conformance["environment"]
+    blocked = []
+    findings = []
+    environment_findings = []
+    for full_name in covered:
+        branch = default_branches.get(full_name)
+        require(isinstance(branch, str) and branch, f"{full_name} reports no default branch")
+        # Git permits `#` and `&` in a ref name. Raw in a query string the first
+        # truncates it and the second starts another parameter, so an unencoded
+        # probe reads a branch nobody asked about and reports what it finds
+        # there as this adopter's state.
+        reference = urllib.parse.quote(branch, safe="/")
+        entries = paginated_items(
+            read,
+            f"repos/{full_name}/contents/.github/workflows?ref={reference}",
+            allow_missing=True,
+        )
+        present = {entry.get("path") for entry in entries if entry.get("type") == "file"}
+        findings.extend(
+            f"{full_name}:{caller}"
+            for caller in conformance["caller_workflows"]["completeness"]
+            if caller not in present
+        )
+        for caller in conformance["caller_workflows"]["admission"]:
+            if caller not in present:
+                blocked.append(f"{full_name}:{caller}")
+                continue
+            # Present is not dispatchable. `gate-rearm.yml` dispatches the review
+            # lane into the adopter, and GitHub refuses to start a workflow
+            # disabled manually or for inactivity — the arm then fails for the
+            # same reason as an absent caller. The state is read from the Actions
+            # API, so no adopter-controlled workflow text becomes an input here;
+            # the file name comes from this contract.
+            pages = read(
+                f"repos/{full_name}/actions/workflows/{caller.rsplit('/', 1)[-1]}",
+                allow_missing=True,
+            )
+            state = pages[0].get("state") if pages and isinstance(pages[0], dict) else "unregistered"
+            if state != "active":
+                blocked.append(f"{full_name}:{caller}:{state}")
+        label = f"{full_name}:{environment}"
+        pages = read(f"repos/{full_name}/environments/{environment}", allow_missing=True)
+        if not pages:
+            environment_findings.append(f"{label}:absent")
+            continue
+        require(
+            len(pages) == 1 and isinstance(pages[0], dict),
+            f"unexpected environment response shape for {label}",
+        )
+        live = pages[0]
+        mismatches = image_mismatches(
+            live.get("deployment_branch_policy"),
+            conformance["environment_deployment_branch_policy"],
+            "deployment_branch_policy",
+        )
+        if mismatches:
+            environment_findings.extend(f"{label}:{mismatch}" for mismatch in mismatches)
+            continue
+        # `custom_branch_policies: true` says the policy is custom, not what it
+        # admits. The App key is confined to where the review lane actually runs
+        # only if the policy names this adopter's own default branch — which is
+        # not always `main`, and is not checkable by mirroring this repository's
+        # policy field by field.
+        policies = paginated_items(
+            read,
+            f"repos/{full_name}/environments/{environment}/deployment-branch-policies",
+            "branch_policies",
+            allow_missing=True,
+        )
+        # A policy whose `name` is absent would make this set mix `None` with
+        # strings and `sorted` would raise `TypeError` out of a hub-privileged
+        # control, so an unusable policy is reported as one instead.
+        admitted = sorted({str(policy.get("name")) for policy in policies})
+        if admitted != [branch]:
+            environment_findings.append(
+                f"{label}:branch_policies {admitted} do not admit only {branch!r}"
+            )
+    # Both classes are reported together. The audit runs daily, so surfacing one
+    # class at a time would make the fleet take as many scheduled days to become
+    # visible as there are classes — the same "the control could not tell you"
+    # shape this audit exists to remove.
+    reported = [
+        concise_findings(name, items)
+        for name, items in (
+            (
+                "armed adopters that cannot satisfy the arm: the admission caller is absent or undispatchable",
+                sorted(blocked),
+            ),
+            ("armed adopters with an incomplete generated adopter caller set", sorted(findings)),
+            ("armed adopters without a conforming review environment", sorted(environment_findings)),
+        )
+        if items
+    ]
+    require(not reported, " | ".join(reported))
+
+
 def read_workflow(read, selected: dict, label: str) -> dict:
     source = single_object(
         read,
@@ -697,6 +868,7 @@ def audit(contract: dict, read=gh_pages, allow_unschedulable_selection: bool = F
     # organization-wide reach for a rule that governs a subset is what made the
     # credential scope look like a blocker rather than a decision.
     verify_authorization(contract, read, {name: governed[name] for name in covered})
+    verify_adopter_conformance(contract, read, repositories, covered)
     verify_replacement_workflow(contract, read)
     return {
         "unpinned_live_fields": unpinned_live_fields(contract, live, candidates, state),

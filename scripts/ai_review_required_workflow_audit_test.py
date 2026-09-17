@@ -1,7 +1,9 @@
 import base64
 import copy
+import subprocess
 import importlib.util
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +15,16 @@ SPEC = importlib.util.spec_from_file_location("ai_review_required_workflow_audit
 AUDIT = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(AUDIT)
+
+# The generated caller family an armed adopter is expected to carry. Held here
+# rather than derived from the contract so a contract that forgets the set fails
+# these tests instead of silently agreeing with itself.
+ADOPTER_CALLERS = (
+    ".github/workflows/ai-review-merge.yml",
+    ".github/workflows/ai-review-label-rearm.yml",
+    ".github/workflows/ai-privileged-merge.yml",
+    ".github/workflows/ai-promotion-retry.yml",
+)
 
 
 class AiReviewRequiredWorkflowAuditTest(unittest.TestCase):
@@ -105,9 +117,36 @@ jobs:
         }
         for repository in repositories:
             full_name = repository["full_name"]
+            default_branch = repository["default_branch"]
             fixture[f"repos/{full_name}/actions/secrets?per_page=100"] = [{"secrets": []}]
             fixture[f"repos/{full_name}/actions/variables?per_page=100"] = [{"variables": []}]
+            fixture[f"repos/{full_name}/contents/.github/workflows?ref={default_branch}"] = [
+                [{"name": Path(caller).name, "path": caller, "type": "file"} for caller in ADOPTER_CALLERS]
+            ]
+            fixture[f"repos/{full_name}/actions/workflows/ai-review-merge.yml"] = [
+                {"id": 1, "name": "AI review", "state": "active"}
+            ]
+            fixture[f"repos/{full_name}/environments/ai-review-app"] = [{
+                "name": "ai-review-app",
+                "deployment_branch_policy": {"protected_branches": False, "custom_branch_policies": True},
+                "protection_rules": [{"id": 1, "type": "branch_policy"}],
+            }]
+            fixture[f"repos/{full_name}/environments/ai-review-app/deployment-branch-policies"] = [
+                {"branch_policies": [{"name": default_branch, "type": "branch"}]}
+            ]
         return fixture
+
+    def adopter_workflow_listing(self, full_name):
+        repository = next(
+            item for item in self.fixture["orgs/Verjson/repos?per_page=100&type=all"][0]
+            if item["full_name"] == full_name
+        )
+        path = f"repos/{full_name}/contents/.github/workflows?ref={repository['default_branch']}"
+        return self.fixture[path][0]
+
+    def remove_adopter_caller(self, full_name, caller):
+        listing = self.adopter_workflow_listing(full_name)
+        listing[:] = [entry for entry in listing if entry["path"] != caller]
 
     def enter_split_state(self):
         """Stub the organization as it looks after the split has been applied."""
@@ -120,8 +159,10 @@ jobs:
             "id": self.arm_id, **copy.deepcopy(self.contract["arm_ruleset"]),
         }]
 
-    def read(self, path):
+    def read(self, path, allow_missing=False):
         if path not in self.fixture:
+            if allow_missing:
+                return []
             raise AssertionError(f"unexpected API read: {path}")
         return copy.deepcopy(self.fixture[path])
 
@@ -743,12 +784,278 @@ jobs:
             contract["arm_ruleset"]["bypass_actors"] = []
         self.assert_contract_rejected(wider_bypass, "bypass actors diverge")
 
+    def test_a_half_installed_adopter_caller_set_is_reported(self):
+        # `verjson-agents` under #1401: the merge lane is installed and the
+        # review caller is not, so "does this adopter have any AI caller?"
+        # answers yes while `gate-rearm.yml` still cannot read the caller it
+        # hard-requires and every pull request in the repository fails the arm.
+        self.remove_adopter_caller("Verjson/alpha", ".github/workflows/ai-review-merge.yml")
+        self.assert_audit_error(
+            r"cannot satisfy the arm.*Verjson/alpha:\.github/workflows/ai-review-merge\.yml",
+        )
+
+    def test_an_armed_adopter_without_the_review_environment_is_reported(self):
+        # ADR 0187: GitHub creates a referenced environment on first use with no
+        # protection rules, so an adopter that installs the caller without
+        # creating `ai-review-app` gets a working review lane and an unprotected
+        # environment. Every signal reports success; the absent control produces
+        # no error at all. Only a read-back can see it.
+        del self.fixture["repos/Verjson/alpha/environments/ai-review-app"]
+        del self.fixture["repos/Verjson/alpha/environments/ai-review-app/deployment-branch-policies"]
+        self.assert_audit_error(r"review environment.*Verjson/alpha:ai-review-app:absent")
+
+    def test_an_environment_github_auto_created_is_not_a_provisioned_one(self):
+        # The exact shape GitHub leaves behind when a caller names an
+        # environment that does not exist: it exists afterwards, and it
+        # restricts nothing. Presence is therefore not the assertion; the
+        # branch policy is (ADR 0187).
+        environment = self.fixture["repos/Verjson/alpha/environments/ai-review-app"][0]
+        environment["deployment_branch_policy"] = None
+        environment["protection_rules"] = []
+        self.assert_audit_error(
+            r"review environment.*Verjson/alpha:ai-review-app:deployment_branch_policy: expected an object",
+        )
+
+    def test_a_branch_policy_naming_someone_elses_default_branch_is_reported(self):
+        # `custom_branch_policies: true` says only that the policy is custom, not
+        # what it admits. An adopter whose default branch is `develop/next` and
+        # whose policy names `main` confines the review App key to a branch the
+        # review lane never runs on, and the mirrored-from-`.github` shape makes
+        # that look conformant field by field.
+        path = "repos/Verjson/beta/environments/ai-review-app/deployment-branch-policies"
+        self.fixture[path][0]["branch_policies"] = [{"name": "main", "type": "branch"}]
+        self.assert_audit_error(
+            r"review environment.*Verjson/beta:ai-review-app:branch_policies.*'main'.*develop/next",
+        )
+
+    def test_the_admission_set_is_the_caller_the_rearm_gate_hard_requires(self):
+        # `retired_path` describes the ruleset split, not the gate, and today it
+        # only coincidentally equals the file `gate-rearm.yml` cannot proceed
+        # without. When the split completes and `retired_path` is repointed,
+        # admission would silently follow it and the severity split would invert
+        # with no test failing. So this asserts against the gate itself.
+        #
+        # The gate reads more than one adopter caller, but only one read is
+        # fatal on every arm; the others sit inside the label-receipt path. The
+        # fatal one is identified by the diagnostic it emits, not by position,
+        # so reordering the file does not quietly repoint this assertion.
+        gate = (ROOT / ".github/workflows/gate-rearm.yml").read_text(encoding="utf-8")
+        fatal = gate.index("could not read the protected default-branch review caller")
+        reads = re.findall(
+            r"repos/\$TARGET_REPO/contents/(\.github/workflows/[A-Za-z0-9._-]+\.ya?ml)\?",
+            gate[:fatal],
+        )
+        self.assertTrue(reads, "the gate's fatal caller read was not found")
+        contract = json.loads(
+            (ROOT / "config/ai-review-required-workflow-rollout.json").read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(
+            contract["adopter_conformance"]["caller_workflows"]["admission"],
+            [reads[-1]],
+            "the admission set must be exactly the caller gate-rearm.yml cannot proceed without",
+        )
+
+    def test_a_branch_policy_admitting_more_than_the_default_branch_is_reported(self):
+        # Naming the right branch is not enough: the point of the policy is to
+        # confine the review App key to where the review lane runs, so a policy
+        # that also admits a wildcard hands the key to every branch a
+        # contributor can create. Exact equality is the assertion, not
+        # membership.
+        path = "repos/Verjson/alpha/environments/ai-review-app/deployment-branch-policies"
+        self.fixture[path][0]["branch_policies"] = [
+            {"name": "main", "type": "branch"},
+            {"name": "*", "type": "branch"},
+        ]
+        self.assert_audit_error(
+            r"review environment.*Verjson/alpha:ai-review-app:branch_policies",
+        )
+
+    def run_gh_api(self, returncode, stdout, stderr):
+        completed = subprocess.CompletedProcess([], returncode, stdout=stdout, stderr=stderr)
+        original = AUDIT.subprocess.run
+        AUDIT.subprocess.run = lambda *args, **kwargs: completed
+        self.addCleanup(setattr, AUDIT.subprocess, "run", original)
+
+    def test_a_tolerated_absence_is_a_404_and_nothing_else(self):
+        # Reporting "absent" for an expired credential would convert a token
+        # problem into a fleet-wide non-adoption report, and reporting it for a
+        # 500 would let a transient API failure read as remediated drift. Only
+        # the status that actually means "this does not exist" is tolerated.
+        for returncode, stderr in (
+            (1, "gh: Bad credentials (HTTP 401)"),
+            (1, "gh: Forbidden (HTTP 403)"),
+            (1, "gh: Internal Server Error (HTTP 500)"),
+            (1, ""),
+        ):
+            with self.subTest(stderr=stderr):
+                self.run_gh_api(returncode, "", stderr)
+                with self.assertRaisesRegex(AUDIT.AuditError, r"GitHub API read failed for repos/x"):
+                    AUDIT.gh_pages("repos/x", allow_missing=True)
+
+    def test_a_caller_finding_does_not_mask_an_environment_finding(self):
+        # The audit runs daily. Reporting one class of adopter finding at a time
+        # makes the fleet take as many scheduled days to become visible as there
+        # are classes, which is the same "the control could not tell you" shape
+        # #1404 set out to remove.
+        self.remove_adopter_caller("Verjson/alpha", ".github/workflows/ai-review-merge.yml")
+        del self.fixture["repos/Verjson/beta/environments/ai-review-app"]
+        del self.fixture["repos/Verjson/beta/environments/ai-review-app/deployment-branch-policies"]
+        message = self.audit_error_message()
+        self.assertIn("Verjson/alpha:.github/workflows/ai-review-merge.yml", message)
+        self.assertIn("Verjson/beta:ai-review-app:absent", message)
+
+    def test_an_unarmed_repository_owes_no_caller_set_and_no_environment(self):
+        # A repository the arm does not cover cannot be blocked by it, so
+        # demanding the review lane there would report 70 of 99 organization
+        # repositories as findings and bury the 4 that are actually broken.
+        rows = self.fixture["orgs/Verjson/properties/values?per_page=100"][0]
+        beta = next(row for row in rows if row["repository_full_name"] == "Verjson/beta")
+        beta["properties"] = [{"property_name": "verjson-stack", "value": "node"}]
+        for path in list(self.fixture):
+            if path.startswith("repos/Verjson/beta/contents") or "/beta/environments/" in path:
+                del self.fixture[path]
+        report = AUDIT.audit(self.contract, self.read)
+        self.assertEqual(report["armed_repositories"], 1)
+
+    def test_only_a_file_satisfies_a_declared_caller(self):
+        # The listing is adopter-controlled. A directory at the caller's path is
+        # listed under that exact path and is not a workflow: `gate-rearm.yml`
+        # reading the caller still fails, so a name-only membership test would
+        # certify an adopter the arm cannot admit.
+        listing = self.adopter_workflow_listing("Verjson/alpha")
+        for entry in listing:
+            if entry["path"] == ".github/workflows/ai-review-merge.yml":
+                entry["type"] = "dir"
+        self.assert_audit_error(
+            r"cannot satisfy the arm.*Verjson/alpha:\.github/workflows/ai-review-merge\.yml",
+        )
+
+    def test_an_adopter_the_arm_blocks_is_reported_apart_from_an_incomplete_one(self):
+        # Measured against the live fleet on 2026-09-17: 4 of 29 armed adopters
+        # lack the caller `gate-rearm.yml` hard-requires and every pull request
+        # in them fails, while 19 merely lack the lifecycle re-arm caller and
+        # merge normally. Reported in one bucket, the 4 arrive as 8 of 31 sorted
+        # strings — the signal #1401 needs, buried under the backlog ADR 0187
+        # predicted from the pin skew.
+        self.remove_adopter_caller("Verjson/alpha", ".github/workflows/ai-review-merge.yml")
+        self.remove_adopter_caller("Verjson/beta", ".github/workflows/ai-review-label-rearm.yml")
+        message = self.audit_error_message()
+        blocked, incomplete = (part.strip() for part in message.split(" | ")[:2])
+        self.assertIn("cannot satisfy the arm", blocked)
+        self.assertIn("Verjson/alpha:.github/workflows/ai-review-merge.yml", blocked)
+        self.assertNotIn("Verjson/beta", blocked)
+        self.assertIn("incomplete generated adopter caller set", incomplete)
+        self.assertIn("Verjson/beta:.github/workflows/ai-review-label-rearm.yml", incomplete)
+
+    def test_the_declared_sets_partition_the_generated_caller_family(self):
+        # The two sets differ in what their absence costs, not in what is
+        # expected: together they are still the whole generated family, so
+        # splitting the report can never quietly drop a member from the audit.
+        callers = self.contract["adopter_conformance"]["caller_workflows"]
+        self.assertEqual(
+            sorted(callers["admission"] + callers["completeness"]),
+            sorted(ADOPTER_CALLERS),
+        )
+
+    def test_a_disabled_admission_caller_is_reported_as_undispatchable(self):
+        # `gate-rearm.yml` dispatches the review lane into the adopter. A
+        # workflow disabled manually or for inactivity is present on the default
+        # branch, satisfies the file-presence assertion, and GitHub refuses to
+        # start it — so the arm fails for the same reason as an absent caller
+        # while the audit would call the repository conformant. Read from the
+        # Actions API, never from the adopter's workflow text.
+        for state in ("disabled_manually", "disabled_inactivity"):
+            with self.subTest(state=state):
+                self.fixture = self.make_fixture()
+                path = "repos/Verjson/alpha/actions/workflows/ai-review-merge.yml"
+                self.fixture[path][0]["state"] = state
+                self.assert_audit_error(
+                    rf"cannot satisfy the arm.*Verjson/alpha:\.github/workflows/"
+                    rf"ai-review-merge\.yml:{state}",
+                )
+
+    def test_a_default_branch_needing_encoding_still_probes_that_branch(self):
+        # Git permits `#` and `&` in a ref name. Interpolated raw into a query
+        # string, `#` truncates it and `&` starts another parameter, so the
+        # audit would silently probe a branch nobody asked about and report
+        # whatever it found there. The probe must name the branch it means.
+        repositories = self.fixture["orgs/Verjson/repos?per_page=100&type=all"][0]
+        beta = next(item for item in repositories if item["full_name"] == "Verjson/beta")
+        listing = self.fixture.pop("repos/Verjson/beta/contents/.github/workflows?ref=develop/next")
+        beta["default_branch"] = "release#1&2"
+        self.fixture["repos/Verjson/beta/contents/.github/workflows?ref=release%231%262"] = listing
+        self.fixture["repos/Verjson/beta/environments/ai-review-app/deployment-branch-policies"] = [
+            {"branch_policies": [{"name": "release#1&2", "type": "branch"}]}
+        ]
+        self.assertEqual(AUDIT.audit(self.contract, self.read)["armed_repositories"], 2)
+
     def test_malformed_contract_fails_with_controlled_diagnostics(self):
         for section, key, value, diagnostic in (
             (None, "ruleset_id", True, "ruleset ID"),
             ("authorization", "variables", [{}], "authorization variables"),
             ("authorization", "app_permissions", {"checks": "write"}, "permission contract"),
             ("authorization", "app_events", ["pull_request"], "event contract"),
+            (
+                "adopter_conformance",
+                "caller_workflows",
+                {"admission": [".github/workflows/ai-review-merge.yml"]},
+                "must declare an admission and a completeness set",
+            ),
+            (
+                "adopter_conformance",
+                "caller_workflows",
+                {"admission": [], "completeness": [".github/workflows/a.yml"]},
+                "adopter admission caller workflows are invalid",
+            ),
+            (
+                "adopter_conformance",
+                "caller_workflows",
+                {
+                    "admission": [".github/workflows/ai-review-merge.yml"],
+                    "completeness": ["ai-review-label-rearm.yml"],
+                },
+                "adopter completeness caller workflows are invalid",
+            ),
+            (
+                "adopter_conformance",
+                "caller_workflows",
+                {
+                    "admission": [".github/workflows/ai-review-merge.yml"],
+                    "completeness": [".github/workflows/ai-review-merge.yml"],
+                },
+                "declared in both sets",
+            ),
+            # An admission set that is not the file `gate-rearm.yml` reads would
+            # let the audit certify the exact state #1401 reported.
+            (
+                "adopter_conformance",
+                "caller_workflows",
+                {
+                    "admission": [".github/workflows/ai-privileged-merge.yml"],
+                    "completeness": [".github/workflows/ai-review-merge.yml"],
+                },
+                "admission set must be exactly the caller",
+            ),
+            # A set the audit does not know about is a set it does not check,
+            # so the shape is compared exactly rather than as a superset.
+            (
+                "adopter_conformance",
+                "caller_workflows",
+                {
+                    "admission": [".github/workflows/ai-review-merge.yml"],
+                    "completeness": [".github/workflows/ai-review-label-rearm.yml"],
+                    "advisory": [".github/workflows/ai-review-advisory.yml"],
+                },
+                "must declare an admission and a completeness set",
+            ),
+            ("adopter_conformance", "environment", "ai-review", "review environment contract"),
+            (
+                "adopter_conformance",
+                "environment_deployment_branch_policy",
+                {"protected_branches": True, "custom_branch_policies": True},
+                "branch-policy contract",
+            ),
         ):
             with self.subTest(diagnostic=diagnostic), tempfile.TemporaryDirectory() as directory:
                 contract = copy.deepcopy(self.contract)
