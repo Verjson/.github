@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0186](0186-required-checks-bind-through-repository-properties/README.md) | 2026-09-17 | Required status checks bind through repository properties, not per-repository rulesets |
 | [0185](0185-org-contract-distribution/README.md) | 2026-09-17 | Distribute the organization contract as a version, not a commit |
 | [0184](0184-merge-gates-assert-execution-not-absence-of-red/README.md) | 2026-09-17 | A merge gate asserts that verification executed, not that nothing is red |
 | [0183](0183-release-plan-resolves-optional-version/README.md) | 2026-09-15 | Resolve an optional release version in the verified release plan |
