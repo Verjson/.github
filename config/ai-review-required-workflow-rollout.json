@@ -260,7 +260,8 @@
     "ci / validate",
     "ci / preview",
     "generated-artifacts / validate",
-    "changelog / validate"
+    "changelog / validate",
+    "changelog-contract"
   ],
   "core_checks_property": "verjson-core-checks",
   "core_checks_value": "enforced",
@@ -328,7 +329,8 @@
               "do_not_enforce_on_create": true,
               "required_status_checks": [
                 {"context": "ci / build-test"},
-                {"context": "ci / eligibility"}
+                {"context": "ci / eligibility"},
+                {"context": "changelog-contract"}
               ],
               "strict_required_status_checks_policy": false
             }

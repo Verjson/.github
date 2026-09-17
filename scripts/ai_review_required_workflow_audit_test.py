@@ -396,6 +396,22 @@ jobs:
             )
         self.assertNotIn("4528902", json.dumps(self.contract))
 
+    def test_the_node_image_records_the_decided_changelog_contract_requirement(self):
+        # ADR 0186 made `changelog-contract` a required context on the node
+        # stack. The reviewed image predates that decision, so the audit reported
+        # as drift a requirement the organization had already taken and written
+        # down — the mirror of re-freezing live state, and just as blinding.
+        node = next(
+            declaration for declaration in self.contract["deterministic_rulesets"]
+            if declaration["stack"] == "node"
+        )
+        checks = node["image"]["rules"][0]["parameters"]["required_status_checks"]
+        self.assertEqual(
+            [check["context"] for check in checks],
+            ["ci / build-test", "ci / eligibility", "changelog-contract"],
+        )
+        self.assertIn("changelog-contract", self.contract["deterministic_required_status_contexts"])
+
     def test_rendered_payloads_are_verified_and_the_tool_has_no_mutation_path(self):
         self.assertEqual(
             AUDIT.render_payload(self.contract, "split", self.read),
