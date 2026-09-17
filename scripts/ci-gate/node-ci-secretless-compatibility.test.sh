@@ -27,6 +27,8 @@ label, status, stderr_path = sys.argv[1:]
 labels = {
     "resolved compatibility consumer",
     "cold-cache compatibility consumer",
+    "verified public cache compatibility consumer",
+    "absent public cache compatibility consumer",
     "probe",
 }
 if label not in labels:
@@ -156,6 +158,27 @@ Path(sys.argv[2], "protected-run-lanes.sh").write_text(
 for name in ("GH_TOKEN", "GITHUB_TOKEN", "NODE_AUTH_TOKEN", "NPM_TOKEN",
              "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL"):
     assert runner["env"][name] == ""
+# The sandbox resolves its verified public cache bind from these keys alone, so
+# deleting them reproduces Verjson/.github#1372 with every consumer-facing case
+# still green: the harness injects its own values and never reads the workflow's.
+runtime_cache_keys = {
+    "RESTORE_PERSISTED_PUBLIC_CACHE": (
+        "${{ inputs.cache && inputs.package-manager == 'npm' }}"
+    ),
+    "RUNTIME_CACHE_DIR": (
+        "${{ runner.temp }}/secretless-runtime-cache-"
+        "${{ github.run_id }}-${{ github.run_attempt }}"
+    ),
+    "RUN_ATTEMPT": "${{ github.run_attempt }}",
+    "RUN_ID": "${{ github.run_id }}",
+    "SECRETLESS_RUNTIME_PUBLIC_CACHE": "${{ inputs.secretless-runtime-public-cache }}",
+}
+for current_runner in (runner, protected_runner):
+    for name, expression in runtime_cache_keys.items():
+        assert current_runner["env"][name] == expression, name
+    assert sorted(current_runner["env"]) == list(current_runner["env"]), (
+        "compatibility step env keys are no longer alphabetically ordered"
+    )
 assert "tarfile.open" in runner["run"] and "O_NOFOLLOW" in runner["run"]
 assert 'subprocess.run(["npm", "install"' not in runner["run"]
 assert "artifact.read_bytes" not in runner["run"]
@@ -598,7 +621,8 @@ prepare_archive_case() {
     "$fixture/cold-cache/_cacache/content-v2/sha512"
   rm -rf "$tmp/archive-cases/runner-temps/$mutation"
   mkdir -p "$tmp/archive-cases/runner-temps/$mutation"
-  if [ "$mutation" = public-cache ]; then
+  if [ "$mutation" = public-cache ] || [ "$mutation" = public-cache-masked ] \
+    || [ "$mutation" = public-cache-residue ]; then
     local content_root="$tmp/archive-cases/runner-temps/$mutation/$runtime_cache_name/_cacache/content-v2"
     mkdir -p "$content_root/${public_cache_sentinel%/*}"
     printf '%s\n' verified-public-blob > "$content_root/$public_cache_sentinel"
@@ -651,6 +675,10 @@ if (process.env.PUBLIC_CACHE_SENTINEL) {
   );
   fs.writeFileSync(`${contentRoot}/${process.env.PUBLIC_CACHE_SENTINEL}`, 'rewritten\n');
   fs.writeFileSync(`${contentRoot}/intruder`, 'consumer-write');
+  if (process.env.PUBLIC_CACHE_RESIDUE) {
+    fs.mkdirSync(`${contentRoot}/sealed`, {recursive: true});
+    fs.chmodSync(`${contentRoot}/sealed`, 0o000);
+  }
 }
 const mountRemoval = childProcess.spawnSync('rmdir', ['.cjs-build'], {encoding: 'utf8'});
 assert.notEqual(mountRemoval.status, 0);
@@ -814,14 +842,23 @@ run_archive_case() {
 }
 
 run_public_cache_case() {
-  local mutation="$1" runtime_cache="$2"
+  local mutation="$1" runtime_cache="$2" requested="${3-}"
   archive_case_env=(
     "RUNNER_TEMP=$tmp/archive-cases/runner-temps/$mutation"
     "RUN_ATTEMPT=$runtime_cache_run_attempt"
     "RUN_ID=$runtime_cache_run_id"
-    "RUNTIME_CACHE_DIR=$runtime_cache"
   )
-  if [ "$mutation" = public-cache ]; then
+  if [ -n "$runtime_cache" ]; then
+    archive_case_env+=("RUNTIME_CACHE_DIR=$runtime_cache")
+  fi
+  if [ -n "$requested" ]; then
+    archive_case_env+=("SECRETLESS_RUNTIME_PUBLIC_CACHE=$requested")
+  fi
+  shift 3 2>/dev/null || shift "$#"
+  if [ "$#" -gt 0 ]; then
+    archive_case_env+=("$@")
+  fi
+  if [ "$mutation" = public-cache ] || [ "$mutation" = public-cache-residue ]; then
     archive_case_env+=("PUBLIC_CACHE_SENTINEL=$public_cache_sentinel")
   fi
   run_archive_case "$mutation"
@@ -864,13 +901,13 @@ if [ "$public_cache_status" -eq 0 ] \
 else
   fail "verified public cache content did not reach the sandbox, or exposed the job cache"
   emit_failure_diagnostic \
-    "cold-cache compatibility consumer" \
+    "verified public cache compatibility consumer" \
     "$public_cache_status" \
     "$tmp/archive-cases/public-cache/run.stderr"
 fi
 
 if run_public_cache_case public-cache-absent \
-  "$tmp/archive-cases/runner-temps/public-cache-absent/$runtime_cache_name"; then
+  "$tmp/archive-cases/runner-temps/public-cache-absent/$runtime_cache_name" false; then
   absent_cache_status=0
 else
   absent_cache_status=$?
@@ -881,9 +918,99 @@ if [ "$absent_cache_status" -eq 0 ] \
 else
   fail "a caller without a runtime public cache could not start the compatibility sandbox"
   emit_failure_diagnostic \
-    "cold-cache compatibility consumer" \
+    "absent public cache compatibility consumer" \
     "$absent_cache_status" \
     "$tmp/archive-cases/public-cache-absent/run.stderr"
+fi
+
+if run_public_cache_case public-cache-requested-unset '' true; then
+  fail "a requested public cache without its workflow env key started the sandbox"
+elif [ -e "$tmp/archive-cases/public-cache-requested-unset/compat-results/consumer-ran" ]; then
+  fail "a requested public cache without its workflow env key ran consumer code"
+elif grep -qF 'compatibility public cache is requested without a runtime cache path' \
+  "$tmp/archive-cases/public-cache-requested-unset/run.stderr"; then
+  pass "a requested public cache without its workflow env key fails closed, not open"
+else
+  fail "a requested public cache without its workflow env key failed without naming its reason"
+fi
+
+if run_public_cache_case public-cache-requested-missing \
+  "$tmp/archive-cases/runner-temps/public-cache-requested-missing/$runtime_cache_name" true; then
+  fail "a requested public cache the population step never wrote started the sandbox"
+elif [ -e "$tmp/archive-cases/public-cache-requested-missing/compat-results/consumer-ran" ]; then
+  fail "a requested public cache the population step never wrote ran consumer code"
+elif grep -qF 'compatibility public cache is requested but was never populated' \
+  "$tmp/archive-cases/public-cache-requested-missing/run.stderr"; then
+  pass "a requested public cache the population step never wrote fails closed, not open"
+else
+  fail "a requested public cache the population step never wrote failed without naming its reason"
+fi
+
+# The install step populates the runtime cache when SECRETLESS_RUNTIME_PUBLIC_CACHE
+# is true *or* when RESTORE_PERSISTED_PUBLIC_CACHE is, the latter being
+# `inputs.cache && inputs.package-manager == 'npm'`. Reading only the former as
+# "a cache was expected" leaves an ordinary `cache: true` npm caller resolving to
+# a silent None with the cache populated and bound -- Verjson/.github#1372 intact
+# for the larger share of adopters.
+if run_public_cache_case public-cache-persisted-missing \
+  "$tmp/archive-cases/runner-temps/public-cache-persisted-missing/$runtime_cache_name" false \
+  RESTORE_PERSISTED_PUBLIC_CACHE=true; then
+  fail "a persisted public cache the population step never wrote started the sandbox"
+elif [ -e "$tmp/archive-cases/public-cache-persisted-missing/compat-results/consumer-ran" ]; then
+  fail "a persisted public cache the population step never wrote ran consumer code"
+elif grep -qF 'compatibility public cache is requested but was never populated' \
+  "$tmp/archive-cases/public-cache-persisted-missing/run.stderr"; then
+  pass "a persisted-cache caller whose runtime cache is absent fails closed, not open"
+else
+  fail "a persisted-cache caller whose runtime cache is absent failed without naming its reason"
+fi
+
+if run_public_cache_case public-cache-persisted-unset '' false \
+  RESTORE_PERSISTED_PUBLIC_CACHE=true; then
+  fail "a persisted public cache without its workflow env key started the sandbox"
+elif [ -e "$tmp/archive-cases/public-cache-persisted-unset/compat-results/consumer-ran" ]; then
+  fail "a persisted public cache without its workflow env key ran consumer code"
+elif grep -qF 'compatibility public cache is requested without a runtime cache path' \
+  "$tmp/archive-cases/public-cache-persisted-unset/run.stderr"; then
+  pass "a persisted-cache caller without its workflow env key fails closed, not open"
+else
+  fail "a persisted-cache caller without its workflow env key failed without naming its reason"
+fi
+
+# An ambient mask equal to the sandbox bind target would append its --tmpfs
+# after the bind and shadow it, failing open to Verjson/.github#1372.
+# Consumer code runs as the runner's uid and can seal a staged directory, so
+# the staging copy's cleanup must report residue rather than swallow it.
+if run_public_cache_case public-cache-residue \
+  "$tmp/archive-cases/runner-temps/public-cache-residue/$runtime_cache_name" true \
+  PUBLIC_CACHE_RESIDUE=1; then
+  residue_status=0
+else
+  residue_status=$?
+fi
+if [ "$residue_status" -ne 0 ]; then
+  fail "sealing a staged directory broke the compatibility run instead of leaving residue"
+elif [ ! -f "$tmp/archive-cases/public-cache-residue/compat-results/consumer-ran" ]; then
+  fail "the staging-residue case never ran consumer code"
+elif grep -qF '::warning::compatibility public cache staging was not removed' \
+  "$tmp/archive-cases/public-cache-residue/run.stderr"; then
+  pass "staging residue a consumer sealed is reported rather than silently left behind"
+else
+  fail "staging residue a consumer sealed was swallowed instead of reported"
+fi
+chmod -R u+rwX "$tmp/archive-cases/runner-temps/public-cache-residue" 2>/dev/null || true
+
+if run_public_cache_case public-cache-masked \
+  "$tmp/archive-cases/runner-temps/public-cache-masked/$runtime_cache_name" true \
+  NPM_CONFIG_CACHE=/dev/shm/npm-cache; then
+  fail "an ambient mask shadowing the public cache bind reached consumer execution"
+elif [ -e "$tmp/archive-cases/public-cache-masked/compat-results/consumer-ran" ]; then
+  fail "an ambient mask shadowing the public cache bind ran consumer code"
+elif grep -qF 'ambient npm path overlaps compatibility public cache bind' \
+  "$tmp/archive-cases/public-cache-masked/run.stderr"; then
+  pass "an ambient mask shadowing the public cache bind is refused, not layered over it"
+else
+  fail "an ambient mask shadowing the public cache bind failed without naming its reason"
 fi
 
 if run_public_cache_case public-cache-foreign "$tmp/archive-cases/foreign-cache"; then
@@ -896,6 +1023,76 @@ elif grep -qF 'compatibility public cache is not the workflow runtime cache' \
 else
   fail "a foreign runtime public cache was refused without naming its reason"
 fi
+
+# The ambient-mask overlap guard has to cover every mountpoint the public-cache
+# arguments create. Deriving those paths by positional slice holds only while
+# every element is exactly a `--bind src dst` triple: one argument of different
+# arity re-indexes the slice onto a source path or a flag, and the guard stops
+# covering the real target without failing. Exercise the derivation directly
+# with a differently-shaped list rather than trusting the comment.
+python3 - "$tmp/run-lanes.sh" "$tmp/protected-run-lanes.sh" <<'PY'
+import ast
+import sys
+from pathlib import Path
+
+MARKER = "python3 - <<'PY'\n"
+TARGET = "/dev/shm/npm-cache/_cacache/content-v2"
+STAGING = "/runner-temp/verjson-compatibility-public-cache-x/content-v2"
+
+for lane_path in sys.argv[1:]:
+    source = Path(lane_path).read_text(encoding="utf-8")
+    start = source.find(MARKER)
+    end = source.find("\nPY\n", start)
+    assert start >= 0 and end > start, f"{lane_path}: embedded consumer source missing"
+    module = ast.parse(source[start + len(MARKER):end + 1])
+    definitions = [
+        node
+        for node in module.body
+        if (
+            isinstance(node, ast.FunctionDef)
+            and node.name == "public_cache_bind_targets"
+        )
+        or (
+            isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name)
+                and target.id == "PUBLIC_CACHE_MOUNT_ARITY"
+                for target in node.targets
+            )
+        )
+    ]
+    assert len(definitions) == 2, (
+        f"{lane_path}: guarded paths are not derived from the bind arguments' own shape"
+    )
+    namespace = {"Path": Path}
+    exec(compile(ast.Module(definitions, type_ignores=[]), "<lanes>", "exec"), namespace)
+    derive = namespace["public_cache_bind_targets"]
+
+    assert derive(["--bind", STAGING, TARGET]) == [Path(TARGET)], lane_path
+    assert derive([]) == [], lane_path
+    # A leading argument of a different arity must not move the guard.
+    reshaped = ["--tmpfs", "/dev/shm/npm-cache/_cacache/index-v5",
+                "--bind", STAGING, TARGET]
+    assert Path(TARGET) in derive(reshaped), (
+        f"{lane_path}: a differently-shaped argument list silently moved the guard"
+    )
+    # Every mountpoint the arguments create is guarded, not only --bind targets.
+    assert derive(reshaped)[0] == Path("/dev/shm/npm-cache/_cacache/index-v5"), lane_path
+    for malformed in (
+        ["--bind", STAGING],
+        ["--tmpfs"],
+        ["--unsupported-flag", STAGING, TARGET],
+        [STAGING, TARGET],
+    ):
+        try:
+            derive(malformed)
+        except SystemExit:
+            continue
+        raise AssertionError(f"{lane_path}: {malformed!r} was accepted without a guarded target")
+PY
+[ "$?" -eq 0 ] \
+  && pass "the ambient-mask guard derives its paths from the bind arguments' own shape" \
+  || fail "the ambient-mask guard re-indexes when a bind argument of different arity is added"
 
 if run_archive_case protected-good "$tmp/protected-run-lanes.sh" \
   && [ -f "$tmp/archive-cases/protected-good/compat-results/consumer-ran" ]; then
@@ -960,11 +1157,15 @@ PY
   else
     mutation_status=$?
   fi
-  if [ "$mutation_status" -eq 7 ] \
+  if [ "$mutation_status" -eq 9 ] \
     && grep -qFx 'not ok - verified public cache content did not reach the sandbox, or exposed the job cache' "$mutation_root/run.log" \
     && grep -qFx 'not ok - a caller without a runtime public cache could not start the compatibility sandbox' "$mutation_root/run.log" \
+    && grep -qFx 'not ok - sealing a staged directory broke the compatibility run instead of leaving residue' "$mutation_root/run.log" \
+    && grep -qFx 'not ok - an ambient mask shadowing the public cache bind failed without naming its reason' "$mutation_root/run.log" \
     && grep -qFx 'diagnostic - resolved compatibility consumer return-code=1 stderr-category=bubblewrap-unavailable' "$mutation_root/run.log" \
     && grep -qFx 'diagnostic - cold-cache compatibility consumer return-code=1 stderr-category=bubblewrap-unavailable' "$mutation_root/run.log" \
+    && grep -qFx 'diagnostic - verified public cache compatibility consumer return-code=1 stderr-category=bubblewrap-unavailable' "$mutation_root/run.log" \
+    && grep -qFx 'diagnostic - absent public cache compatibility consumer return-code=1 stderr-category=bubblewrap-unavailable' "$mutation_root/run.log" \
     && ! grep -qF 'trusted bubblewrap compatibility sandbox is unavailable' "$mutation_root/run.log" \
     && ! grep -qF 'consumer-controlled-sentinel' "$mutation_root/run.log"; then
     pass "missing-bwrap mutation reports both positive failures with exact allowlisted categories"
@@ -999,11 +1200,14 @@ PY
   else
     cache_mutation_status=$?
   fi
-  if [ "$cache_mutation_status" -eq 3 ] \
+  if [ "$cache_mutation_status" -eq 4 ] \
     && grep -qFx 'not ok - cold-cache caret consumer did not preserve its installed dependency graph' "$cache_mutation_root/run.log" \
     && grep -qFx 'not ok - verified public cache content did not reach the sandbox, or exposed the job cache' "$cache_mutation_root/run.log" \
     && grep -qFx 'not ok - a caller without a runtime public cache could not start the compatibility sandbox' "$cache_mutation_root/run.log" \
-    && grep -qFx 'diagnostic - cold-cache compatibility consumer return-code=1 stderr-category=stderr-suppressed' "$cache_mutation_root/run.log"; then
+    && grep -qFx 'not ok - sealing a staged directory broke the compatibility run instead of leaving residue' "$cache_mutation_root/run.log" \
+    && grep -qFx 'diagnostic - cold-cache compatibility consumer return-code=1 stderr-category=stderr-suppressed' "$cache_mutation_root/run.log" \
+    && grep -qFx 'diagnostic - verified public cache compatibility consumer return-code=1 stderr-category=stderr-suppressed' "$cache_mutation_root/run.log" \
+    && grep -qFx 'diagnostic - absent public cache compatibility consumer return-code=1 stderr-category=stderr-suppressed' "$cache_mutation_root/run.log"; then
     pass "ambient read-only npm cache mutation reproduces the silent npm failure"
   else
     fail "ambient read-only npm cache mutation did not reproduce the silent npm failure"
@@ -1035,11 +1239,15 @@ PY
   else
     mask_mutation_status=$?
   fi
-  if [ "$mask_mutation_status" -eq 3 ] \
+  if [ "$mask_mutation_status" -eq 5 ] \
     && grep -qFx 'not ok - cold-cache caret consumer did not preserve its installed dependency graph' "$mask_mutation_root/run.log" \
     && grep -qFx 'not ok - verified public cache content did not reach the sandbox, or exposed the job cache' "$mask_mutation_root/run.log" \
     && grep -qFx 'not ok - a caller without a runtime public cache could not start the compatibility sandbox' "$mask_mutation_root/run.log" \
-    && grep -qFx 'diagnostic - cold-cache compatibility consumer return-code=1 stderr-category=stderr-suppressed' "$mask_mutation_root/run.log"; then
+    && grep -qFx 'not ok - sealing a staged directory broke the compatibility run instead of leaving residue' "$mask_mutation_root/run.log" \
+    && grep -qFx 'not ok - an ambient mask shadowing the public cache bind failed without naming its reason' "$mask_mutation_root/run.log" \
+    && grep -qFx 'diagnostic - cold-cache compatibility consumer return-code=1 stderr-category=stderr-suppressed' "$mask_mutation_root/run.log" \
+    && grep -qFx 'diagnostic - verified public cache compatibility consumer return-code=1 stderr-category=stderr-suppressed' "$mask_mutation_root/run.log" \
+    && grep -qFx 'diagnostic - absent public cache compatibility consumer return-code=1 stderr-category=stderr-suppressed' "$mask_mutation_root/run.log"; then
     pass "removing ambient npm masks exposes the real absolute-path escape probe"
   else
     fail "ambient npm mask mutation did not expose the absolute-path escape probe"
