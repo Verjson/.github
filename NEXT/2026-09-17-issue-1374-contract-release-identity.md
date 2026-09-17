@@ -5,7 +5,7 @@ impact: minor
 title: Give the organization contract a release identity an adopter can declare and a check can read back
 ---
 
-ADR 0190 decides that a contract version is a published `Verjson/.github`
+ADR 0191 decides that a contract version is a published `Verjson/.github`
 release, that an adopter declares exactly one of them in
 `.github/verjson-contract.json`, and that the declaration is verified by
 resolving it to that release's commit and requiring every `Verjson/.github`

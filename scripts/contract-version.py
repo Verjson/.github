@@ -6,7 +6,7 @@ on, whether that contract is behind, or whether it is still supported, which is
 why 22 of the 29 enforced repositories carry a review caller spread across
 eleven distinct contract SHAs (ADR 0185, #1374).
 
-This module is the readback half of ADR 0190: a version an adopter declares but
+This module is the readback half of ADR 0191: a version an adopter declares but
 nothing verifies fails exactly like a pin nobody advances. It resolves the
 declared version against published contract releases and then asserts that every
 `Verjson/.github` reference on disk names that version's release commit.
