@@ -13,11 +13,13 @@ declared version against published contract releases and then asserts that every
 """
 from __future__ import annotations
 
+import argparse
 import dataclasses
 import datetime
 import json
 import pathlib
 import re
+import sys
 
 VERSION_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 # The window is never narrower than GitHub Packages retention (ADR 0108 keeps the
@@ -247,7 +249,11 @@ def verify(root, releases, today: str):
     version, finding = read_declaration(root)
     found = references(root)
     if finding is not None:
-        return [finding] if found else [finding]
+        # No declaration and no reference is a repository that does not consume
+        # the contract, not a defect. Reporting it would fire on every repository
+        # in the organization, and a check that fires everywhere gets muted --
+        # which is how the previous invalid drift test survived.
+        return [finding] if found else []
     verdict = classify(version, releases, today)
     if verdict.state in (UNKNOWN, EXPIRED):
         return [Finding(verdict.state, verdict.reason)]
@@ -279,3 +285,65 @@ def verify(root, releases, today: str):
                                 f"{relative}: {kind} names {ref}, but the declared {version} "
                                 f"is {commit}"))
     return findings
+
+
+def load_releases(path: str):
+    """Published contract releases, or a usage failure. Never a partial list.
+
+    Resolve them with the tag's own object id, not `target_commitish`:
+
+        gh api repos/Verjson/.github/releases --paginate --jq '.[] | {version: .tag_name,
+          published: (.published_at | split("T")[0])}' \\
+          | while read -r row; do ...; done   # commit from git/ref/tags/<tag>
+
+    The `commit` field must be a 40-hex object id; `verify` fails closed on
+    anything else rather than comparing a pin against a branch name.
+    """
+    with open(path, encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if not isinstance(payload, list):
+        raise ValueError("the releases document must be a JSON array")
+    releases = []
+    for entry in payload:
+        if not isinstance(entry, dict):
+            raise ValueError("every release entry must be an object")
+        releases.append(Release(version=str(entry.get("version", "")),
+                                commit=str(entry.get("commit", "")),
+                                published=str(entry.get("published", ""))))
+    return releases
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    sub = parser.add_subparsers(dest="command", required=True)
+    for name in ("classify", "verify"):
+        child = sub.add_parser(name)
+        child.add_argument("--releases", required=True)
+        child.add_argument("--today", default=datetime.date.today().isoformat())
+        if name == "classify":
+            child.add_argument("--version", required=True)
+        else:
+            child.add_argument("--repo-root", default=".")
+    args = parser.parse_args(argv)
+
+    try:
+        releases = load_releases(args.releases)
+    except (OSError, ValueError) as error:
+        # Exit 2 is "the question could not be asked". Reporting a tree that was
+        # never compared as conformant is the fail-open shape ADR 0185 refused.
+        print(f"contract-version: could not read {args.releases}: {error}", file=sys.stderr)
+        return 2
+
+    if args.command == "classify":
+        verdict = classify(args.version, releases, args.today)
+        print(f"{verdict.state}\t{verdict.reason}")
+        return 0 if verdict.state == SUPPORTED else 1
+
+    findings = verify(args.repo_root, releases, args.today)
+    for finding in findings:
+        print(f"{finding.kind}\t{finding.detail}")
+    return 1 if findings else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

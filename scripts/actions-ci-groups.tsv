@@ -30,6 +30,7 @@ platform	bash scripts/ci-gate/ci-eligibility.test.sh
 platform	python3 scripts/ci-gate/deferred-ci-visibility.test.py
 platform	python3 scripts/ci-gate/conformance/conformance.test.py
 platform	python3 scripts/ci-gate/fleet-contract-inventory.test.py
+platform	python3 scripts/ci-gate/contract-version.test.py
 platform	bash scripts/node-release-publish.test.sh
 platform	python3 scripts/package_retention_test.py
 platform	python3 scripts/ci-gate/renovate-compatibility.test.py
