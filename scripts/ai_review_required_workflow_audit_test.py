@@ -14,6 +14,16 @@ AUDIT = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(AUDIT)
 
+# The generated caller family an armed adopter is expected to carry. Held here
+# rather than derived from the contract so a contract that forgets the set fails
+# these tests instead of silently agreeing with itself.
+ADOPTER_CALLERS = (
+    ".github/workflows/ai-review-merge.yml",
+    ".github/workflows/ai-review-label-rearm.yml",
+    ".github/workflows/ai-privileged-merge.yml",
+    ".github/workflows/ai-promotion-retry.yml",
+)
+
 
 class AiReviewRequiredWorkflowAuditTest(unittest.TestCase):
     def setUp(self):
@@ -105,9 +115,33 @@ jobs:
         }
         for repository in repositories:
             full_name = repository["full_name"]
+            default_branch = repository["default_branch"]
             fixture[f"repos/{full_name}/actions/secrets?per_page=100"] = [{"secrets": []}]
             fixture[f"repos/{full_name}/actions/variables?per_page=100"] = [{"variables": []}]
+            fixture[f"repos/{full_name}/contents/.github/workflows?ref={default_branch}"] = [
+                [{"name": Path(caller).name, "path": caller, "type": "file"} for caller in ADOPTER_CALLERS]
+            ]
+            fixture[f"repos/{full_name}/environments/ai-review-app"] = [{
+                "name": "ai-review-app",
+                "deployment_branch_policy": {"protected_branches": False, "custom_branch_policies": True},
+                "protection_rules": [{"id": 1, "type": "branch_policy"}],
+            }]
+            fixture[f"repos/{full_name}/environments/ai-review-app/deployment-branch-policies"] = [
+                {"branch_policies": [{"name": default_branch, "type": "branch"}]}
+            ]
         return fixture
+
+    def adopter_workflow_listing(self, full_name):
+        repository = next(
+            item for item in self.fixture["orgs/Verjson/repos?per_page=100&type=all"][0]
+            if item["full_name"] == full_name
+        )
+        path = f"repos/{full_name}/contents/.github/workflows?ref={repository['default_branch']}"
+        return self.fixture[path][0]
+
+    def remove_adopter_caller(self, full_name, caller):
+        listing = self.adopter_workflow_listing(full_name)
+        listing[:] = [entry for entry in listing if entry["path"] != caller]
 
     def enter_split_state(self):
         """Stub the organization as it looks after the split has been applied."""
@@ -120,8 +154,10 @@ jobs:
             "id": self.arm_id, **copy.deepcopy(self.contract["arm_ruleset"]),
         }]
 
-    def read(self, path):
+    def read(self, path, allow_missing=False):
         if path not in self.fixture:
+            if allow_missing:
+                return []
             raise AssertionError(f"unexpected API read: {path}")
         return copy.deepcopy(self.fixture[path])
 
@@ -653,6 +689,16 @@ jobs:
         def wider_bypass(contract):
             contract["arm_ruleset"]["bypass_actors"] = []
         self.assert_contract_rejected(wider_bypass, "bypass actors diverge")
+
+    def test_a_half_installed_adopter_caller_set_is_reported(self):
+        # `verjson-agents` under #1401: the merge lane is installed and the
+        # review caller is not, so "does this adopter have any AI caller?"
+        # answers yes while `gate-rearm.yml` still cannot read the caller it
+        # hard-requires and every pull request in the repository fails the arm.
+        self.remove_adopter_caller("Verjson/alpha", ".github/workflows/ai-review-merge.yml")
+        self.assert_audit_error(
+            r"adopter caller set.*Verjson/alpha:\.github/workflows/ai-review-merge\.yml",
+        )
 
     def test_malformed_contract_fails_with_controlled_diagnostics(self):
         for section, key, value, diagnostic in (

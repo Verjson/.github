@@ -217,10 +217,29 @@ def read_contract(path: Path = CONTRACT) -> dict:
         "authorization App permission contract drifted",
     )
     require(authorization.get("app_events") == [], "authorization App event contract drifted")
+
+    conformance = contract.get("adopter_conformance")
+    require(isinstance(conformance, dict), "adopter conformance contract is missing")
+    callers = conformance.get("caller_workflows")
+    require(
+        isinstance(callers, list)
+        and callers
+        and all(
+            isinstance(value, str)
+            and re.fullmatch(r"\.github/workflows/[A-Za-z0-9._-]+\.ya?ml", value) is not None
+            for value in callers
+        )
+        and len(callers) == len(set(callers)),
+        "adopter caller workflows are invalid",
+    )
+    require(
+        contract["retired_path"] in callers,
+        "adopter caller set omits the review caller the arm hard-requires",
+    )
     return contract
 
 
-def gh_pages(path: str) -> list:
+def gh_pages(path: str, allow_missing: bool = False) -> list:
     result = subprocess.run(
         ["gh", "api", "--paginate", "--slurp", path],
         capture_output=True,
@@ -228,6 +247,13 @@ def gh_pages(path: str) -> list:
         check=False,
     )
     if result.returncode:
+        # A per-adopter probe asks a question whose "no" is a finding, not an
+        # infrastructure failure. Only a 404 means that; any other status is
+        # still an unreadable API and must stop the audit, because reporting
+        # "absent" for an expired token would turn the whole fleet green-to-red
+        # on a credential problem and vice versa.
+        if allow_missing and "(HTTP 404)" in result.stderr:
+            return []
         raise AuditError(f"GitHub API read failed for {path}")
     try:
         pages = json.loads(result.stdout)
@@ -243,9 +269,9 @@ def single_object(read, path: str) -> dict:
     return pages[0]
 
 
-def paginated_items(read, path: str, field: str | None = None) -> list[dict]:
+def paginated_items(read, path: str, field: str | None = None, allow_missing: bool = False) -> list[dict]:
     items = []
-    for index, page in enumerate(read(path)):
+    for index, page in enumerate(read(path, allow_missing=True) if allow_missing else read(path)):
         values = page.get(field) if field and isinstance(page, dict) else page
         require(isinstance(values, list), f"unexpected page {index} shape for {path}")
         require(all(isinstance(value, dict) for value in values), f"invalid item in {path}")
@@ -510,6 +536,43 @@ def verify_authorization(contract: dict, read, governed: dict[str, bool]) -> Non
     require(installation.get("events") == authorization["app_events"], "authorization App event subscriptions drifted")
 
 
+def verify_adopter_conformance(contract: dict, read, repositories: list[dict], covered: list[str]) -> None:
+    """Report armed adopters that cannot satisfy the arm they are required to pass.
+
+    Enrollment is granted by a repository property and admission requires a
+    repository-local caller the property says nothing about, so the two can
+    diverge silently until an adopter's next pull request discovers it (#1401).
+    The whole generated family is asserted, not any one member: `verjson-agents`
+    carries the merge lane without the review caller `gate-rearm.yml`
+    hard-requires, which satisfies a presence check while the arm still cannot
+    run at all (ADR 0187).
+
+    The adopter's workflow listing is adopter-controlled text. It is used only to
+    test membership against the paths this contract declares — never parsed,
+    interpolated, or executed.
+    """
+    conformance = contract["adopter_conformance"]
+    default_branches = {
+        repository["full_name"]: repository.get("default_branch") for repository in repositories
+    }
+    findings = []
+    for full_name in covered:
+        branch = default_branches.get(full_name)
+        require(isinstance(branch, str) and branch, f"{full_name} reports no default branch")
+        entries = paginated_items(
+            read,
+            f"repos/{full_name}/contents/.github/workflows?ref={branch}",
+            allow_missing=True,
+        )
+        present = {entry.get("path") for entry in entries}
+        findings.extend(
+            f"{full_name}:{caller}"
+            for caller in conformance["caller_workflows"]
+            if caller not in present
+        )
+    concise_missing("armed adopters with an incomplete generated adopter caller set", sorted(findings))
+
+
 def read_workflow(read, selected: dict, label: str) -> dict:
     source = single_object(
         read,
@@ -597,6 +660,7 @@ def audit(contract: dict, read=gh_pages, allow_unschedulable_selection: bool = F
     # organization-wide reach for a rule that governs a subset is what made the
     # credential scope look like a blocker rather than a decision.
     verify_authorization(contract, read, {name: governed[name] for name in covered})
+    verify_adopter_conformance(contract, read, repositories, covered)
     verify_replacement_workflow(contract, read)
     return {
         "organization": contract["organization"],
