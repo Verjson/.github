@@ -9,6 +9,7 @@ Reverse-chronological index of org-level decisions.
 > ADR PRs from conflicting on a shared table.
 
 <!-- BEGIN ADR INDEX -->
+<!-- prettier-ignore -->
 | # | Date | Decision |
 |---|------|----------|
 | [0186](0186-required-checks-bind-through-repository-properties/README.md) | 2026-09-17 | Required status checks bind through repository properties, not per-repository rulesets |
@@ -196,6 +197,7 @@ Reverse-chronological index of org-level decisions.
 | [0003](0003-runner-groups-gcp-github-manish/README.md) | 2026-07-15 | Runner groups: GCP / GitHub (last resort) / manish |
 | [0002](0002-ai-review-graceful-budget-escalation/README.md) | 2026-07-15 | AI merge gate: escalate on budget exhaustion instead of failing |
 | [0001](0001-renovate-automerge-ai-review/README.md) | 2026-07-13 | Renovate auto-merge + org-wide advisory AI review |
+
 <!-- END ADR INDEX -->
 
 ## When to write an ADR (vs a GitHub issue)

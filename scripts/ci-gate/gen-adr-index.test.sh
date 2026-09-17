@@ -58,6 +58,91 @@ else
   pass "skipped UTF-8 collation check — en_US.UTF-8 not installed"
 fi
 
+# 1c. The generated region is a fixed point of prettier (#1382). prettier owns
+# markdown formatting in a TypeScript adopter's canonical `ci` lane, and it
+# reformats every table it is handed: padding each cell to the column width and
+# separating the table from the closing marker with a blank line. That made
+# `prettier --check` and `gen-adr-index.sh --check` mutually unsatisfiable over
+# one generated file, and each adopter discovered it only by going red. The
+# guard comment and the trailing blank line are what make the two agree, so
+# assert the emitted shape exactly rather than only that the table is present.
+d="$(new_fixture)"
+adr "$d" "0001-first" "0001 — First" "2026-07-01"
+adr "$d" "0002-second" "0002 — Second" "2026-07-02"
+gen "$d"
+idx="$d/docs/decisions/README.md"
+begin_line="$(grep -n '^<!-- BEGIN ADR INDEX -->$' "$idx" | cut -d: -f1)"
+end_line="$(grep -n '^<!-- END ADR INDEX -->$' "$idx" | cut -d: -f1)"
+[ -n "$begin_line" ] && [ "$(sed -n "$((begin_line + 1))p" "$idx")" = '<!-- prettier-ignore -->' ] \
+  && pass "the generated region opens with the prettier-ignore guard (#1382)" \
+  || fail "the generated region does not open with the prettier-ignore guard (#1382)"
+[ -n "$end_line" ] && [ -z "$(sed -n "$((end_line - 1))p" "$idx")" ] \
+  && pass "the generated table is separated from the closing marker (#1382)" \
+  || fail "no blank line before the closing marker — prettier will insert one (#1382)"
+
+# Regeneration is a fixed point of itself as well: emitting the guard and the
+# blank line must not make the second run see the first run's output as stale.
+cp "$idx" "$d/index-first-pass"
+gen "$d"
+cmp -s "$d/index-first-pass" "$idx" \
+  && pass "regenerating an already-current index changes nothing" \
+  || fail "regeneration is not idempotent"
+
+# The real agreement, where a prettier is actually installed. The assertions
+# above pin the shape that produces it; this one proves the shape is the right
+# one against the formatter itself, under each proseWrap setting — the padded
+# table prettier emits by default, and the compact one it emits for `never`.
+#
+# No hub workflow installs prettier, so a bare `command -v` would skip the only
+# assertion that tests this change's actual claim in exactly the environment
+# that has to catch a regression. Fall back to `npx`, which the runners carry.
+# An `npx` that cannot reach the registry is reported as a skip rather than a
+# failure: this suite must stay runnable offline, and the shape assertions above
+# still cover the mechanism.
+#
+# The version is exact, never a range: prettier decides what "formatted
+# markdown" means, so a floating 3.x would redden this suite and every adopter's
+# at once on an upstream formatting change unrelated to any local edit. There is
+# deliberately no `npx --no prettier` preference for an already-installed copy:
+# `npx --no prettier --version` reports npm's own version and succeeds with no
+# prettier anywhere, so it probes nothing and selects a command that then fails.
+prettier_pin='prettier@3.9.7'
+prettier_cmd=()
+if command -v prettier >/dev/null 2>&1; then
+  prettier_cmd=(prettier)
+elif command -v npx >/dev/null 2>&1 \
+  && npx --yes "$prettier_pin" --version >/dev/null 2>&1; then
+  prettier_cmd=(npx --yes "$prettier_pin")
+fi
+
+if [ "${#prettier_cmd[@]}" -gt 0 ]; then
+  prettier_agrees=1
+  prettier_ran=1
+  for prose_wrap in preserve never always; do
+    printf '{"proseWrap":"%s"}\n' "$prose_wrap" >"$d/.prettierrc"
+    cp "$idx" "$d/index-before-prettier"
+    # A failed invocation and a real reformat are tracked apart: a half-warm npx
+    # cache or a registry blip must not be reported as the regression this test
+    # exists to catch.
+    if "${prettier_cmd[@]}" --write "$idx" >/dev/null 2>&1; then
+      cmp -s "$d/index-before-prettier" "$idx" || prettier_agrees=0
+      gen "$d" --check || prettier_agrees=0
+    else
+      prettier_ran=0
+    fi
+  done
+  rm -f "$d/.prettierrc"
+  if [ "$prettier_ran" -eq 0 ]; then
+    pass "skipped prettier agreement check — prettier could not be invoked"
+  elif [ "$prettier_agrees" -eq 1 ]; then
+    pass "prettier leaves the generated index byte-identical and --check current (#1382)"
+  else
+    fail "prettier reformatted the generated index or left --check stale (#1382)"
+  fi
+else
+  pass "skipped prettier agreement check — no reachable prettier"
+fi
+
 # 2. ADR directory with no README -> fail fast.
 d="$(new_fixture)"; mkdir -p "$d/docs/decisions/0001-noreadme"
 gen "$d" && fail "an ADR dir without README must fail" || pass "ADR dir without README fails fast"
