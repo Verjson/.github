@@ -26,6 +26,13 @@ organization rule. Authors use `~DEFAULT_BRANCH` for the canonical contract. A
 reviewer must separately assess any `~ALL` or explicit-ref rule that applies to a
 releasable repository and preserve the release bypass when applicable.
 
+The audit separately requires that every `required_status_checks` context in
+**any** organization ruleset — not only the `~DEFAULT_BRANCH` ones — declares
+`integration_id` equal to the policy's `required_check_producer_app_id`. An
+unbound context can be satisfied by a status published from any App that reuses
+its name, which is the provenance property ADR 0184's Gate A depends on. Both
+findings are reported together, so neither masks the other. See ADR0190.
+
 The program has no mutation path. It calls only paginated GitHub REST GETs and
 does not print API response bodies, credential data, secret values, or variable
 values. Exit `0` means the exact-token policy conforms, exit `1` is policy drift,

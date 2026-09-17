@@ -80,6 +80,7 @@ class OrgRulesetConformanceTest(unittest.TestCase):
                             "actor_id": 4583107,
                             "bypass_mode": "always",
                         },
+                        "required_check_producer_app_id": 15368,
                         "bypassless_required_workflows": [],
                     }
                 ),
@@ -171,6 +172,7 @@ class OrgRulesetConformanceTest(unittest.TestCase):
                     "actor_id": 4583107,
                     "bypass_mode": "always",
                 },
+                "required_check_producer_app_id": 15368,
                 "bypassless_required_workflows": [
                 {
                     "name": "authn-type-surface-required-workflow",
@@ -407,6 +409,148 @@ class OrgRulesetConformanceTest(unittest.TestCase):
             "is not bound to a producer App",
             result.stderr,
         )
+
+
+    def test_required_status_check_bound_to_another_app_fails(self):
+        detail = ruleset(
+            1,
+            name="core-checks-actions",
+            rules=[
+                {
+                    "type": "required_status_checks",
+                    "parameters": {
+                        "strict_required_status_checks_policy": False,
+                        "required_status_checks": [
+                            {"context": "shell-tests", "integration_id": 999}
+                        ],
+                    },
+                }
+            ],
+        )
+
+        result, _ = self.run_audit([[{"id": 1}]], {1: detail})
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(
+            "core-checks-actions (1): required status check 'shell-tests' "
+            "is bound to App 999, not the declared producer App 15368",
+            result.stderr,
+        )
+
+
+    def test_non_integer_producer_binding_fails_closed(self):
+        for binding in ("15368", 0, -15368, True, [15368]):
+            with self.subTest(binding=binding):
+                detail = ruleset(
+                    1,
+                    rules=[
+                        {
+                            "type": "required_status_checks",
+                            "parameters": {
+                                "strict_required_status_checks_policy": False,
+                                "required_status_checks": [
+                                    {"context": "shell-tests", "integration_id": binding}
+                                ],
+                            },
+                        }
+                    ],
+                )
+
+                result, _ = self.run_audit([[{"id": 1}]], {1: detail})
+
+                self.assertEqual(result.returncode, 2, result.stdout)
+                self.assertIn(
+                    "ruleset 1 rule 0.parameters.required_status_checks[0]."
+                    "integration_id must be a positive integer",
+                    result.stderr,
+                )
+                self.assertNotIn("Traceback", result.stderr)
+
+
+    def test_explicit_null_binding_reports_an_absent_producer(self):
+        detail = ruleset(
+            1,
+            rules=[
+                {
+                    "type": "required_status_checks",
+                    "parameters": {
+                        "strict_required_status_checks_policy": False,
+                        "required_status_checks": [
+                            {"context": "shell-tests", "integration_id": None}
+                        ],
+                    },
+                }
+            ],
+        )
+
+        result, _ = self.run_audit([[{"id": 1}]], {1: detail})
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("is not bound to a producer App", result.stderr)
+
+    def test_binding_finding_does_not_mask_a_missing_release_actor(self):
+        detail = ruleset(
+            1,
+            name="core-checks-actions",
+            bypass_actors=[],
+            rules=[
+                {
+                    "type": "required_status_checks",
+                    "parameters": {
+                        "strict_required_status_checks_policy": False,
+                        "required_status_checks": [{"context": "shell-tests"}],
+                    },
+                }
+            ],
+        )
+
+        result, _ = self.run_audit([[{"id": 1}]], {1: detail})
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("required release authorization bypass is absent", result.stderr)
+        self.assertIn("is not bound to a producer App", result.stderr)
+
+    def test_policy_without_a_declared_producer_app_fails_closed(self):
+        for producer in (None, 0, "15368"):
+            with self.subTest(producer=producer):
+                document = {
+                    "organization": "Verjson",
+                    "release_authorization_bypass": {
+                        "actor_type": "Integration",
+                        "actor_id": 4583107,
+                        "bypass_mode": "always",
+                    },
+                    "bypassless_required_workflows": [],
+                }
+                if producer is not None:
+                    document["required_check_producer_app_id"] = producer
+
+                result, _ = self.run_audit(
+                    [[{"id": 1}]], {1: ruleset(1)}, raw_policy=json.dumps(document)
+                )
+
+                self.assertEqual(result.returncode, 2, result.stdout)
+                self.assertNotIn("Traceback", result.stderr)
+
+    def test_bindings_outside_default_branch_rulesets_are_still_required(self):
+        detail = ruleset(
+            1,
+            include=["refs/heads/release/*"],
+            rules=[
+                {
+                    "type": "required_status_checks",
+                    "parameters": {
+                        "strict_required_status_checks_policy": False,
+                        "required_status_checks": [{"context": "shell-tests"}],
+                    },
+                }
+            ],
+        )
+
+        result, _ = self.run_audit([[{"id": 1}]], {1: detail})
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("is not bound to a producer App", result.stderr)
 
 
 if __name__ == "__main__":
