@@ -28,9 +28,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from adopter import ADOPTERS, AdopterContractMismatch, bind_inputs, callers_for  # noqa: E402
 from expressions import Evaluator, UnknownContext, UnsupportedExpression  # noqa: E402
-from contract_steps import (MissingContractStep,  # noqa: E402
-                            StepEnvironmentMismatch, execute_step,
-                            locate_step)
+from contract_steps import (ContractStep, MissingContractStep,  # noqa: E402
+                            StepEnvironmentMismatch, StepExecutionFault,
+                            execute_step, locate_step)
 from model import Scenario, model_workflow  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -362,6 +362,37 @@ class TheHarnessFailsClosed(unittest.TestCase):
         with self.assertRaises(MissingContractStep):
             locate_step(CONTRACT, 'a-job-this-contract-does-not-declare',
                         'Enforce the secretless event boundary')
+
+    def test_a_script_that_could_not_run_raises_instead_of_reading_as_a_refusal(self):
+        """A refusal and a broken interpreter are both non-zero exits.
+
+        They are not the same fact, and every refusal asserted in this file
+        would be satisfied by the second. This is how the sandbox's stripped
+        `LD_LIBRARY_PATH` reached CI: the contract's embedded Python could not
+        load its own runtime, exited 127, and only the assertions that name the
+        contract's *reason* noticed.
+        """
+        for status in (126, 127):
+            with self.subTest(status=status):
+                unrunnable = ContractStep(
+                    job='synthetic', name='a step whose interpreter is absent',
+                    script=f'exit {status}\n', runner_supplied_env=frozenset(),
+                    literal_env={})
+                with self.assertRaises(StepExecutionFault):
+                    execute_step(unrunnable, {})
+
+    def test_a_step_runs_with_the_runners_interpreter_available(self):
+        """The sandbox withholds the developer's environment, not the
+        runtime the contract's own interpreter needs to start."""
+        step = ContractStep(
+            job='synthetic', name='a step that runs the runner\'s python3',
+            script='python3 -c "print(1)"\n', runner_supplied_env=frozenset(),
+            literal_env={})
+        self.assertTrue(
+            execute_step(step, {}).admitted,
+            'a contract step cannot start python3 in this sandbox, so every '
+            'embedded-program assertion in this file is reading a startup '
+            'failure rather than the contract')
 
     def test_binding_an_environment_the_step_does_not_declare_raises(self):
         """An input the contract stopped reading, or one it started reading,

@@ -40,6 +40,31 @@ class StepEnvironmentMismatch(Exception):
     """A caller binds environment names the step does not declare, or omits some."""
 
 
+class StepExecutionFault(Exception):
+    """The script could not run, which is not the same fact as a refusal.
+
+    Both are non-zero exits, so a harness that returned one as the other would
+    let every refusal assertion in the suite be satisfied by a sandbox that
+    cannot start the contract's interpreter. That is not hypothetical: it is
+    how a stripped `LD_LIBRARY_PATH` turned seven allowlist cases into a
+    `libpython3.12.so.1.0` loader failure, caught only by the assertions that
+    name the contract's own reason.
+    """
+
+
+# The runner's own runtime, not contract inputs: the loader path the tool-cache
+# interpreter resolves its shared library through, and the locale a script's
+# text handling reads. Inheriting the whole environment instead would let a
+# stray export change a verdict; inheriting none of it stops the contract's
+# embedded Python from starting at all.
+_RUNTIME_BASELINE = ('PATH', 'LD_LIBRARY_PATH', 'LANG', 'LC_ALL', 'TMPDIR')
+
+# `exit 126`/`127` are the shell's own "found but not executable" and "not
+# found". A contract step's refusals are its documented `exit 1`s, so these
+# never come from the contract.
+_COULD_NOT_RUN = (126, 127)
+
+
 # `${{ ... }}` in a step's `env:` value is resolved by the runner, so a test
 # supplying that value is not overriding the contract — it is standing in for
 # the runner. A literal value is the contract's own and is used as declared.
@@ -128,7 +153,9 @@ def execute_step(step: ContractStep, bindings: dict[str, str], *,
             # A closed environment: the script sees the step's declared inputs
             # and nothing the developer's shell happened to export. PATH and
             # HOME are the runner's own baseline, not contract inputs.
-            env={'PATH': os.environ.get('PATH', '/usr/bin:/bin'),
+            env={**{name: os.environ[name] for name in _RUNTIME_BASELINE
+                    if name in os.environ},
+                 'PATH': os.environ.get('PATH', '/usr/bin:/bin'),
                  'HOME': str(cwd),
                  **step.literal_env,
                  **{key: str(value) for key, value in bindings.items()}},
@@ -136,7 +163,13 @@ def execute_step(step: ContractStep, bindings: dict[str, str], *,
             text=True,
             timeout=120,
         )
-    return StepResult(completed.returncode, completed.stdout + completed.stderr)
+    output = completed.stdout + completed.stderr
+    if completed.returncode in _COULD_NOT_RUN:
+        raise StepExecutionFault(
+            f'{step.job}/{step.name!r} exited {completed.returncode}: the '
+            f'script could not run, so its status says nothing about what the '
+            f'contract decides:\n{output.strip()[-400:]}')
+    return StepResult(completed.returncode, output)
 
 
 @contextlib.contextmanager

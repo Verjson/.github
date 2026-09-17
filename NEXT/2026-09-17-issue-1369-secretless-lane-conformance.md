@@ -19,6 +19,12 @@ step's declared expression-valued `env:` names, over a synthetic checkout it
 builds. A model that inferred their verdicts from shell layout would assert
 against a paraphrase that drifts from the published contract in silence.
 
+That sandbox withholds the developer's environment but not the runner's own
+runtime: stripping `LD_LIBRARY_PATH` stopped the contract's embedded Python
+from loading its shared library, and the harness now raises on a 126/127 rather
+than returning it, because "could not run" and "refused" are both non-zero
+exits and only one of them says anything about the contract.
+
 Every refusal asserts the contract's own reason and is paired with the
 admission it is the complement of: a bare non-zero exit is equally satisfied by
 a fixture that drifted into being malformed or by a validator that refuses
