@@ -46,3 +46,46 @@ fixture.
 Step 3 of the contract-distribution sequence in ADR 0185. The matrix covers
 `node-ci.yml` and `node-ci-protected.yml`; extending it to the generated
 adopter set and the remaining reusable workflows is follow-up work.
+
+## The secretless lanes
+
+Both secretless lanes are now covered by the same matrix: which events each one
+admits, that no step in the credentialless build job is handed
+`NODE_AUTH_TOKEN`, that the approved-package allowlist is exact in both
+directions with per-manifest authorization, and that a refused acquisition
+fails the required check instead of reporting success having verified nothing.
+The two lanes admit disjoint event sets — a same-repository `pull_request` on
+one, `push` and explicit `workflow_dispatch` on the other — and declaring both
+at once, or neither, is refused on every event, so no combination of the two
+inputs routes an untrusted head into the credentialed acquisition job. Nothing
+else distinguishes them: both take the same acquisition path and execute the
+same work, so the trusted-ref lane cannot become a weaker route to the same
+required check.
+
+Those rules are enforced inside `run:` scripts — one an embedded Python program
+— where the static model deliberately declines to infer a verdict. So
+`contract_steps.py` extracts and executes the step unmodified, in a sandbox
+whose bindings must be exactly the step's declared expression-valued `env:`
+names, over a synthetic checkout the test builds. A paraphrase would have been
+cheaper and would drift from the published contract in silence, which is the
+failure mode this matrix exists to close. Every refusal asserts the contract's
+own reason and is paired with the admission it is the complement of: a bare
+non-zero exit is equally satisfied by a fixture that drifted into being
+malformed, or by a validator that refuses everything.
+
+That sandbox withholds the developer's environment but not the runner's own
+runtime, and the difference is not cosmetic: stripping `LD_LIBRARY_PATH`
+stopped the contract's embedded Python from loading its shared library on the
+runner, and seven allowlist cases failed with a loader error that the
+reason-naming assertions caught and a bare exit-status assertion would have
+accepted. The harness now raises on a 126 or 127 rather than returning it,
+because "could not run" and "refused" are both non-zero exits and only one of
+them says anything about the contract.
+
+The refusal-propagation property was control-tested by deleting `build-test`'s
+acquisition guard from an in-memory mutant, which reddens it with
+`Verjson/verjson-ci#184`'s exact failure mode — a required check concluding
+success on a lane that declined to do the work.
+
+Requirements 2 and 3 of #1369 (PR #1399), consolidated into this entry because
+`NEXT/` holds one fragment per identity; requirement 5 remains follow-up work.
