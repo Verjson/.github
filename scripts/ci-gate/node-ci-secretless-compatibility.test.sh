@@ -162,6 +162,9 @@ for name in ("GH_TOKEN", "GITHUB_TOKEN", "NODE_AUTH_TOKEN", "NPM_TOKEN",
 # deleting them reproduces Verjson/.github#1372 with every consumer-facing case
 # still green: the harness injects its own values and never reads the workflow's.
 runtime_cache_keys = {
+    "RESTORE_PERSISTED_PUBLIC_CACHE": (
+        "${{ inputs.cache && inputs.package-manager == 'npm' }}"
+    ),
     "RUNTIME_CACHE_DIR": (
         "${{ runner.temp }}/secretless-runtime-cache-"
         "${{ github.run_id }}-${{ github.run_attempt }}"
@@ -943,6 +946,37 @@ else
   fail "a requested public cache the population step never wrote failed without naming its reason"
 fi
 
+# The install step populates the runtime cache when SECRETLESS_RUNTIME_PUBLIC_CACHE
+# is true *or* when RESTORE_PERSISTED_PUBLIC_CACHE is, the latter being
+# `inputs.cache && inputs.package-manager == 'npm'`. Reading only the former as
+# "a cache was expected" leaves an ordinary `cache: true` npm caller resolving to
+# a silent None with the cache populated and bound -- Verjson/.github#1372 intact
+# for the larger share of adopters.
+if run_public_cache_case public-cache-persisted-missing \
+  "$tmp/archive-cases/runner-temps/public-cache-persisted-missing/$runtime_cache_name" false \
+  RESTORE_PERSISTED_PUBLIC_CACHE=true; then
+  fail "a persisted public cache the population step never wrote started the sandbox"
+elif [ -e "$tmp/archive-cases/public-cache-persisted-missing/compat-results/consumer-ran" ]; then
+  fail "a persisted public cache the population step never wrote ran consumer code"
+elif grep -qF 'compatibility public cache is requested but was never populated' \
+  "$tmp/archive-cases/public-cache-persisted-missing/run.stderr"; then
+  pass "a persisted-cache caller whose runtime cache is absent fails closed, not open"
+else
+  fail "a persisted-cache caller whose runtime cache is absent failed without naming its reason"
+fi
+
+if run_public_cache_case public-cache-persisted-unset '' false \
+  RESTORE_PERSISTED_PUBLIC_CACHE=true; then
+  fail "a persisted public cache without its workflow env key started the sandbox"
+elif [ -e "$tmp/archive-cases/public-cache-persisted-unset/compat-results/consumer-ran" ]; then
+  fail "a persisted public cache without its workflow env key ran consumer code"
+elif grep -qF 'compatibility public cache is requested without a runtime cache path' \
+  "$tmp/archive-cases/public-cache-persisted-unset/run.stderr"; then
+  pass "a persisted-cache caller without its workflow env key fails closed, not open"
+else
+  fail "a persisted-cache caller without its workflow env key failed without naming its reason"
+fi
+
 # An ambient mask equal to the sandbox bind target would append its --tmpfs
 # after the bind and shadow it, failing open to Verjson/.github#1372.
 # Consumer code runs as the runner's uid and can seal a staged directory, so
@@ -989,6 +1023,76 @@ elif grep -qF 'compatibility public cache is not the workflow runtime cache' \
 else
   fail "a foreign runtime public cache was refused without naming its reason"
 fi
+
+# The ambient-mask overlap guard has to cover every mountpoint the public-cache
+# arguments create. Deriving those paths by positional slice holds only while
+# every element is exactly a `--bind src dst` triple: one argument of different
+# arity re-indexes the slice onto a source path or a flag, and the guard stops
+# covering the real target without failing. Exercise the derivation directly
+# with a differently-shaped list rather than trusting the comment.
+python3 - "$tmp/run-lanes.sh" "$tmp/protected-run-lanes.sh" <<'PY'
+import ast
+import sys
+from pathlib import Path
+
+MARKER = "python3 - <<'PY'\n"
+TARGET = "/dev/shm/npm-cache/_cacache/content-v2"
+STAGING = "/runner-temp/verjson-compatibility-public-cache-x/content-v2"
+
+for lane_path in sys.argv[1:]:
+    source = Path(lane_path).read_text(encoding="utf-8")
+    start = source.find(MARKER)
+    end = source.find("\nPY\n", start)
+    assert start >= 0 and end > start, f"{lane_path}: embedded consumer source missing"
+    module = ast.parse(source[start + len(MARKER):end + 1])
+    definitions = [
+        node
+        for node in module.body
+        if (
+            isinstance(node, ast.FunctionDef)
+            and node.name == "public_cache_bind_targets"
+        )
+        or (
+            isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name)
+                and target.id == "PUBLIC_CACHE_MOUNT_ARITY"
+                for target in node.targets
+            )
+        )
+    ]
+    assert len(definitions) == 2, (
+        f"{lane_path}: guarded paths are not derived from the bind arguments' own shape"
+    )
+    namespace = {"Path": Path}
+    exec(compile(ast.Module(definitions, type_ignores=[]), "<lanes>", "exec"), namespace)
+    derive = namespace["public_cache_bind_targets"]
+
+    assert derive(["--bind", STAGING, TARGET]) == [Path(TARGET)], lane_path
+    assert derive([]) == [], lane_path
+    # A leading argument of a different arity must not move the guard.
+    reshaped = ["--tmpfs", "/dev/shm/npm-cache/_cacache/index-v5",
+                "--bind", STAGING, TARGET]
+    assert Path(TARGET) in derive(reshaped), (
+        f"{lane_path}: a differently-shaped argument list silently moved the guard"
+    )
+    # Every mountpoint the arguments create is guarded, not only --bind targets.
+    assert derive(reshaped)[0] == Path("/dev/shm/npm-cache/_cacache/index-v5"), lane_path
+    for malformed in (
+        ["--bind", STAGING],
+        ["--tmpfs"],
+        ["--unsupported-flag", STAGING, TARGET],
+        [STAGING, TARGET],
+    ):
+        try:
+            derive(malformed)
+        except SystemExit:
+            continue
+        raise AssertionError(f"{lane_path}: {malformed!r} was accepted without a guarded target")
+PY
+[ "$?" -eq 0 ] \
+  && pass "the ambient-mask guard derives its paths from the bind arguments' own shape" \
+  || fail "the ambient-mask guard re-indexes when a bind argument of different arity is added"
 
 if run_archive_case protected-good "$tmp/protected-run-lanes.sh" \
   && [ -f "$tmp/archive-cases/protected-good/compat-results/consumer-ran" ]; then

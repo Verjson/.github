@@ -5581,6 +5581,7 @@ jobs:
           GOOGLE_APPLICATION_CREDENTIALS: ''
           NODE_AUTH_TOKEN: ''
           NPM_TOKEN: ''
+          RESTORE_PERSISTED_PUBLIC_CACHE: ${{ inputs.cache && inputs.package-manager == 'npm' }}
           RUNTIME_CACHE_DIR: ${{ runner.temp }}/secretless-runtime-cache-${{ github.run_id }}-${{ github.run_attempt }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           RUN_ID: ${{ github.run_id }}
@@ -6240,8 +6241,20 @@ jobs:
               # RUNTIME_CACHE_DIR rather than the ambient cache variables this
               # sandbox exists to mask, and only ever from content-v2: no
               # ambient npm config, index, or credential state is eligible.
-              requested = script_environment.get(
-                  "SECRETLESS_RUNTIME_PUBLIC_CACHE", "") == "true"
+              # The install step populates the runtime cache when
+              # SECRETLESS_RUNTIME_PUBLIC_CACHE is true *or* when
+              # RESTORE_PERSISTED_PUBLIC_CACHE is -- the latter being
+              # `inputs.cache && inputs.package-manager == 'npm'`. Gating on the
+              # first alone would leave an ordinary `cache: true` npm caller
+              # resolving to a silent None with the cache populated and bound,
+              # which is Verjson/.github#1372 unchanged for that caller.
+              requested = any(
+                  script_environment.get(name, "") == "true"
+                  for name in (
+                      "RESTORE_PERSISTED_PUBLIC_CACHE",
+                      "SECRETLESS_RUNTIME_PUBLIC_CACHE",
+                  )
+              )
               runtime_cache_value = script_environment.get("RUNTIME_CACHE_DIR", "")
               if not runtime_cache_value:
                   # The step sets RUNTIME_CACHE_DIR from an unconditional
@@ -6355,6 +6368,40 @@ jobs:
                       )
 
 
+          # bwrap consumes each of these flags with a fixed arity, and only the
+          # offset named here becomes a mountpoint inside the sandbox. Walking
+          # the list by that table is what makes the ambient-mask guard below
+          # actually derived from the bind arguments: a positional slice holds
+          # only while every element is a `--bind src dst` triple, and silently
+          # re-indexes onto a source path or a flag the moment an argument of
+          # different arity is added. An unrecognized or truncated argument
+          # fails closed rather than yielding a guard that covers nothing.
+          PUBLIC_CACHE_MOUNT_ARITY = {
+              "--bind": (2, 2),
+              "--dir": (1, 1),
+              "--ro-bind": (2, 2),
+              "--ro-bind-try": (2, 2),
+              "--tmpfs": (1, 1),
+          }
+
+
+          def public_cache_bind_targets(public_cache_arguments):
+              targets = []
+              index = 0
+              while index < len(public_cache_arguments):
+                  arity, destination = PUBLIC_CACHE_MOUNT_ARITY.get(
+                      public_cache_arguments[index], (None, None))
+                  if arity is None:
+                      raise SystemExit(
+                          "compatibility public cache bind argument is unrecognized")
+                  if index + arity >= len(public_cache_arguments):
+                      raise SystemExit(
+                          "compatibility public cache bind argument is truncated")
+                  targets.append(Path(public_cache_arguments[index + destination]))
+                  index += arity + 1
+              return targets
+
+
           def run_sandboxed_consumer(
                   sandbox_entries, artifact_content, provenance_content,
                   script_environment, public_cache_arguments):
@@ -6414,10 +6461,10 @@ jobs:
               # Masks are applied after the public cache bind, so a mask that
               # covers the bind target would shadow it and fail open to
               # Verjson/.github#1372. Derive the guarded paths from the bind
-              # arguments themselves so the two cannot drift apart.
-              public_cache_binds = [
-                  Path(target) for target in public_cache_arguments[2::3]
-              ]
+              # arguments themselves, by the arity of each flag rather than by
+              # position, so the two cannot drift apart when the argument list
+              # changes shape.
+              public_cache_binds = public_cache_bind_targets(public_cache_arguments)
               masked_targets = set()
               masked_directories = []
               for candidate in sorted(

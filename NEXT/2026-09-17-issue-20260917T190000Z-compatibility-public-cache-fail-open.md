@@ -44,3 +44,27 @@ The review also noted that the writable bind gives consumer code unbounded
 write access to real runner disk where the prior tmpfs was RAM-capped. That is
 dismissed as denial-of-service only on a disposable ephemeral runner, with the
 staged input already bounded by the 256 MiB cap on the population step.
+
+Review follow-up. The fail-closed gate was narrower than the condition that
+populates the cache. The install step writes the runtime cache when
+`SECRETLESS_RUNTIME_PUBLIC_CACHE` is true **or** when
+`RESTORE_PERSISTED_PUBLIC_CACHE` — `inputs.cache && inputs.package-manager ==
+'npm'` — is, so an ordinary `cache: true` npm caller that leaves
+`secretless-runtime-public-cache` off had its cache populated and bound while
+the resolver still read the request as absent and returned a silent `None`.
+Verjson/.github#1372 was intact for that caller. The compatibility step now
+carries `RESTORE_PERSISTED_PUBLIC_CACHE` and the gate reads both keys, so a
+lost or relocated runtime cache fails closed for either population path; a
+caller with neither set still starts the sandbox with no cache bind, which
+remains the supported no-cache configuration.
+
+The ambient-mask overlap guard no longer derives its guarded paths by
+positional slice. `public_cache_arguments[2::3]` held only while every element
+was exactly a `--bind src dst` triple; one argument of different arity
+re-indexed the slice onto a source path or a flag, and the guard silently
+stopped covering the bind target it exists to protect — the drift its own
+comment claimed to prevent. The arguments are now walked by a flag-arity table
+that guards every mountpoint they create, and an unrecognized or truncated
+argument fails closed. Both behaviors are exercised directly: a differently
+shaped argument list must not move the guard, and a `cache: true` npm caller
+whose runtime cache is absent must fail closed rather than start bare.
