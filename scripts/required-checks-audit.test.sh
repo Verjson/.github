@@ -180,6 +180,9 @@ case "$url" in
   https://raw.githubusercontent.com/Verjson/.github/*/scripts/gen-adr-index.sh)
     ref="${url#*Verjson/.github/}"; ref="${ref%%/*}"
     git -C "$REPO_ROOT" show "$ref:scripts/gen-adr-index.sh" ;;
+  https://raw.githubusercontent.com/Verjson/.github/*/scripts/ci-gate/gen-adr-index.test.sh)
+    ref="${url#*Verjson/.github/}"; ref="${ref%%/*}"
+    git -C "$REPO_ROOT" show "$ref:scripts/ci-gate/gen-adr-index.test.sh" ;;
   *) exit 1 ;;
 esac
 CURL

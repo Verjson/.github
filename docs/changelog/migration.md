@@ -121,6 +121,7 @@
    ```bash
    scripts/gen-changelog-caller.sh generated-artifacts "$PIN" > .github/workflows/changelog.yml
    scripts/gen-changelog-caller.sh adr-index-generator "$PIN" > scripts/gen-adr-index.sh
+   scripts/gen-changelog-caller.sh adr-index-test "$PIN" > scripts/gen-adr-index.test.sh
    scripts/gen-changelog-caller.sh generated-artifacts-with-adr-index "$PIN" > .github/workflows/changelog.yml
    ```
 

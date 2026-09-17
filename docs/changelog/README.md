@@ -512,13 +512,19 @@ Choose exactly one workflow command. Every changelog-enabled mode publishes the
 organization-required `changelog / validate` check. `generated-artifacts`
 enables changelog validation but leaves ADR-index checking off. A repository with
 `docs/decisions/` may opt into both checks only by acquiring the pinned
-generator and generating the matching caller together:
+generator, the suite that covers it, and the matching caller together:
 
 ```bash
 scripts/gen-changelog-caller.sh adr-index-generator "$PIN" > scripts/gen-adr-index.sh
+scripts/gen-changelog-caller.sh adr-index-test "$PIN" > scripts/gen-adr-index.test.sh
 scripts/gen-changelog-caller.sh generated-artifacts-with-adr-index "$PIN" > .github/workflows/changelog.yml
 chmod +x scripts/gen-adr-index.sh
 ```
+
+`scripts/gen-adr-index.test.sh` is part of the same pinned set: the generated
+contract test asserts its digest, so acquiring the generator without it — or
+keeping a hand-written copy beside it — fails validation rather than rotting
+silently. Run it with `bash scripts/gen-adr-index.test.sh`.
 
 The selected command is the only validation caller and its output path is
 `.github/workflows/changelog.yml`. Do not retain a second caller under any
