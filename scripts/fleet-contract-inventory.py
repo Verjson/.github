@@ -28,6 +28,10 @@ REPO_LIST_LIMIT = 500
 # in for a failed one.
 CONTENTS_DIR_LIMIT = 1000
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+HTTP_STATUS_RE = re.compile(r"\(HTTP (?P<code>\d{3})\)")
+# "the resource is not there", which is an observation, distinct from both
+# "here it is" and "the question could not be asked".
+ABSENT = object()
 # GitHub resolves owner/repo case-insensitively, so a lowercase adopter
 # reference is a real reference; a completeness sweep must not drop it.
 USES_RE = re.compile(
@@ -42,19 +46,46 @@ HEADER_RE = re.compile(
     re.IGNORECASE)
 
 
-def gh(*args: str) -> str | None:
-    """None means the call failed. A hung call must not stall a ~95-repo sweep."""
+def gh_run(*args: str) -> tuple[str | None, str]:
+    """(stdout or None on failure, stderr). A hung call must not stall a sweep."""
     try:
         p = subprocess.run(["gh", *args], capture_output=True, text=True,
                            timeout=120)
     except subprocess.TimeoutExpired:
         print(f"gh timed out: {' '.join(args)}", file=sys.stderr)
-        return None
+        return None, "timed out"
     if p.returncode != 0:
         print(f"gh failed ({p.returncode}): {' '.join(args)}: "
               f"{p.stderr.strip()[:200]}", file=sys.stderr)
-        return None
-    return p.stdout
+        return None, p.stderr
+    return p.stdout, p.stderr
+
+
+def gh(*args: str) -> str | None:
+    """None means the call failed."""
+    return gh_run(*args)[0]
+
+
+def gh_listing(repo: str, path: str) -> str | None | object:
+    """Directory text, ABSENT if it does not exist, None if the call failed.
+
+    A 404 here is not one condition. An empty repository and a repository with
+    no such directory both 404, and both are *complete observations*: there is
+    nothing to inventory. Counting them as unreachable inflates the gap tally
+    and exits the sweep nonzero for a benign reason -- the mirror image of the
+    fail-open this tool exists to close, and how a check earns itself a mute.
+
+    The discriminator is the HTTP status, never the prose: GitHub words an
+    empty repository and a missing path differently and may reword either.
+    Access failures do not reach here as 404s, because the org enumeration that
+    produced `repo` used this same token; a repository we could list but cannot
+    read fails with some other status and stays None.
+    """
+    out, err = gh_run("api", f"repos/{repo}/contents/{path}")
+    if out is not None:
+        return out
+    status = HTTP_STATUS_RE.search(err)
+    return ABSENT if status and status.group("code") == "404" else None
 
 
 def repos() -> list[str]:
@@ -119,9 +150,12 @@ def workflows(repo: str) -> dict[str, str] | None:
     to prevent, one level up: a repository whose listing 404s for a real reason
     would contribute no rows and vanish from a completeness report.
     """
-    listing = gh("api", f"repos/{repo}/contents/.github/workflows")
+    listing = gh_listing(repo, ".github/workflows")
     if listing is None:
         return None
+    if listing is ABSENT:
+        # No workflows directory, or no commits at all. Nothing to inventory.
+        return {}
     if not listing.strip():
         return {}
     try:

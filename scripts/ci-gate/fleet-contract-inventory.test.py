@@ -110,19 +110,23 @@ class UnreachableIsNotEmpty(unittest.TestCase):
     """`{}` means "no workflows"; a failed listing must not say the same thing."""
 
     def setUp(self):
-        self._gh = fci.gh
-        self.addCleanup(lambda: setattr(fci, "gh", self._gh))
+        self._gh_run = fci.gh_run
+        self.addCleanup(lambda: setattr(fci, "gh_run", self._gh_run))
+
+    def _serve(self, out, err=""):
+        fci.gh_run = lambda *a: (out, err)
 
     def test_a_failed_listing_is_unreachable_not_empty(self):
-        fci.gh = lambda *a: None
+        # No HTTP status at all: a transport or auth fault, not an answer.
+        self._serve(None, "dial tcp: connection refused")
         self.assertIsNone(fci.workflows("Verjson/example"))
 
     def test_unparseable_listing_is_unreachable_not_empty(self):
-        fci.gh = lambda *a: "not json"
+        self._serve("not json")
         self.assertIsNone(fci.workflows("Verjson/example"))
 
     def test_an_empty_listing_is_empty_not_unreachable(self):
-        fci.gh = lambda *a: "[]"
+        self._serve("[]")
         self.assertEqual(fci.workflows("Verjson/example"), {})
 
 
@@ -137,10 +141,11 @@ class DirectoryListingCap(unittest.TestCase):
     """
 
     def setUp(self):
-        self._gh = fci.gh
+        self._gh, self._gh_run = fci.gh, fci.gh_run
         self._unreadable = list(fci.unreadable)
         self._incomplete = list(fci.incomplete_listings)
         self.addCleanup(lambda: setattr(fci, "gh", self._gh))
+        self.addCleanup(lambda: setattr(fci, "gh_run", self._gh_run))
         self.addCleanup(lambda: fci.unreadable.__setitem__(
             slice(None), self._unreadable))
         self.addCleanup(lambda: fci.incomplete_listings.__setitem__(
@@ -155,12 +160,8 @@ class DirectoryListingCap(unittest.TestCase):
 
     def _serve(self, count: int):
         listing = self._listing(count)
-
-        def gh(*args: str):
-            return listing if "/contents/" in args[-1] else base64.b64encode(
-                b"on: push\n").decode()
-
-        fci.gh = gh
+        fci.gh_run = lambda *a: (listing, "")
+        fci.gh = lambda *a: base64.b64encode(b"on: push\n").decode()
 
     def test_a_listing_at_the_cap_is_reported_as_a_gap(self):
         self._serve(fci.CONTENTS_DIR_LIMIT)
@@ -195,16 +196,18 @@ class UnreadTextIsNeverTakenForWorkflowText(unittest.TestCase):
     """
 
     def setUp(self):
-        self._gh = fci.gh
+        self._gh, self._gh_run = fci.gh, fci.gh_run
         self._unreadable = list(fci.unreadable)
         self.addCleanup(lambda: setattr(fci, "gh", self._gh))
+        self.addCleanup(lambda: setattr(fci, "gh_run", self._gh_run))
         self.addCleanup(lambda: fci.unreadable.__setitem__(
             slice(None), self._unreadable))
         fci.unreadable.clear()
 
     def _serve(self, blob: str):
         listing = json.dumps([{"name": "a.yml", "type": "file", "sha": A}])
-        fci.gh = lambda *a: listing if "/contents/" in a[-1] else blob
+        fci.gh_run = lambda *a: (listing, "")
+        fci.gh = lambda *a: blob
 
     def test_a_null_content_field_is_unreadable_not_three_bytes_of_text(self):
         # `--jq .content` prints the literal string `null` for the `encoding:
@@ -221,7 +224,7 @@ class UnreadTextIsNeverTakenForWorkflowText(unittest.TestCase):
     def test_a_listing_that_is_not_an_array_is_unreachable_not_empty(self):
         # `{"message": "Not Found"}` must not read as "this repo has no
         # workflows"; that is the conflation the docstring forbids.
-        fci.gh = lambda *a: '{"message": "Not Found"}'
+        fci.gh_run = lambda *a: ('{"message": "Not Found"}', "")
         self.assertIsNone(fci.workflows("Verjson/example"))
 
 
@@ -282,6 +285,55 @@ class ExitCodeReportsIncompleteness(unittest.TestCase):
                 getattr(fci, name).append("Verjson/example")
                 self.assertEqual(self._run(), 1)
                 getattr(fci, name).clear()
+
+
+class AnAbsentDirectoryIsNotAGap(unittest.TestCase):
+    """A repo with nothing to inventory is an observation, not a failure.
+
+    Eleven fleet repos have no `.github/workflows`, and three have no commits
+    at all. Both 404. Reporting all fourteen as unreachable inflates the gap
+    tally and exits the sweep nonzero for a benign reason — the mirror image of
+    the fail-open the tool exists to close, and how a check earns a mute.
+    """
+
+    def setUp(self):
+        self._gh_run = fci.gh_run
+        self.addCleanup(lambda: setattr(fci, "gh_run", self._gh_run))
+
+    def _fails_with(self, stderr: str):
+        fci.gh_run = lambda *a: (None, stderr)
+
+    def test_a_missing_workflows_directory_is_no_workflows(self):
+        self._fails_with("gh: Not Found (HTTP 404)\n")
+        self.assertEqual(fci.workflows("Verjson/example"), {})
+
+    def test_an_empty_repository_is_no_workflows(self):
+        # GitHub words this one differently from a missing path. The
+        # discriminator is the status, so the wording must not matter.
+        self._fails_with("gh: This repository is empty. (HTTP 404)\n")
+        self.assertEqual(fci.workflows("Verjson/example"), {})
+
+    def test_a_forbidden_listing_is_still_unreachable(self):
+        # The org enumeration that produced this repo used the same token, so
+        # losing read access mid-sweep is a real gap, not an empty repo.
+        self._fails_with("gh: Resource not accessible (HTTP 403)\n")
+        self.assertIsNone(fci.workflows("Verjson/example"))
+
+    def test_a_server_error_is_still_unreachable(self):
+        self._fails_with("gh: Internal Server Error (HTTP 500)\n")
+        self.assertIsNone(fci.workflows("Verjson/example"))
+
+    def test_a_failure_with_no_status_at_all_is_unreachable(self):
+        # A timeout reports no HTTP status. Absent evidence of absence is not
+        # evidence of absence: it must not be read as "the directory is gone".
+        self._fails_with("timed out")
+        self.assertIsNone(fci.workflows("Verjson/example"))
+
+    def test_a_404_in_the_prose_does_not_stand_in_for_the_status(self):
+        # Only the parenthesized status counts; a body that merely mentions the
+        # number must not downgrade a real failure to a benign absence.
+        self._fails_with("gh: error 404 was not the status here (HTTP 502)\n")
+        self.assertIsNone(fci.workflows("Verjson/example"))
 
 
 if __name__ == "__main__":
