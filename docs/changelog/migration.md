@@ -125,6 +125,15 @@
    scripts/gen-changelog-caller.sh generated-artifacts-with-adr-index "$PIN" > .github/workflows/changelog.yml
    ```
 
+   Acquiring the ADR-index generator also means regenerating
+   `docs/decisions/README.md` with it and committing the result: at a pin
+   containing #1382 the generated region gains a `<!-- prettier-ignore -->`
+   guard and a blank line before its closing marker, so an adopter that does not
+   commit that two-line diff goes red on `gen-adr-index.sh --check`. The guard
+   is what lets `prettier --check` and `gen-adr-index.sh --check` both pass over
+   the same file; a repository that does not run prettier carries an inert
+   comment. Never hand-edit the generated region on either side.
+
    A repository that **publishes** something needs a fourth file, and must
    generate it rather than copying a sibling's:
 
