@@ -1,6 +1,7 @@
 ---
 date: 2026-09-17
 issue: 1381
+impact: patch
 title: Fail the organization ruleset audit when a required status check pins no producer App
 ---
 

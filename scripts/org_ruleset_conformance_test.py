@@ -438,6 +438,38 @@ class OrgRulesetConformanceTest(unittest.TestCase):
         )
 
 
+    def test_a_malformed_required_status_checks_rule_fails_closed(self):
+        # The claim this PR makes in its ADR and docs is that a malformed
+        # `required_status_checks` block fails closed rather than raising. Each
+        # of these shapes was accepted by a weakened guard while the whole
+        # suite stayed green: a rule with no `parameters`, parameters with no
+        # check array, and a check with no `context`. An unreadable rule that
+        # yields no finding is indistinguishable from a conformant one.
+        cases = [
+            (
+                {"type": "required_status_checks"},
+                "rule 0.parameters must be an object",
+            ),
+            (
+                {"type": "required_status_checks", "parameters": {}},
+                "required_status_checks must be an array",
+            ),
+            (
+                {
+                    "type": "required_status_checks",
+                    "parameters": {"required_status_checks": [{"integration_id": 15368}]},
+                },
+                "required_status_checks[0].context must be a non-empty string",
+            ),
+        ]
+        for rule, diagnostic in cases:
+            with self.subTest(diagnostic=diagnostic):
+                result, _ = self.run_audit([[{"id": 1}]], {1: ruleset(1, rules=[rule])})
+
+                self.assertEqual(result.returncode, 2, result.stdout)
+                self.assertIn(diagnostic, result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+
     def test_non_integer_producer_binding_fails_closed(self):
         for binding in ("15368", 0, -15368, True, [15368]):
             with self.subTest(binding=binding):

@@ -4,7 +4,10 @@
 - **Status:** Accepted
 - **Issue:** [#1381](https://github.com/Verjson/.github/issues/1381)
 - **Scope:** Sensitive class — organization ruleset / branch protection. This ADR adds
-  the detection and records the reviewed mutation; **no live ruleset was mutated.**
+  the detection and records the reviewed mutation; **no live ruleset was mutated by this
+  change.** (`config/required-check-bindings/README.md` says its two prepared payloads
+  "have since been applied" — those are ADR 0173's, applied before this work; the
+  `20515822` payload below is the one still held.)
 
 ## Context
 
@@ -111,5 +114,20 @@ state: the gap is real, and ADR 0024 forbids silencing it.
   that ruleset is `disabled`, and it is tracked separately.
 - Adding a required context to an organization ruleset now requires declaring its
   producer App, or the audit fails.
+- **This audit pins the producer of the contexts that exist; it does not assert which
+  contexts must exist.** A ruleset whose `required_status_checks` rule is deleted
+  outright, or whose check array is empty, is silent here and exits 0 — `shell-tests`
+  could stop being required across the cohort without this check noticing. Presence of
+  the required contexts is a separate invariant, owned by the required-workflow
+  assertions this audit already carries for the bypassless rulesets. Naming the boundary
+  rather than letting "an absent or unrecognized binding fails closed" be read as
+  covering an absent *rule*.
+- **The declared producer is a single scalar with no exception list**, unlike the sibling
+  `bypassless_required_workflows`. A required context legitimately published by some
+  other App — a third-party check, or a second GitHub App — makes this audit
+  unsatisfiable until the policy schema grows a per-context override. That is deliberate
+  for now: every context the organization requires today is published by
+  `github-actions`, and a list of allowed producers is the shape in which an unwanted
+  producer gets quietly added.
 
 Related: ADR 0024, ADR 0173, ADR 0184, ADR 0186.
