@@ -72,6 +72,14 @@ def repos() -> list[str]:
 _tree_cache: dict[str, dict[str, str] | None] = {}
 # Paths whose blob could not be read. A completeness tool must name its gaps.
 unreadable: list[str] = []
+# Directories whose listing was complete-looking but capped. A different gap
+# kind from an unreadable blob: the file names themselves are missing, so the
+# count of unreadable paths cannot express it.
+incomplete_listings: list[str] = []
+# Pinned refs whose hub tree came back truncated. Same gap kind as a capped
+# listing, one level up: the comparison basis is short, so every row resolved
+# against it is an unsupported conclusion rather than an UNKNOWN observation.
+truncated_trees: list[str] = []
 
 
 def hub_tree(ref: str) -> dict[str, str] | None:
@@ -83,13 +91,18 @@ def hub_tree(ref: str) -> dict[str, str] | None:
     if out:
         try:
             data = json.loads(out)
-            if not data.get("truncated"):
+            if data.get("truncated"):
+                truncated_trees.append(f"{HUB}@{ref} (recursive tree was truncated)")
+            else:
                 # Trees as well as blobs: a `uses:` can reference a composite
                 # action DIRECTORY, whose identity is its subtree object id.
                 # Indexing blobs only reported those references UNKNOWN.
                 tree = {e["path"]: e["sha"] for e in data.get("tree", ())
                         if e.get("type") in ("blob", "tree")}
-        except (json.JSONDecodeError, KeyError, TypeError):
+        except (json.JSONDecodeError, KeyError, TypeError, AttributeError):
+            # AttributeError included deliberately: a response that parses as a
+            # JSON array rather than the expected object would otherwise raise
+            # out of the sweep instead of resolving to UNKNOWN.
             tree = None
     # Successes only: caching a transient failure would permanently degrade
     # every later row that shares this pin.
@@ -116,23 +129,33 @@ def workflows(repo: str) -> dict[str, str] | None:
     except json.JSONDecodeError:
         return None
     if not isinstance(entries, list):
-        return {}
+        # The docstring's contract: an empty dict is "no workflows". A listing
+        # that is not an array is a listing that was not understood, which is
+        # the unreachable case, not the empty one.
+        return None
     if len(entries) >= CONTENTS_DIR_LIMIT:
-        unreadable.append(f"{repo}:.github/workflows "
-                          f"(listing hit the {CONTENTS_DIR_LIMIT}-entry contents cap; "
-                          "read it through the git trees API)")
+        incomplete_listings.append(
+            f"{repo}:.github/workflows (listing hit the {CONTENTS_DIR_LIMIT}-entry "
+            "contents cap; read it through the git trees API)")
     files = {}
     for entry in entries:
         name = entry.get("name", "")
         if entry.get("type") != "file" or not name.endswith((".yml", ".yaml")):
             continue
         blob = gh("api", f"repos/{repo}/git/blobs/{entry['sha']}", "--jq", ".content")
-        if not blob:
+        # `--jq .content` prints the four bytes `null` when the field is absent
+        # or null -- the shape GitHub returns for a blob too large to inline,
+        # where `encoding` is `none`. That string is valid base64 and decodes to
+        # three bytes of garbage, so without this guard an unread workflow is
+        # stored as real text, contributes no pins, and is reported complete.
+        if not blob or blob.strip() == "null":
             unreadable.append(f"{repo}:.github/workflows/{name}")
             continue
         try:
             files[f".github/workflows/{name}"] = base64.b64decode(blob).decode("utf-8", "replace")
         except ValueError:
+            # The one path into this function that did not name its own gap.
+            unreadable.append(f"{repo}:.github/workflows/{name}")
             continue
     return files
 
@@ -198,14 +221,23 @@ def main() -> int:
           f"{dict(tally)} drifted_repos={len(drifted_repos)} "
           f"repos_with_intra_repo_pin_skew={len(skewed)} "
           f"unreachable_repos={len(unreachable)} "
-          f"unreadable_files={len(unreadable)}", file=sys.stderr)
+          f"unreadable_files={len(unreadable)} "
+          f"incomplete_listings={len(incomplete_listings)} "
+          f"truncated_trees={len(truncated_trees)}", file=sys.stderr)
     if unreachable:
         print("unreachable: " + " ".join(unreachable), file=sys.stderr)
     if unreadable:
         print("unreadable: " + " ".join(unreadable), file=sys.stderr)
+    # One per line: a capped-listing gap carries spaces, so a space-joined list
+    # would no longer be one token per gap.
+    for gap in incomplete_listings:
+        print("incomplete listing: " + gap, file=sys.stderr)
+    for gap in truncated_trees:
+        print("truncated tree: " + gap, file=sys.stderr)
     # A sweep that lost its token halfway through has a truncated inventory.
     # Exiting 0 on it would report incompleteness as completeness.
-    return 1 if (unreachable or unreadable) else 0
+    return 1 if (unreachable or unreadable or incomplete_listings
+                 or truncated_trees) else 0
 
 
 if __name__ == "__main__":
