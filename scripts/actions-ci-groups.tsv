@@ -65,6 +65,7 @@ platform	bash scripts/type-surface-contract-generator.test.sh
 platform	python3 scripts/cli_projects_package_surface_test.py
 platform	python3 scripts/cli_projects_package_surface_ruleset_test.py
 platform	python3 scripts/ai_review_required_workflow_audit_test.py
+platform	python3 scripts/audit_finding_state_test.py
 platform	python3 scripts/capability-floor-audit.test.py
 platform	python3 scripts/ci-gate/capability-floor-discovery.test.py
 platform	bash scripts/classify-repo-stacks.test.sh
