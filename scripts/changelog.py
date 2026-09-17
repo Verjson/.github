@@ -410,6 +410,22 @@ def fragments(
     return result
 
 
+def require_revision(option: str, value: str) -> None:
+    """Refuse a blank revision instead of letting Git resolve it to HEAD.
+
+    `git diff "...HEAD"` and `git diff "BASE..."` both fill a blank side in
+    with HEAD, so an unset `BASE_SHA` reaching this gate compares HEAD against
+    itself: every requirement below evaluates over an empty diff and the gate
+    exits 0. A caller that lost its revision must be told so, not told the
+    pull request is clean.
+    """
+    if not value.strip():
+        raise ChangelogError(
+            f"{option} is empty; a revision is required so the comparison "
+            "cannot silently resolve to HEAD and pass over an empty diff"
+        )
+
+
 def added_fragment_paths(repo_root: Path, base: str, head: str) -> set[str]:
     added: set[str] = set()
     for line in git(
@@ -472,6 +488,8 @@ def validate_new_fragment_impacts(
     head: str,
     entries: list[Fragment] | None = None,
 ) -> None:
+    require_revision("--base", base)
+    require_revision("--head", head)
     if entries is None:
         entries = fragments(repo_root)
     entries_by_path = {
@@ -1361,6 +1379,8 @@ def require_valid_added_fragments(
 
 
 def check_pr(repo_root: Path, base: str, head: str) -> None:
+    require_revision("--base", base)
+    require_revision("--head", head)
     status_by_path = {}
     for line in git(
         repo_root, "diff", "--no-renames", "--name-status", f"{base}...{head}"
@@ -1568,11 +1588,14 @@ def main() -> int:
             grace_active = impact_migration_window_active(
                 args.allow_missing_impact_through
             )
-            if args.allow_missing_impact_through and not args.base:
+            if args.base is not None:
+                require_revision("--base", args.base)
+                require_revision("--head", args.head)
+            if args.allow_missing_impact_through and args.base is None:
                 raise ChangelogError(
                     "--allow-missing-impact-through requires --base"
                 )
-            if args.base and not grace_active:
+            if args.base is not None and not grace_active:
                 validate_new_fragment_impacts(
                     repo_root,
                     args.base,

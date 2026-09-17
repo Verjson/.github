@@ -2476,6 +2476,89 @@ class ChangelogContractTests(unittest.TestCase):
 
         changelog.check_pr(self.root, base, "HEAD")
 
+    def test_check_pr_fails_closed_on_an_empty_revision(self) -> None:
+        """An empty revision is refused, not silently reinterpreted as HEAD.
+
+        `git diff "...HEAD"` resolves the blank side to HEAD, so an empty
+        `--base` compares HEAD against itself: every requirement this gate
+        exists to enforce evaluates over an empty diff and the gate exits 0.
+        A caller that passed an unset variable must learn that, not be told
+        the pull request is clean.
+        """
+        self.init_git()
+        self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
+        self.commit_all("base")
+        self.root.joinpath("package.json").write_text("{}\n", encoding="utf-8")
+        self.root.joinpath("CHANGELOG.md").write_text("authored\n", encoding="utf-8")
+        self.commit_all("changes that a resolved base would refuse")
+
+        for base, head in (("", "HEAD"), ("   ", "HEAD"), ("HEAD~1", ""), ("HEAD~1", "  ")):
+            with self.subTest(base=base, head=head):
+                with self.assertRaisesRegex(changelog.ChangelogError, "empty"):
+                    changelog.check_pr(self.root, base, head)
+
+    def test_validate_fails_closed_on_an_empty_base(self) -> None:
+        """The sibling gate shares the shape: a blank `--base` is not "omitted".
+
+        `validate --base ''` used to be indistinguishable from omitting the
+        option, so a caller whose BASE_SHA was unset skipped the new-fragment
+        `impact` requirement entirely and exited 0. Omitting it stays
+        legitimate; passing an empty value does not.
+        """
+        self.init_git()
+        fragment(self.root, "2026-07-30-issue-249-contract.md")
+        self.commit_all("base")
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(MODULE_PATH),
+                "validate",
+                "--repo-root",
+                str(self.root),
+                "--base",
+                "",
+            ],
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertNotEqual(completed.returncode, 0, completed.stdout)
+        self.assertIn("--base is empty", completed.stderr)
+
+    def test_a_resolvable_revision_still_passes_silently(self) -> None:
+        """The control side: the guard refuses blanks without refusing real work.
+
+        A pull request that needs no fragment must still exit 0 with nothing on
+        either stream, and `validate` with `--base` genuinely omitted must stay
+        the legitimate skip it has always been.
+        """
+        self.init_git()
+        fragment(self.root, "2026-07-30-issue-249-contract.md", impact="patch")
+        self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
+        self.commit_all("base")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        self.root.joinpath("README.md").write_text("documentation only\n", encoding="utf-8")
+        self.commit_all("documentation")
+
+        for argv in (
+            ["check-pr", "--base", base, "--head", "HEAD"],
+            ["validate", "--base", base, "--head", "HEAD"],
+            ["validate"],
+        ):
+            with self.subTest(argv=argv):
+                completed = subprocess.run(
+                    [sys.executable, str(MODULE_PATH), argv[0], "--repo-root", str(self.root), *argv[1:]],
+                    check=False,
+                    text=True,
+                    capture_output=True,
+                )
+
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                self.assertEqual(completed.stdout, "")
+                self.assertEqual(completed.stderr, "")
+
     def test_check_pr_fails_closed_on_malformed_revision_input(self) -> None:
         self.init_git()
         self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
