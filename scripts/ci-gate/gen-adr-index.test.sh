@@ -99,27 +99,46 @@ cmp -s "$d/index-first-pass" "$idx" \
 # An `npx` that cannot reach the registry is reported as a skip rather than a
 # failure: this suite must stay runnable offline, and the shape assertions above
 # still cover the mechanism.
-prettier_cmd=''
+#
+# The version is exact, never a range: prettier decides what "formatted
+# markdown" means, so a floating 3.x would redden this suite and every adopter's
+# at once on an upstream formatting change unrelated to any local edit. There is
+# deliberately no `npx --no prettier` preference for an already-installed copy:
+# `npx --no prettier --version` reports npm's own version and succeeds with no
+# prettier anywhere, so it probes nothing and selects a command that then fails.
+prettier_pin='prettier@3.9.7'
+prettier_cmd=()
 if command -v prettier >/dev/null 2>&1; then
-  prettier_cmd='prettier'
+  prettier_cmd=(prettier)
 elif command -v npx >/dev/null 2>&1 \
-  && npx --yes prettier@3 --version >/dev/null 2>&1; then
-  prettier_cmd='npx --yes prettier@3'
+  && npx --yes "$prettier_pin" --version >/dev/null 2>&1; then
+  prettier_cmd=(npx --yes "$prettier_pin")
 fi
 
-if [ -n "$prettier_cmd" ]; then
+if [ "${#prettier_cmd[@]}" -gt 0 ]; then
   prettier_agrees=1
+  prettier_ran=1
   for prose_wrap in preserve never always; do
     printf '{"proseWrap":"%s"}\n' "$prose_wrap" >"$d/.prettierrc"
     cp "$idx" "$d/index-before-prettier"
-    $prettier_cmd --write "$idx" >/dev/null 2>&1 || prettier_agrees=0
-    cmp -s "$d/index-before-prettier" "$idx" || prettier_agrees=0
-    gen "$d" --check || prettier_agrees=0
+    # A failed invocation and a real reformat are tracked apart: a half-warm npx
+    # cache or a registry blip must not be reported as the regression this test
+    # exists to catch.
+    if "${prettier_cmd[@]}" --write "$idx" >/dev/null 2>&1; then
+      cmp -s "$d/index-before-prettier" "$idx" || prettier_agrees=0
+      gen "$d" --check || prettier_agrees=0
+    else
+      prettier_ran=0
+    fi
   done
   rm -f "$d/.prettierrc"
-  [ "$prettier_agrees" -eq 1 ] \
-    && pass "prettier leaves the generated index byte-identical and --check current (#1382)" \
-    || fail "prettier reformatted the generated index or left --check stale (#1382)"
+  if [ "$prettier_ran" -eq 0 ]; then
+    pass "skipped prettier agreement check — prettier could not be invoked"
+  elif [ "$prettier_agrees" -eq 1 ]; then
+    pass "prettier leaves the generated index byte-identical and --check current (#1382)"
+  else
+    fail "prettier reformatted the generated index or left --check stale (#1382)"
+  fi
 else
   pass "skipped prettier agreement check — no reachable prettier"
 fi
