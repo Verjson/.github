@@ -90,6 +90,78 @@ class AuditFindingStateTest(unittest.TestCase):
         self.assertEqual(state["verdict"], "drift")
         self.assertEqual(state["new"], [fingerprint(appeared)])
 
+    def test_a_recorded_finding_that_no_longer_reproduces_is_loud(self):
+        recorded = "armed default branches without canonical deterministic required CI: missing=1"
+        completed = self.run_state(
+            entries=[expectation(recorded)],
+            command=emitter(findings=[], status=0),
+        )
+        self.assertEqual(completed.returncode, 1, completed.stdout)
+        state = json.loads(completed.stdout)
+        self.assertEqual(state["verdict"], "drift")
+        self.assertEqual(state["stale"], [fingerprint(recorded)])
+
+    def test_an_expired_waiver_stops_keeping_its_finding_quiet(self):
+        finding = "armed default branches without canonical deterministic required CI: missing=1"
+        completed = self.run_state(
+            entries=[expectation(finding, expires="2000-01-01")],
+            command=emitter(findings=[finding]),
+        )
+        self.assertEqual(completed.returncode, 1, completed.stdout)
+        state = json.loads(completed.stdout)
+        self.assertEqual(state["verdict"], "drift")
+        self.assertEqual(state["expired"], [fingerprint(finding)])
+
+    def test_an_unreadable_expectation_file_fails_closed(self):
+        completed = self.run_state(
+            entries=[],
+            command=emitter(findings=[], status=0),
+            expectations=self.root / "absent.json",
+        )
+        self.assertEqual(completed.returncode, 2, completed.stdout)
+        self.assertIn("audit-state-undetermined", completed.stderr)
+
+    def test_an_audit_with_no_recorded_expectation_fails_closed(self):
+        path = self.expectations_file([], audit="other")
+        completed = self.run_state(entries=[], command=emitter(status=0), expectations=path)
+        self.assertEqual(completed.returncode, 2, completed.stdout)
+        self.assertIn("no recorded expectation", completed.stderr)
+
+    def test_a_recorded_finding_whose_digest_disagrees_fails_closed(self):
+        entry = expectation("armed default branches: missing=1")
+        entry["finding"] = "a different finding than the digest describes"
+        completed = self.run_state(entries=[entry], command=emitter(status=0))
+        self.assertEqual(completed.returncode, 2, completed.stdout)
+        self.assertIn("does not describe", completed.stderr)
+
+    def test_an_expectation_entry_missing_its_tracking_issue_fails_closed(self):
+        entry = expectation("armed default branches: missing=1")
+        del entry["issue"]
+        completed = self.run_state(entries=[entry], command=emitter(status=0))
+        self.assertEqual(completed.returncode, 2, completed.stdout)
+        self.assertIn("audit-state-undetermined", completed.stderr)
+
+    def test_an_audit_that_failed_without_reporting_a_finding_fails_closed(self):
+        completed = self.run_state(entries=[], command=emitter(findings=[], status=3))
+        self.assertEqual(completed.returncode, 2, completed.stdout)
+        self.assertIn("reported no finding", completed.stderr)
+
+    def test_an_audit_that_succeeded_while_reporting_a_finding_fails_closed(self):
+        finding = "armed default branches: missing=1"
+        completed = self.run_state(
+            entries=[expectation(finding)],
+            command=emitter(findings=[finding], status=0),
+        )
+        self.assertEqual(completed.returncode, 2, completed.stdout)
+        self.assertIn("succeeded while reporting", completed.stderr)
+
+    def test_an_audit_command_that_cannot_be_started_fails_closed(self):
+        completed = self.run_state(
+            entries=[], command=[str(self.root / "no-such-audit")]
+        )
+        self.assertEqual(completed.returncode, 2, completed.stdout)
+        self.assertIn("could not be started", completed.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
