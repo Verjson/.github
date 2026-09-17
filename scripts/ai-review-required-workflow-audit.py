@@ -353,7 +353,8 @@ def verify_ruleset_state(contract: dict, read, expected: str | None = None) -> t
             key=lambda candidate: len(candidate[1]),
         )
         raise AuditError(
-            "main-protection differs from both full reviewed preimage and postimage: "
+            "main-protection matches neither reviewed image on the fields the contract "
+            "asserts: "
             f"nearest {nearest}: {concise_mismatches(mismatches)}"
         )
     require(expected is None or state == expected, f"ruleset state is {state}, expected {expected}")
@@ -402,7 +403,7 @@ def verify_ruleset_exclusivity(contract: dict, read, state: str) -> dict[int, di
         arm_mismatches = image_mismatches(normalize_ruleset(candidates[named[0]]), contract["arm_ruleset"])
         require(
             not arm_mismatches,
-            f"arm ruleset drifted from its full reviewed image: {concise_mismatches(arm_mismatches)}",
+            f"arm ruleset drifted from the fields its reviewed image asserts: {concise_mismatches(arm_mismatches)}",
         )
     require(not conflicts, f"retired or App authorization status is also required: {conflicts}")
     return candidates
@@ -421,7 +422,7 @@ def verify_deterministic_ci(
         mismatches = image_mismatches(normalize_ruleset(candidates[ruleset_id]), declaration["image"])
         require(
             not mismatches,
-            f"deterministic ruleset {ruleset_id} drifted from its full reviewed image: "
+            f"deterministic ruleset {ruleset_id} drifted from the fields its reviewed image asserts: "
             f"{concise_mismatches(mismatches)}",
         )
         declarations[declaration["stack"]] = declaration
