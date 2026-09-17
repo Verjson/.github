@@ -63,6 +63,14 @@ findings are the adoption backlog ADR 0187 predicted from the pin skew. A
 control that buries its own signal under a backlog is the failure shape #1404
 exists to remove, so the split is part of the fix rather than a refinement of it.
 
+Present is also not dispatchable. `gate-rearm.yml` dispatches the review lane
+into the adopter, and GitHub refuses to start a workflow disabled manually or
+for inactivity, so such a caller satisfies file presence and fails the arm for
+the same reason an absent one does. Its state is read from the Actions API: no
+adopter-controlled workflow text becomes an input to hub automation, and the
+file name asked about comes from the reviewed contract. No adopter is in that
+state today, so the check adds no findings to the current fleet report.
+
 Membership is asserted by path, for regular files only; the audit does not read
 or compare caller contents, so a caller present at a stale contract SHA is out
 of scope here and remains ADR 0185's problem.

@@ -122,6 +122,9 @@ jobs:
             fixture[f"repos/{full_name}/contents/.github/workflows?ref={default_branch}"] = [
                 [{"name": Path(caller).name, "path": caller, "type": "file"} for caller in ADOPTER_CALLERS]
             ]
+            fixture[f"repos/{full_name}/actions/workflows/ai-review-merge.yml"] = [
+                {"id": 1, "name": "AI review", "state": "active"}
+            ]
             fixture[f"repos/{full_name}/environments/ai-review-app"] = [{
                 "name": "ai-review-app",
                 "deployment_branch_policy": {"protected_branches": False, "custom_branch_policies": True},
@@ -821,6 +824,23 @@ jobs:
             sorted(callers["admission"] + callers["completeness"]),
             sorted(ADOPTER_CALLERS),
         )
+
+    def test_a_disabled_admission_caller_is_reported_as_undispatchable(self):
+        # `gate-rearm.yml` dispatches the review lane into the adopter. A
+        # workflow disabled manually or for inactivity is present on the default
+        # branch, satisfies the file-presence assertion, and GitHub refuses to
+        # start it — so the arm fails for the same reason as an absent caller
+        # while the audit would call the repository conformant. Read from the
+        # Actions API, never from the adopter's workflow text.
+        for state in ("disabled_manually", "disabled_inactivity"):
+            with self.subTest(state=state):
+                self.fixture = self.make_fixture()
+                path = "repos/Verjson/alpha/actions/workflows/ai-review-merge.yml"
+                self.fixture[path][0]["state"] = state
+                self.assert_audit_error(
+                    rf"cannot satisfy the arm.*Verjson/alpha:\.github/workflows/"
+                    rf"ai-review-merge\.yml:{state}",
+                )
 
     def test_malformed_contract_fails_with_controlled_diagnostics(self):
         for section, key, value, diagnostic in (

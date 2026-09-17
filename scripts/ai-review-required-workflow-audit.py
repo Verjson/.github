@@ -597,12 +597,28 @@ def verify_adopter_conformance(contract: dict, read, repositories: list[dict], c
             allow_missing=True,
         )
         present = {entry.get("path") for entry in entries if entry.get("type") == "file"}
-        for kind, bucket in (("admission", blocked), ("completeness", findings)):
-            bucket.extend(
-                f"{full_name}:{caller}"
-                for caller in conformance["caller_workflows"][kind]
-                if caller not in present
+        findings.extend(
+            f"{full_name}:{caller}"
+            for caller in conformance["caller_workflows"]["completeness"]
+            if caller not in present
+        )
+        for caller in conformance["caller_workflows"]["admission"]:
+            if caller not in present:
+                blocked.append(f"{full_name}:{caller}")
+                continue
+            # Present is not dispatchable. `gate-rearm.yml` dispatches the review
+            # lane into the adopter, and GitHub refuses to start a workflow
+            # disabled manually or for inactivity — the arm then fails for the
+            # same reason as an absent caller. The state is read from the Actions
+            # API, so no adopter-controlled workflow text becomes an input here;
+            # the file name comes from this contract.
+            pages = read(
+                f"repos/{full_name}/actions/workflows/{caller.rsplit('/', 1)[-1]}",
+                allow_missing=True,
             )
+            state = pages[0].get("state") if pages and isinstance(pages[0], dict) else "unregistered"
+            if state != "active":
+                blocked.append(f"{full_name}:{caller}:{state}")
         label = f"{full_name}:{environment}"
         pages = read(f"repos/{full_name}/environments/{environment}", allow_missing=True)
         if not pages:
@@ -645,7 +661,7 @@ def verify_adopter_conformance(contract: dict, read, repositories: list[dict], c
         concise_findings(name, items)
         for name, items in (
             (
-                "armed adopters that cannot satisfy the arm: the admission caller is absent",
+                "armed adopters that cannot satisfy the arm: the admission caller is absent or undispatchable",
                 sorted(blocked),
             ),
             ("armed adopters with an incomplete generated adopter caller set", sorted(findings)),
