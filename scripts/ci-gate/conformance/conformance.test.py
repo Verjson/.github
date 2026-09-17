@@ -54,14 +54,22 @@ WORK_STEPS = frozenset({
     'npm test',
 })
 
-# What each lane must execute, exactly. Asserting only that *some* evidence
-# exists accepts a contract that guards off `npm test` while leaving `npm ci`
-# running — a partial #184, and the shape a defect is most likely to take once
-# the obvious one is tested for. The credentialed lane runs the package
-# scripts; the secretless lane runs its pinned script plan instead.
+# What each (adopter, scenario) pair must execute, exactly. Asserting only that
+# *some* evidence exists accepts a contract that guards off `npm test` while
+# leaving `npm ci` running — a partial #184, and the shape a defect is most
+# likely to take once the obvious one is tested for.
+#
+# The key is the pair, not the adopter: `typescript-service.yml` happens to opt
+# into the secretless lane on both events, but the realistic adopter shape is
+# secretless on pull_request and credentialed on push, and an adopter-keyed
+# table cannot express it.
+CREDENTIALED = frozenset({'npm ci', 'npm run build', 'npm test'})
+SECRETLESS = frozenset({'Run exact credentialless consumer script plan'})
 EXPECTED_EVIDENCE = {
-    'minimal-defaults.yml': frozenset({'npm ci', 'npm run build', 'npm test'}),
-    'typescript-service.yml': frozenset({'Run exact credentialless consumer script plan'}),
+    ('minimal-defaults.yml', 'secretless-pr'): CREDENTIALED,
+    ('minimal-defaults.yml', 'trusted-ref-push'): CREDENTIALED,
+    ('typescript-service.yml', 'secretless-pr'): SECRETLESS,
+    ('typescript-service.yml', 'trusted-ref-push'): SECRETLESS,
 }
 
 # Context values a caller cannot supply: they come from the event and from jobs
@@ -203,17 +211,29 @@ class EveryExecutingLaneShowsPositiveEvidence(unittest.TestCase):
             for caller in callers_for(CONTRACT):
                 with self.subTest(scenario=scenario.name, adopter=caller.name):
                     outcomes = outcomes_for(CONTRACT, caller, scenario)
+                    key = (caller.name, scenario.name)
+                    self.assertIn(
+                        key, EXPECTED_EVIDENCE,
+                        'a synthetic adopter with no registered evidence: add '
+                        'what its lane must execute rather than leaving the '
+                        'matrix silent about it')
                     evidence = WORK_STEPS & set(outcomes['build-test'].executed_steps)
                     self.assertEqual(
-                        EXPECTED_EVIDENCE[caller.name], evidence,
+                        EXPECTED_EVIDENCE[key], evidence,
                         f'{scenario.name} did not execute the work its lane is '
                         'defined by; a lane reporting success on less than this '
                         'is Verjson/verjson-ci#184, whole or in part')
 
     def test_a_lane_that_runs_concludes_successfully(self):
-        """Without this, a lane modelled as failing would satisfy every other
+        """The lane is neither skipped nor unconditionally failing.
+
+        That is the honest statement of what this can detect: the model derives
+        `failure` only from an unconditional top-level `exit`, so the
+        contract's guarded error paths are all modelled as succeeding. Without
+        it, though, a lane modelled as failing would satisfy every other
         property here by accident — spurious red looks like conformance to an
-        assertion that only ever demands a non-SUCCESS entry somewhere."""
+        assertion that only ever demands a non-SUCCESS entry somewhere.
+        """
         for scenario in SCENARIOS[1:]:
             for caller in callers_for(CONTRACT):
                 with self.subTest(scenario=scenario.name, adopter=caller.name):
@@ -234,6 +254,16 @@ class TheEvidenceRegistryMatchesTheContract(unittest.TestCase):
             [], missing,
             'the evidence registry names steps the contract no longer has; a '
             'renamed work step makes every execution assertion vacuous')
+
+    def test_every_expected_step_is_one_the_registry_can_match(self):
+        """Assertions compare against `WORK_STEPS & executed`, so a typo in an
+        expected name is permanently unsatisfiable rather than caught."""
+        for key, expected in EXPECTED_EVIDENCE.items():
+            with self.subTest(case=key):
+                self.assertEqual(
+                    set(), expected - WORK_STEPS,
+                    'an expected step outside the work-step registry can never '
+                    'appear in the evidence set, so this case can never pass')
 
 
 class TheAdopterSurfaceIsTheContractSurface(unittest.TestCase):

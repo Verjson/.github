@@ -43,3 +43,15 @@ round-trip, so it cannot be compared byte for byte and would otherwise drift
 into a tautology. And the evaluator raises its own typed error on a name
 nothing bound, instead of a bare `NameError` that reads as a harness crash
 rather than as an unmodelled guard.
+
+A second review round found the after-failure skip short-circuiting *before* the
+guard was evaluated, so a step following a failed one escaped the evaluator
+entirely and an unbound context there would no longer raise — the fail-closed
+property this module is built on, reopened in a narrow window. The guard is now
+evaluated first and the skip conjoined to it. Two related corrections: GitHub
+drops the implicit `success() &&` when a guard names any status function, so
+`success()` belongs in the set of guards that still run after a failure; and a
+heredoc body sits at column 0 of the parsed block scalar, so a `cat <<'SH'`
+carrying `exit 1` would have been read as terminating the job — the
+indented-`exit` defect returning through another door, in a contract with
+roughly eighteen heredocs.

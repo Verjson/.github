@@ -46,12 +46,6 @@ _CONTEXT_REF = re.compile(
 
 _SUPPORTED_FUNCTIONS = {'always', 'success', 'failure', 'cancelled', 'hashFiles'}
 
-# Known divergence: GitHub compares strings case-insensitively and this does
-# not. Matching it would make a guard comparing against the wrong casing
-# evaluate as intended here and fail in Actions — the harness would hide the
-# defect. No guard in the contract depends on the difference; a guard that
-# starts to should be rewritten rather than accommodated.
-
 
 def _python_source(expression: str, placeholders: dict[str, str]) -> str:
     source = expression
@@ -70,7 +64,14 @@ def _python_source(expression: str, placeholders: dict[str, str]) -> str:
 
 
 class Evaluator:
-    """Evaluates one workflow's guards against one scenario's bindings."""
+    """Evaluates one workflow's guards against one scenario's bindings.
+
+    Known divergence: GitHub compares strings case-insensitively and this does
+    not. Matching it would make a guard comparing against the wrong casing
+    evaluate as intended here and fail in Actions — the harness would hide the
+    defect. No guard in the contract depends on the difference; a guard that
+    starts to should be rewritten rather than accommodated.
+    """
 
     def __init__(self, bindings: dict[str, object], *, functions: dict[str, object] | None = None):
         self.bindings = bindings
@@ -106,10 +107,13 @@ class Evaluator:
             if name in self.functions:
                 values[name] = self.functions[name]
         # GitHub's boolean and null literals are lowercase, so they reach the
-        # parser as names rather than as Python constants.
-        values.setdefault('true', True)
-        values.setdefault('false', False)
-        values.setdefault('null', None)
+        # parser as names rather than as Python constants. Plain assignment,
+        # not `setdefault`: nothing can legitimately shadow these — placeholders
+        # are `_ctxN` and function names come from a fixed set — so a collision
+        # is a defect that should be loud rather than silently deferred to.
+        values['true'] = True
+        values['false'] = False
+        values['null'] = None
 
         try:
             tree = ast.parse(source, mode='eval')

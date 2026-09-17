@@ -61,30 +61,59 @@ class JobOutcome:
         return 'failure' if self.terminates_unsuccessfully else 'success'
 
 
-# The guards that still run a step after an earlier step failed. Everything
-# else is skipped from that point on, and a model that keeps counting later
-# steps as executed manufactures exactly the evidence of execution this
+# The guards that still run a step after an earlier step failed. GitHub drops
+# the implicit `success() &&` when the expression names *any* status check
+# function, `success()` included — so `success() || github.event_name == 'push'`
+# runs after a failure and is correctly evaluated false by `_evaluator`.
+# Everything else is skipped from that point on, and a model that keeps counting
+# later steps as executed manufactures exactly the evidence of execution this
 # harness exists to demand — the harness's own #184.
-_RUNS_AFTER_FAILURE = re.compile(r'\b(?:always|failure|cancelled)\s*\(')
+_RUNS_AFTER_FAILURE = re.compile(r'\b(?:always|success|failure|cancelled)\s*\(')
+
+# A heredoc body is written at column 0 of the parsed block scalar, so the
+# column test below cannot see that it is data being fed to another program
+# rather than shell the runner executes. `node-ci.yml` has ~18 of them; a
+# `cat > script.sh <<'SH'` carrying a column-0 `exit 1` would otherwise model
+# a healthy lane as red — the indented-`exit` defect returning by another door.
+_HEREDOC = re.compile(r"""<<-?\s*['"]?(?P<delimiter>[A-Za-z_][A-Za-z0-9_]*)['"]?""")
 
 
 def _terminates_unsuccessfully(step: dict) -> bool:
     """Whether running this step concludes its job as a failure.
 
-    Only a *top-level* `exit <non-zero>` counts. An indented one sits inside a
-    bash conditional and fires on a branch nothing here can see, so treating it
-    as certain would report every guarded error path as a failure and model the
-    healthy lane as red. Deliberate top-level failure is how ADR 0178's
-    deferral makes itself visible in a check rollup rather than in an
-    annotation an opt-in script has to read, so the model has to represent it —
-    a model in which every job that runs succeeds cannot express the difference
-    the whole conformance matrix is about.
+    Only an `exit <non-zero>` at column 0 of the parsed block scalar, outside
+    any open heredoc, counts. An indented one sits inside a bash conditional
+    and fires on a branch nothing here can see, so treating it as certain would
+    report every guarded error path as a failure and model the healthy lane as
+    red. Deliberate unconditional failure is how ADR 0178's deferral makes
+    itself visible in a check rollup rather than in an annotation an opt-in
+    script has to read, so the model has to represent it — a model in which
+    every job that runs succeeds cannot express the difference the whole
+    conformance matrix is about.
+
+    This is a claim about shell structure inferred from layout, so it is a
+    heuristic: `set -e` propagation, traps, and an `exit` reached through a
+    function are all outside what it can see. It is deliberately biased toward
+    *not* reporting failure, because a spurious failure is what modelled the
+    healthy lane as red.
     """
+    heredoc: str | None = None
     for line in str(step.get('run', '')).splitlines():
+        if heredoc is not None:
+            if line.strip() == heredoc:
+                heredoc = None
+            continue
+        opened = _HEREDOC.search(line)
+        if opened:
+            heredoc = opened.group('delimiter')
+            continue
         if line.startswith((' ', '\t')):
             continue
         line = line.strip()
         if line.startswith('exit ') and line[5:].strip().isdigit():
+            # The first unconditional `exit` decides the script's status: a
+            # later one is unreachable. A column-0 `exit 0` therefore means
+            # this step succeeds, not that the scan found nothing.
             return line[5:].strip() != '0'
     return False
 
@@ -131,14 +160,17 @@ def model_workflow(path: Path, scenario: Scenario) -> dict[str, JobOutcome]:
         if ran:
             for step in job.get('steps') or []:
                 guard = step.get('if')
-                if outcome.terminates_unsuccessfully and not (
-                        guard and _RUNS_AFTER_FAILURE.search(str(guard))):
-                    outcome.skipped_steps.append(_step_label(step))
-                    continue
                 evaluator = _evaluator(
                     bindings, scenario, results,
                     failed=outcome.terminates_unsuccessfully)
-                if evaluator.evaluate(guard):
+                # Evaluate before applying the after-failure skip, never
+                # instead of it: skipping first would let a guard that reads an
+                # unbound context escape the evaluator entirely, which is the
+                # fail-closed property this module is built on.
+                runs = evaluator.evaluate(guard) and (
+                    not outcome.terminates_unsuccessfully
+                    or bool(guard and _RUNS_AFTER_FAILURE.search(str(guard))))
+                if runs:
                     outcome.executed_steps.append(_step_label(step))
                     if _terminates_unsuccessfully(step):
                         outcome.terminates_unsuccessfully = True
@@ -162,6 +194,9 @@ def _evaluator(bindings: dict, scenario: Scenario, results: list[str],
     return Evaluator(bindings, functions={
         'always': lambda: True,
         'success': lambda: not failed and all(r == 'success' for r in results),
+        # Direct `needs` only; GitHub's job-level `failure()` is transitive
+        # over ancestors. The contract is two levels deep and uses no job-level
+        # `failure()`, so the difference cannot bite here.
         'failure': lambda: failed or any(r == 'failure' for r in results),
         'cancelled': lambda: False,
         **scenario.functions,
