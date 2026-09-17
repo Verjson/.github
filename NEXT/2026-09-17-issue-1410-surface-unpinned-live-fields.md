@@ -23,3 +23,11 @@ The report covers the mutation payload and the top level beside it, because
 `normalize_ruleset` keeps only the payload and a policy field GitHub adds
 next to it would otherwise be invisible here too. Ruleset identity,
 provenance, and timestamps are excluded as non-policy.
+
+The candidate lookup fell back to the normalized live ruleset when a contracted
+ruleset was absent from the organization listing. That object carries no
+top-level key outside the compared set by construction, so its residual was
+empty and the audit passed while silently reporting that the ruleset pins
+everything — precisely when it could not be read at all, which is the silence
+ADR 0188 rules out. An unreadable surface is now a failure naming the ruleset,
+and the arm lookup raises the same typed error rather than `StopIteration`.

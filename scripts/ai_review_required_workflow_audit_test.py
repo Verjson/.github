@@ -401,6 +401,11 @@ jobs:
         # residual. The live arm's resolved `sha` and the live required checks'
         # `integration_id` are the unpinned fields that exist today (#1410).
         self.enter_split_state()
+        # main-protection is the first surface generated but sorts after the
+        # arm ruleset's label, so giving it a residual too makes generation
+        # order and sorted order differ -- without that the ordering assertion
+        # below holds for either implementation and proves nothing.
+        self.fixture[self.ruleset_path][0]["allow_force_pushes_for_maintainers"] = False
         arm = self.fixture[f"orgs/Verjson/rulesets/{self.arm_id}"][0]
         arm["rules"][0]["parameters"]["workflows"][0]["sha"] = "c597d69"
         node = next(
@@ -415,6 +420,30 @@ jobs:
             "core-checks-node.rules[0].parameters.required_status_checks[0].integration_id",
             unpinned,
         )
+        # Ordered, so the review diff this feeds shows only what actually
+        # changed rather than every field moving whenever one is added.
+        self.assertEqual(unpinned, sorted(unpinned))
+
+    def test_a_contracted_ruleset_missing_from_the_listing_fails_rather_than_under_reporting(self):
+        """An absent candidate must be loud, because its residual reads as none.
+
+        The candidate lookup fell back to the normalized live ruleset, which by
+        construction carries no top-level key outside `RULESET_FIELDS` — so a
+        contracted ruleset missing from the org listing produced an empty
+        residual and the audit passed. That is the silence ADR 0188 rules out:
+        the report would say a ruleset pins everything precisely when it could
+        not be read at all.
+        """
+        self.enter_split_state()
+        listing = self.fixture["orgs/Verjson/rulesets"][0]
+        self.fixture["orgs/Verjson/rulesets"][0] = [
+            entry for entry in listing if entry["id"] != self.contract["ruleset_id"]
+        ]
+
+        with self.assertRaises(AUDIT.AuditError) as caught:
+            AUDIT.audit(self.contract, self.read)
+
+        self.assertIn(str(self.contract["ruleset_id"]), str(caught.exception))
 
     def test_the_report_names_a_top_level_field_github_adds_but_not_its_metadata(self):
         # `normalize_ruleset` keeps only the mutation payload, so a policy field

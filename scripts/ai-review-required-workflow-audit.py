@@ -603,6 +603,24 @@ def unpinned_ruleset_fields(ruleset: dict, image: dict) -> list[str]:
     return unpinned_keys(normalize_ruleset(ruleset), image) + beside_the_payload
 
 
+def candidate_by_id(candidates: dict[int, dict], ruleset_id: int) -> dict:
+    require(
+        ruleset_id in candidates,
+        f"contracted ruleset {ruleset_id} is absent from the organization listing, "
+        "so its unpinned fields cannot be reported",
+    )
+    return candidates[ruleset_id]
+
+
+def candidate_by_name(candidates: dict[int, dict], name: str) -> dict:
+    named = [candidate for candidate in candidates.values() if candidate.get("name") == name]
+    require(
+        len(named) == 1,
+        f"expected exactly one organization ruleset named {name}, found {len(named)}",
+    )
+    return named[0]
+
+
 def unpinned_live_fields(contract: dict, live: dict, candidates: dict[int, dict], state: str) -> list[str]:
     """Report, per contracted ruleset, the live fields no reviewed image pins.
 
@@ -614,18 +632,26 @@ def unpinned_live_fields(contract: dict, live: dict, candidates: dict[int, dict]
     to the comparison. Identity, provenance, and timestamps are not candidates.
     """
     matched = contract["preimage" if state == "ready" else "postimage"]
-    surfaces = [(matched["name"], candidates.get(contract["ruleset_id"], live), matched)]
+    # Never fall back to `live`: it is normalized, so it carries no top-level
+    # key outside RULESET_FIELDS and its residual is empty by construction. A
+    # contracted ruleset absent from the listing would then report as pinning
+    # everything, precisely when it could not be read -- the silence ADR 0188
+    # rules out. An unreadable surface is a failure, not an empty one.
+    surfaces = [(matched["name"], candidate_by_id(candidates, contract["ruleset_id"]), matched)]
     if state != "ready":
         surfaces.append((
             contract["arm_ruleset_name"],
-            next(
-                candidate for candidate in candidates.values()
-                if candidate.get("name") == contract["arm_ruleset_name"]
-            ),
+            candidate_by_name(candidates, contract["arm_ruleset_name"]),
             contract["arm_ruleset"],
         ))
     for declaration in contract["deterministic_rulesets"]:
-        surfaces.append((declaration["image"]["name"], candidates[declaration["id"]], declaration["image"]))
+        surfaces.append((
+            declaration["image"]["name"],
+            candidate_by_id(candidates, declaration["id"]),
+            declaration["image"],
+        ))
+    # Sorted so the review diff this feeds is stable between runs: an unordered
+    # list would show every field as moved whenever one is added.
     return sorted(
         f"{label}.{field}"
         for label, ruleset, image in surfaces
