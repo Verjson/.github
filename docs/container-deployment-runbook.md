@@ -197,6 +197,10 @@ still explicitly rejects `host-export` before acquiring any credential, because 
 pinned CLI inventory command mutates host transaction locks and neither it nor the
 current attester supplies the complete read-only evidence contract. Do not
 call mutating inventory in dry-run or fabricate missing health, drain, release
-identity or capacity facts. Once the export is released, adopt its exact dependency,
-wire the parent broker into the controller's full requests and retained state, and
-regenerate the consumer. Until then #1281, runner#197 and #629 remain open.
+identity or capacity facts. The exact dependency is no longer pending:
+`@verjson/cli-cloud@1.0.0` is pinned in `contracts/container-deployment-cli/`, so the
+export API is installed and available here. What is still to do is wiring the parent
+broker into the controller's full requests and retained state and regenerating the
+consumer, tracked by
+[#1451](https://github.com/Verjson/.github/issues/1451). Until that lands #1281,
+runner#197 and #629 remain open.
