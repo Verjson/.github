@@ -512,9 +512,11 @@ jobs:
           }
           compare_attempts=3
           behind=""
-          for attempt in 1 2 3; do
+          attempt=0
+          while [ "$attempt" -lt "$compare_attempts" ]; do
             behind="$(compare_behind)" && break
             behind=""
+            attempt=$((attempt + 1))
           done
           if [ -z "$behind" ]; then
             out proceed false
