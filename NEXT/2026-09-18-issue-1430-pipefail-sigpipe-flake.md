@@ -37,3 +37,23 @@ builtin `printf` instead, it reports `1`. Both were observed — `141` locally, 
 hosted runner. `1` is the worse of the two, being indistinguishable from an honest "pattern
 not found", and pinning `141` would have made this guard fail on exactly the platform whose
 behavior it describes.
+
+Review hardening: the guard matched one spelling of the hazard, one line at a
+time, so a planted file carrying four genuinely offending shapes was enumerated
+and reported clean. The worst miss is trailing-pipe continuation — `producer |`
+on one line with `grep -q` on the next — which is this repository's dominant
+style at 62 lines across 13 scripts, so the guard would have missed real
+regressions in precisely the shape most likely to produce them.
+
+Continuations are now joined before matching, and the pattern covers any
+early-exiting grep on the read end of a pipe: separated flags (`grep -E -q`),
+the long option (`grep --quiet`), `egrep`/`fgrep`, and command or environment
+prefixes such as `LC_ALL=C grep -q`, `command grep -q`, and `timeout 5 grep -q`.
+The pathspec widened from `scripts/` to every tracked `*.sh`, which brings the
+composite-action shell under `.github/actions/` into scope.
+
+Each shape is asserted individually through the same `scan_file` path the tree
+scan uses rather than against the raw pattern — the continuation case is
+invisible without the joiner, so testing the pattern alone would have proved
+nothing — and the safe forms (a file argument, a here-string, and the redirect
+this fix applied 39 times) are asserted not to trip it.

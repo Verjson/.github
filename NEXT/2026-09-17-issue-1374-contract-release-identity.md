@@ -27,7 +27,16 @@ file, and a caller vendored under a tracked `node_modules` are all references,
 and a tracked file that cannot be read, decoded, or sized within the scan limit
 is reported as `UNSCANNED` rather than skipped. A file whose first 8000 bytes
 hold a NUL is binary at any size, and a declared UTF-16 BOM is decoded rather
-than mistaken for one. The releases document is validated at load — one commit per
+than mistaken for one -- while UTF-16 *without* a BOM, which the binary
+heuristic used to drop as neither finding nor gap, is `UNSCANNED` too, because
+an undeclared encoding is a guess rather than a claim. Submodule content is out
+of scope, since `actions/checkout` does not fetch it by default and a `160000`
+index entry is otherwise an unclearable gap; a sparse checkout's absent
+skip-worktree paths keep their refusal and now name sparse checkout as the
+cause. A tree with no work tree at all -- a bare repository, or a `.git`
+directory handed in as the root -- is refused rather than reported as a scan
+that found nothing, and gaps survive the no-declaration early return instead of
+passing clean. The releases document is validated at load — one commit per
 version, 40-hex object ids, `YYYY-MM-DD` dates — so an ambiguous or
 `target_commitish`-derived list exits 2 instead of producing a verdict from it,
 and `--today` defaults to the UTC date rather than the runner's local one.
