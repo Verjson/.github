@@ -27,7 +27,7 @@ guard="$(awk '
   $0 == "        id: db-service" { seen = 1 }
   seen && $0 ~ /^        if:/ { print; exit }
 ' "$wf")"
-printf '%s' "$guard" | grep -qF "inputs.db-image != ''" \
+printf '%s' "$guard" | grep -F "inputs.db-image != ''" >/dev/null \
   && pass "DB step is guarded by inputs.db-image (default-off, no DB for current callers)" \
   || fail "DB step is not gated on inputs.db-image (would force a DB on every caller)"
 
@@ -623,9 +623,9 @@ teardown_body="$(awk '
   seen && $0 ~ /docker rm -f/ { print }
   seen && $0 ~ /^      - name:/ && $0 != "      - name: Stop database service" { exit }
 ' "$wf")"
-{ printf '%s' "$teardown_if" | grep -qF 'always()' \
-    && printf '%s' "$teardown_if" | grep -qF "inputs.db-image" \
-    && printf '%s' "$teardown_body" | grep -qF 'docker rm -f'; } \
+{ printf '%s' "$teardown_if" | grep -F 'always()' >/dev/null \
+    && printf '%s' "$teardown_if" | grep -F "inputs.db-image" >/dev/null \
+    && printf '%s' "$teardown_body" | grep -F 'docker rm -f' >/dev/null; } \
   && pass "teardown if: combines always() with the inputs.db-image guard and removes the container" \
   || fail "teardown must gate always() on inputs.db-image on the same if: line (else it runs unconditionally)"
 

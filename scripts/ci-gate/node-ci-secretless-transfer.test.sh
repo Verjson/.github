@@ -456,8 +456,8 @@ if (cd "$tmp/acquire" && PATH="$tmp/bin:$PATH" NPM_STUB_LOG="$tmp/npm.log" \
     && [ ! -d "$tmp/acquire/node_modules" ] \
     && grep -qFx 'run_id=7001' "$tmp/acquire/transfer/manifest" \
     && grep -qFx 'run_attempt=3' "$tmp/acquire/transfer/manifest" \
-    && tar -tf "$tmp/acquire/transfer/npm-private-cache.tar" | grep -q '^_cacache/content-v2/' \
-    && ! tar -tf "$tmp/acquire/transfer/npm-private-cache.tar" | grep -q 'index-v5'; then
+    && tar -tf "$tmp/acquire/transfer/npm-private-cache.tar" | grep '^_cacache/content-v2/' >/dev/null \
+    && ! tar -tf "$tmp/acquire/transfer/npm-private-cache.tar" | grep 'index-v5' >/dev/null; then
   pass "packaging transfers only private content blobs and binds run, attempt, lock, digest, and size"
 else
   fail "packaging did not produce the bounded identity-bound cache transfer"

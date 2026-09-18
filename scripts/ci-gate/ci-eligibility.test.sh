@@ -190,7 +190,7 @@ awk '
   $0 == "  eligibility:" { cap = 1; next }
   cap && /^  [a-z]/ { exit }   # next top-level job ends the block
   cap { print }
-' "$nodeci" | grep -qE '^      statuses: read' \
+' "$nodeci" | grep -E '^      statuses: read' >/dev/null \
   && pass "eligibility job requests statuses: read" \
   || fail "eligibility job lacks statuses: read — status lookup would 403 and never defer"
 
@@ -207,14 +207,14 @@ grep -qF '#         statuses: read          # REQUIRED:' "$nodeci" \
 # (k) Prevent the original false contract from returning in node-ci or its
 # controlling ADR: omission must never be described as a fail-open path.
 false_contract_re='(omit(ted|s|ting)|absent|withheld)[^.;]{0,160}(check[[:space:]]+)?fails?[[:space:]]+open'
-if cat "$nodeci" "$adr" | tr '\n' ' ' | grep -qiE "$false_contract_re"; then
+if cat "$nodeci" "$adr" | tr '\n' ' ' | grep -iE "$false_contract_re" >/dev/null; then
   fail "node-ci documentation again claims an omitted caller permission fails open"
 else
   pass "node-ci documentation does not claim omitted caller permissions fail open"
 fi
 
 old_contract='Where it is absent the read is denied, the check fails open.'
-if printf '%s\n' "$old_contract" | grep -qiE "$false_contract_re"; then
+if printf '%s\n' "$old_contract" | grep -iE "$false_contract_re" >/dev/null; then
   pass "regression guard rejects the exact removed ADR fail-open sentence"
 else
   fail "regression guard misses the exact removed ADR fail-open sentence"

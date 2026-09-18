@@ -624,7 +624,7 @@ for boolean in adr-index changelog; do
     $0 == want { seen = 1; next }
     seen && /^      [a-z]/ { exit }
     seen { print }
-  ' "$wf" | grep -q '^        type: boolean$' \
+  ' "$wf" | grep '^        type: boolean$' >/dev/null \
     && pass "$boolean is typed boolean, so it cannot carry a command" \
     || fail "$boolean is not declared as a boolean input"
 done
@@ -675,7 +675,7 @@ shared_preview="$repo_root/scripts/changelog-preview.sh"
   && pass "the shared preview script renders the released form exactly once" \
   || fail "the shared preview script does not render the released form exactly once"
 
-grep -E 'preview_rc' "$validate" | grep -qE 'changelog_ok|failures|report ' \
+grep -E 'preview_rc' "$validate" | grep -E 'changelog_ok|failures|report ' >/dev/null \
   && fail "the preview's exit status feeds the changelog verdict" \
   || pass "no verdict is derived from the preview — renderability is still established by validate alone"
 

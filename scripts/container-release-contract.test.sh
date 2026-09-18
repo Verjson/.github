@@ -100,7 +100,7 @@ grep -Fqx "      reconcile-allowlist: '[\"Dockerfile\",\"deploy/values.yaml\"]'"
   "$tmp/adopter/.github/workflows/container-release.yml" \
   || { echo "configured caller does not bake in the reviewed allowlist" >&2; exit 1; }
 grep -q 'workflow_dispatch' "$tmp/adopter/.github/workflows/container-release.yml"
-if grep -A6 '^    inputs:$' "$tmp/adopter/.github/workflows/container-release.yml" | grep -q 'reconcile'; then
+if grep -A6 '^    inputs:$' "$tmp/adopter/.github/workflows/container-release.yml" | grep 'reconcile' >/dev/null; then
   echo "reconciliation allowlist is dispatch-controlled" >&2; exit 1
 fi
 "$generator" validator "$ref" >"$tmp/adopter/scripts/container_release_promotion.py"
@@ -188,7 +188,7 @@ try:
 except AssertionError as error:
     assert "sole non-provenance" in str(error)
 PY
-grep -A8 '^  retention:$' "$workflow" | grep -qx '    timeout-minutes: 30'
+grep -A8 '^  retention:$' "$workflow" | grep -x '    timeout-minutes: 30' >/dev/null
 assert_python3_extractor() {
   local candidate=$1
   [ "$(grep -cE '^          python3 scripts/container_artifact_extract\.py candidate\.zip candidate\.json$' "$candidate")" -eq 1 ] &&

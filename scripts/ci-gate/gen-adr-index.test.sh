@@ -49,7 +49,7 @@ gen "$d" --check && pass "--check passes when the table is current" || fail "--c
 # padded number prefix dominates the sort today, so this guards the invariant
 # rather than reproducing a break: it is what stops a later numbering or slug
 # change from making `--check` pass on one machine and fail on another (#1214).
-if locale -a 2>/dev/null | grep -qix 'en_US.utf8'; then
+if locale -a 2>/dev/null | grep -ix 'en_US.utf8' >/dev/null; then
   utf8_index="$(LC_ALL=en_US.UTF-8 bash "$d/scripts/gen-adr-index.sh" --check >/dev/null 2>&1; echo $?)"
   [ "$utf8_index" = 0 ] \
     && pass "the generated index is current under a UTF-8 collation too" \
