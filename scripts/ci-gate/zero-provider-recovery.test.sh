@@ -238,9 +238,19 @@ polls_file="$tmp/polls"
 : >"$polls_file"
 REVIEW_RUN_ATTEMPT=1 CORRELATED_POLLS="$polls_file" CORRELATED_RUN_APPEARS_AFTER=1 \
   expect_pass "a run that appears on a later poll is admitted" verify
-[ "$(cat "$polls_file")" -ge 2 ] \
-  && pass "the absent listing is re-polled rather than refused on the first look" \
-  || fail "the absent listing was not re-polled (polls=$(cat "$polls_file"))"
+[ "$(cat "$polls_file")" -eq 2 ] \
+  && pass "the absent listing is re-polled, and stops as soon as the run appears" \
+  || fail "the absent listing was not re-polled exactly twice (polls=$(cat "$polls_file"))"
+
+# The retry must also be BOUNDED. `-ge 2` above pins only the floor, so a raised
+# or unbounded ceiling would slip through it; assert the exact maximum here.
+: >"$polls_file"
+REVIEW_RUN_ATTEMPT=1 MISSING_CORRELATED_RUN=true CORRELATED_POLLS="$polls_file" \
+  expect_fail "a permanently absent run is refused after a bounded number of polls" \
+  "has not appeared in the workflow run listing" verify
+[ "$(cat "$polls_file")" -eq 5 ] \
+  && pass "a permanently absent listing is polled exactly 5 times, then refused" \
+  || fail "absent-listing poll count is not exactly 5 (polls=$(cat "$polls_file"))"
 
 # A duplicate is NOT eventually consistent — retrying it would only widen the
 # window in which a second dispatch could be accepted as the trusted one, so it

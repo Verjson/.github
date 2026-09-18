@@ -94,6 +94,13 @@ if [ "$REVIEW_RUN_ATTEMPT" -eq 1 ]; then
   # the window in which a second dispatch could be accepted as the trusted one,
   # so it is refused on the first look. Neither assertion is relaxed — more than
   # one match and a non-1 run_attempt both still fail closed.
+  #
+  # Read "absent" precisely: the retry tolerates an empty *result* inside a
+  # successful, parseable listing. It does not tolerate an absent answer. A
+  # failed listing request returns 1 from api() and `set -e` aborts the script
+  # before this loop can re-ask, so a transient fetch failure fails closed
+  # immediately rather than being retried. That is the #1476 boundary applied
+  # here: an absence within an answer may be retried, an absent answer may not.
   select_matching='[.[].workflow_runs[] | select(
       .display_title == $title and .event == "workflow_dispatch" and
       .path == ".github/workflows/ai-review-merge.yml" and .head_branch == $branch and
@@ -101,13 +108,15 @@ if [ "$REVIEW_RUN_ATTEMPT" -eq 1 ]; then
     )]'
   runlist_attempts=5
   matching_count=0
-  for poll in $(seq 1 "$runlist_attempts"); do
+  poll=1
+  while [ "$poll" -le "$runlist_attempts" ]; do
     api correlated-runs "$tmp/correlated-runs.json" --paginate --slurp \
       "repos/$TARGET_REPO/actions/workflows/ai-review-merge.yml/runs?event=workflow_dispatch&per_page=100"
     matching_count="$(jq --arg title "$expected_title" --arg branch "$DEFAULT_BRANCH" \
       --arg repo "$TARGET_REPO" "$select_matching | length" "$tmp/correlated-runs.json")"
     [ "$matching_count" -eq 0 ] || break
     [ "$poll" -eq "$runlist_attempts" ] || sleep 3
+    poll=$((poll + 1))
   done
 
   if [ "$matching_count" -eq 0 ]; then
