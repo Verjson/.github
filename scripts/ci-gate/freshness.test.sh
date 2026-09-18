@@ -29,7 +29,12 @@ awk '
   cap {
     if (substr($0, 1, 10) == "          ") { print substr($0, 11); next }
     if ($0 ~ /^[ \t]*$/) { print ""; next }
-    cap = 0
+    # Stop at the first dedented line. `seen` latches, so merely clearing `cap`
+    # here let every LATER `run: |` block in the workflow re-arm capture and
+    # append itself — the extracted "freshness step" was every run block in the
+    # workflow concatenated, so an exit status asserted here could belong to
+    # unrelated trailing code rather than to freshness.
+    exit
   }
 ' "$wf" >"$script"
 if ! grep -q 'update-branch' "$script" || ! grep -q 'behind_by' "$script"; then
@@ -54,7 +59,22 @@ fi
 [ "$1" = "pr" ] && [ "$2" = "comment" ] && { echo COMMENT >>"$ACTIONLOG"; exit 0; }
 if [ "$1" = "api" ]; then
   case "$*" in
-    *compare*) echo "${BEHIND_BY:-0}"; exit 0 ;;
+    *compare*)
+      echo COMPARE >>"$ACTIONLOG"
+      # COMPARE_MODE drives the indeterminate shapes #1476 is about. `ok` is a
+      # genuine answer; the rest must stay distinguishable from `behind=0`.
+      # `recovers` fails COMPARE_FAILURES times, then answers — so a test can
+      # tell a real bounded retry from a blanket swallow.
+      case "${COMPARE_MODE:-ok}" in
+        error) exit 1 ;;
+        empty) exit 0 ;;
+        unparseable) echo "<!DOCTYPE html>"; exit 0 ;;
+        recovers)
+          n=$(grep -c COMPARE "$ACTIONLOG")
+          [ "$n" -le "${COMPARE_FAILURES:-2}" ] && exit 1
+          echo "${BEHIND_BY:-0}"; exit 0 ;;
+        *) echo "${BEHIND_BY:-0}"; exit 0 ;;
+      esac ;;
     *update-branch*) echo UPDATE >>"$ACTIONLOG"; exit "${UPDATE_RC:-0}" ;;
   esac
 fi
@@ -121,10 +141,49 @@ BEHIND_BY=0 run_case "$H" >/dev/null
 export PRVIEW_FAIL=1
 rc=$(run_case "$H")
 unset PRVIEW_FAIL
-{ [ "$rc" = "rc=0" ] && out_has 'proceed=true'; } && pass "read failure fails open (proceed=true)" || fail "read failure did not fail open ($rc)"
+# Verjson/.github#1496 — an unreadable PR metadata read is indeterminate, not
+# permissive. This used to emit a ::warning:: and proceed=true, skipping the
+# freshness evaluation entirely. That mattered more than it looks: this read
+# sits EARLIER in the step than the compare guard below, so a correlated
+# outage tripped it first and the compare guard was never reached — the guard
+# #1476 added was unreachable on exactly the total-outage path it exists for.
+{ [ "$rc" = "rc=1" ] && out_has 'proceed=false' && ! out_has 'proceed=true'; } \
+  && pass "unreadable PR metadata holds (proceed=false, exit 1)" \
+  || fail "unreadable PR metadata did not hold ($rc)"
 
-BEHIND_BY=null run_case "$H" >/dev/null
-{ out_has 'proceed=true' && ! act_has UPDATE; } && pass "non-numeric behind_by treated as 0" || fail "non-numeric behind_by mishandled"
+# Verjson/.github#1476 — an indeterminate compare answer must never decode to a
+# genuine `behind=0`. Each shape below reached `proceed=true` before this fix:
+# the request failing, an empty body, and an unparseable body all collapsed
+# through `|| echo 0` / `|| behind=0` into "not behind", so the gate merged on a
+# review taken against a possibly stale base. These assert the fail-CLOSED
+# direction: no proceed=true, no merge, and a nonzero exit the human can see.
+for mode in error empty unparseable; do
+  rc=$(COMPARE_MODE="$mode" run_case "$H")
+  { [ "$rc" = "rc=1" ] && ! out_has 'proceed=true' && ! act_has UPDATE; } \
+    && pass "indeterminate compare ($mode) holds instead of reading as behind=0" \
+    || fail "indeterminate compare ($mode) did not hold ($rc)"
+done
+
+# The hold is reached only after a bounded retry, so a single transient blip
+# does not wedge the gate: two failures then a genuine 0 still proceeds.
+COMPARE_MODE=recovers COMPARE_FAILURES=2 BEHIND_BY=0 run_case "$H" >/dev/null
+{ out_has 'proceed=true' && ! act_has UPDATE; } \
+  && pass "transient compare blip recovers on retry, then proceeds" \
+  || fail "bounded retry did not recover a transient compare blip"
+
+# ...and the retry is genuinely re-asking AND genuinely bounded. Assert the
+# exact attempt count in both directions: `-gt 1` would be satisfied by an
+# unbounded loop, so it pins only the floor and a raised ceiling slips through.
+COMPARE_MODE=error run_case "$H" >/dev/null
+[ "$(grep -c COMPARE "$tmp/act.log")" -eq 3 ] \
+  && pass "an unanswerable compare is asked exactly 3 times, then holds" \
+  || fail "compare attempt count is not exactly 3 ($(grep -c COMPARE "$tmp/act.log"))"
+
+# A recovered blip must stop asking the moment it gets an answer.
+COMPARE_MODE=recovers COMPARE_FAILURES=1 BEHIND_BY=0 run_case "$H" >/dev/null
+[ "$(grep -c COMPARE "$tmp/act.log")" -eq 2 ] \
+  && pass "the retry stops as soon as the compare answers" \
+  || fail "retry did not stop on the first answer ($(grep -c COMPARE "$tmp/act.log"))"
 
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."
