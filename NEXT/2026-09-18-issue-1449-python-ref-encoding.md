@@ -34,3 +34,11 @@ Bringing the newly covered callers into compliance:
 
 All of these were already safe in practice; none changes an emitted URL for the values
 they receive today. The change is that the invariant, not a reader, is what says so.
+
+The independent review narrowed one claim rather than adding behavior. The file's header
+said the allowlist covers *every* ref interpolation; it covers the ones the scan can
+recognize — f-string and `str.format` brace interpolation, `$VAR` in shell — anchored on
+two URL shapes. Concatenation, `%`-formatting, and a ref-bearing path the anchor list does
+not name are invisible to it, and a measured example is green today. The header now says
+so and points at #1464, because an overclaimed guarantee is the sentence the next reader
+relies on instead of looking.

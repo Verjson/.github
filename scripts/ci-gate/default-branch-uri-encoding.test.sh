@@ -21,9 +21,18 @@
 # This test asserts three independent things:
 #   1. behavior  — the two extractable gate-rearm blocks really encode what they read;
 #   2. semantics — every encoder expression in the repository maps the fixtures correctly;
-#   3. coverage  — an allowlist over EVERY ref interpolation in workflows and non-test
-#      shell and Python scripts, so a new unencoded site fails here instead of merely being
-#      spelled differently from a denylist pattern.
+#   3. coverage  — an allowlist over the ref interpolations it can RECOGNIZE in workflows
+#      and non-test shell and Python scripts, so a new unencoded site fails here instead of
+#      merely being spelled differently from a denylist pattern.
+#
+# Read that third one narrowly. The scan is anchored on syntax: f-string and `str.format`
+# brace interpolation in Python, `$VAR` interpolation in shell. The same URL built by
+# concatenation (`"...?ref=" + branch`), by `%`-formatting, or across two statements is
+# invisible to it, and so is a ref-bearing URL shape the anchor list does not name. Those
+# are limits of the recognizer, not sites judged safe. Widening both is tracked in #1464,
+# which carries a measured example: flipping a real path-segment encoder to the query form
+# leaves this check green today. Do not read a green run here as "every ref interpolation
+# in this repository is encoded correctly".
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"

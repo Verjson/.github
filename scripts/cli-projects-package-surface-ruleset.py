@@ -316,7 +316,7 @@ def list_named_rulesets(contract):
 def verify_canonical_bytes(contract, workflow_sha):
     # Restated locally because this function is what puts the value in a URL: a caller's
     # guard cannot vouch for a read made here.
-    require(SHA_PATTERN.fullmatch(workflow_sha), "workflow SHA is invalid")
+    require(SHA_PATTERN.fullmatch(workflow_sha) is not None, "workflow SHA is invalid")
     comparison = gh_json(f"repos/Verjson/.github/compare/{workflow_sha}...main")
     require(comparison.get("status") in ("ahead", "identical"),
             "workflow SHA is not reachable from protected main")
