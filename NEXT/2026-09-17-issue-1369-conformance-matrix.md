@@ -89,3 +89,48 @@ success on a lane that declined to do the work.
 
 Requirements 2 and 3 of #1369 (PR #1399), consolidated into this entry because
 `NEXT/` holds one fragment per identity; requirement 5 remains follow-up work.
+
+## The generated adopter set moves as one commit
+
+Requirement 5 (PR for #1369). The set `scripts/gen-changelog-caller.sh` emits —
+the changelog caller, the PR gate, the renderer, the emitted contract test, the
+release caller, the release proposer, the split generated-artifacts caller and
+the ADR index test — is one artifact spread across several files, all pinned to
+one contract commit. "A partial regeneration is the divergence the generator
+exists to prevent" was, until now, prose in the generated headers. Prose does
+not redden. The only machine-checked expression of it was an org Renovate
+grouping rule, which bumps *action digests* together and says nothing when a
+human regenerates half the adopter set by hand.
+
+The emitted contract test now compares every member's declared pin against the
+commit it was itself generated at, before any per-member assertion runs, and
+reports **all** divergent members in one verdict naming each member, the commit
+it still claims, and the commit the set is pinned at. The per-member assertions
+that already existed stop at whichever divergence they reach first, so fixing a
+two-member subset regeneration used to take two round trips.
+
+Each finding carries the regeneration command for its member. That command is
+composed from a mode literal in the generator and the suite's own
+`CONTRACT_REF`; nothing in it is derived from the file being reported on.
+
+Every arm reports positive evidence. A member that is absent, unreadable, not a
+regular file, unscannable, emptied to zero bytes, carrying a pin declaration
+that no longer parses, or declaring two different pins is a finding in its own
+right — the check can no longer establish that member was generated at the pin,
+and reading that as conformance is the defect class the matrix exists to close.
+With the check removed from the generator, six of those states pass silently and
+the whole-set case reports nothing; the hub suite was run against exactly that
+mutant, and fourteen of the new cases redden against it.
+
+A member's header is adopter-controlled text on roughly ninety-five
+repositories. It is read as a **claim**, constrained to forty lowercase hex
+characters and compared as a string — never evaluated, sourced, or used to build
+what the hub executes. A fixture plants `CONTRACT_REF="$(touch …)"`, and the
+suite asserts both that it is refused and that the planted command left no
+trace. That pair was control-tested against a deliberately permissive,
+`eval`-ing variant of the checker, which does create the witness file.
+
+Optional members remain optional: a repository that never adopted Renovate
+attribution, a release proposer or the ADR index is not failed for the absent
+file. Once present, it is held to the same pin as everything else. Requirements
+1 and 4 of #1369 remain follow-up work.
