@@ -694,6 +694,19 @@ class UsesShapeCoverage(unittest.TestCase):
         self.assertEqual([f.kind for f in findings], ["UNRESOLVED_REFERENCE"])
         self.assertIn("alias.yml", findings[0].detail)
 
+    def test_a_root_action_pin_is_a_reference_not_a_gap(self):
+        # `uses: Verjson/.github@<sha>` names the repository's root action. The
+        # pin is present, immutable and readable; a pattern that requires a path
+        # segment reports it as a gap instead -- a false gap on a correct pin,
+        # which is the muting hazard ADR 0185 names (Verjson/.github#1472).
+        root = self.repo()
+        (root / ".github" / "workflows" / "root-action.yml").write_text(
+            "jobs:\n  ci:\n    steps:\n      - uses: Verjson/.github@" + "b" * 40 + "\n")
+        track(root)
+        findings = self.verify(root)
+        self.assertEqual([f.kind for f in findings], ["PIN_MISMATCH"])
+        self.assertIn("root-action.yml", findings[0].detail)
+
     def test_whitespace_before_the_uses_colon_is_a_contract_reference(self):
         # `uses : x` is legal YAML; the old pattern required `uses:` exactly.
         root = self.repo()

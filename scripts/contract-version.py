@@ -176,9 +176,16 @@ DECLARATION_KEY = "contract_version"
 # pattern keyed on the literal `uses:` reads a pin written either way as no
 # reference at all. Neither shape occurs anywhere in the fleet measured for
 # #1433, so this widens the recognizer without changing a single verdict on it.
+# The path segment is optional because `uses: Verjson/.github@<sha>` names the
+# repository's own root action, which is a reference with a perfectly readable
+# pin. Requiring the segment reported it as a gap reading "no path@ref this scan
+# can read" -- a false gap on a correct, immutable pin, which is the direction of
+# error ADR 0185 calls muting. The leading `/` stays inside the optional group,
+# so `Verjson/.github-mirror@<sha>` still matches nothing: the character after
+# the hub name is either `/` or `@`, never arbitrary text.
 USES_RE = re.compile(
-    r"(?:uses|\"uses\"|'uses')\s*:\s*[\"']?Verjson/\.github/"
-    r"(?P<path>[^@\s\"']+)@(?P<ref>[^\s\"']+)",
+    r"(?:uses|\"uses\"|'uses')\s*:\s*[\"']?Verjson/\.github"
+    r"(?:/(?P<path>[^@\s\"']+))?@(?P<ref>[^\s\"']+)",
     re.IGNORECASE)
 # The trailing boundary keeps a hex run longer than 40 characters from being
 # truncated into a contract SHA: without it, `[0-9a-f]{40}` matches the first 40
