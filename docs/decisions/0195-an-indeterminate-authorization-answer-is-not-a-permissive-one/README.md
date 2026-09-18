@@ -63,7 +63,7 @@ It is named here so this ADR is not read as certifying it. Concretely:
 3. **Persistent indeterminacy holds, loudly.** After the retries, the freshness step emits
    `::error::` naming the condition and exits 1. It does not emit `proceed=true`, and it
    does not stall silently. This covers both ways the step can end up unable to answer:
-   an unreadable PR metadata read (`:401-409`) and an unanswerable compare (`:494-509`).
+   an unreadable PR metadata read (`:407-411`) and an unanswerable compare (`:507-523`).
    Neither writes `proceed=true`; both exit non-zero. The metadata read matters
    disproportionately because it runs first — while it failed open, a total outage never
    reached the compare guard at all, so that guard was unreachable on the one path it was
@@ -96,7 +96,7 @@ This step runs on every PR in every repository the merge gate reaches, so the ch
 fleet-wide. During a sustained GitHub API outage the merge gate will red rather than
 merge, across the fleet, until the API recovers. That holds for a `compare`-only outage
 and for a correlated one that also breaks the PR metadata read: the metadata read now
-holds instead of proceeding, so the correlated case reds at `:401-409` rather than
+holds instead of proceeding, so the correlated case reds at `:407-411` rather than
 sliding past the compare guard. An earlier draft of this ADR claimed the fleet-wide red
 while the metadata read still failed open, which made it true only for the narrower
 `compare`-only outage; folding #1496 into this change is what made the sentence true.
