@@ -188,7 +188,9 @@ head_for_repo() { # $1 = repo, optional RCA_HEADS_FILE = repo<TAB>branch<TAB>sha
 generated_contract_identity_for_repo() ( # $1 = repo, $2 = audited head or empty
   local repo="$1" head="$2" ref_query='' tmp mode pin params scope node package_dir
   local canonical_branch encoded_branch canonical_head ancestry
-  [ -z "$head" ] || ref_query="?ref=$head"
+  # The audited head is a 40-hex commit SHA; re-assert that where it builds a query string,
+  # so no future caller can route arbitrary text into one.
+  [ -z "$head" ] || { [[ "$head" =~ ^[0-9a-f]{40}$ ]] || return 2; ref_query="?ref=$head"; }
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' EXIT
   mkdir -p "$tmp/actual" "$tmp/expected"
@@ -346,7 +348,9 @@ source_contract_for_repo() { # $1 = repo, $2 = stack
   if [ -n "${RCA_HEADS_FILE:-}" ]; then
     head="$(head_for_repo "$repo")" || return 2
   fi
-  [ -z "$head" ] || ref_query="?ref=$head"
+  # The audited head is a 40-hex commit SHA; re-assert that where it builds a query string,
+  # so no future caller can route arbitrary text into one.
+  [ -z "$head" ] || { [[ "$head" =~ ^[0-9a-f]{40}$ ]] || return 2; ref_query="?ref=$head"; }
   stack_workflow="$(stack_workflow_for "$stack")" || return 2
   expected_stack_job="$(jq -r '.caller_job_names.stack' "$CONTRACT_FILE")"
   expected_changelog_job="$(jq -r '.caller_job_names.changelog' "$CONTRACT_FILE")"

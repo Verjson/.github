@@ -92,6 +92,9 @@ else
       "repos/$TARGET_REPO" --jq '.default_branch // ""' || exit 1
     default_branch="$(<"$tmp/default-branch")"
     [[ "$default_branch" =~ ^[A-Za-z0-9._/-]+$ ]] || exit 1
+    # Encode at the value, not only at the guard: this reaches a query VALUE dozens of lines
+    # below, where "/" stays literal, so relaxing the guard must not re-arm that read.
+    branch_ref="$(jq -rn --arg branch "$default_branch" '$branch | @uri | gsub("%2F"; "/")')"
   fi
 fi
 
@@ -135,7 +138,7 @@ elif [ "$receipt_schema" = 2 ]; then
   receipt_workflow_sha="$(jq -r '.workflow_sha // ""' "$tmp/receipt.json")"
   [[ "$receipt_workflow_sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
   workflow_api caller-at-protected-ref "$tmp/caller-protected-blob" \
-    "repos/$TARGET_REPO/contents/.github/workflows/ai-review-label-rearm.yml?ref=$default_branch" --jq '.sha // ""' || exit 1
+    "repos/$TARGET_REPO/contents/.github/workflows/ai-review-label-rearm.yml?ref=$branch_ref" --jq '.sha // ""' || exit 1
   workflow_api caller-at-receipt-sha "$tmp/caller-receipt-blob" \
     "repos/$TARGET_REPO/contents/.github/workflows/ai-review-label-rearm.yml?ref=$receipt_workflow_sha" --jq '.sha // ""' || exit 1
   protected_caller_blob="$(<"$tmp/caller-protected-blob")"

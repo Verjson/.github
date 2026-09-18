@@ -213,7 +213,9 @@ while IFS= read -r repository; do
   fi
 
   direct_consumer=false
-  content_ref="$default_branch"
+  # $default_branch is adopter-controlled text reaching a query VALUE below, where the API
+  # wants "/" literal; percent-encode everything else.
+  content_ref="$(jq -rn --arg branch "$default_branch" '$branch | @uri | gsub("%2F"; "/")')"
   if [ "$repository" = "$CANONICAL_REPOSITORY" ]; then
     direct_consumer=true
     content_ref="$AUDIT_SHA"
@@ -309,6 +311,11 @@ while IFS= read -r repository; do
       failures=$((failures + 1))
     else
       caller_contract_sha="${caller_pins[0]}"
+      [[ "$caller_contract_sha" =~ ^[0-9a-f]{40}$ ]] || {
+        echo "::error title=Invalid privileged merge caller pin::repository=$repository reason='pin is not a 40-hex commit SHA'"
+        failures=$((failures + 1))
+        continue
+      }
       relation="$(gh api "repos/$CANONICAL_REPOSITORY/compare/$caller_contract_sha...main" --jq .status)" || {
         echo "::error title=Untrusted privileged merge caller pin::repository=$repository contract_sha=$caller_contract_sha reason='pin is absent from canonical main history'"
         failures=$((failures + 1))

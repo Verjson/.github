@@ -22,7 +22,10 @@ jq -e --arg head "$EXPECTED_HEAD_SHA" --arg base "$AUTHORIZED_BASE_SHA" \
   exit 1
 }
 
-current_base_sha="$(gh api "repos/$TARGET_REPO/git/ref/heads/$DEFAULT_BRANCH" \
+# PATH segment, not a query value: encode with @uri alone. Restoring "/" here would let a
+# branch name re-address the endpoint, so the gsub used for query values is absent.
+branch_path="$(jq -rn --arg branch "$DEFAULT_BRANCH" '$branch | @uri')"
+current_base_sha="$(gh api "repos/$TARGET_REPO/git/ref/heads/$branch_path" \
   --jq 'select(.object.type == "commit") | .object.sha // ""')"
 [[ "$current_base_sha" =~ ^[0-9a-f]{40}$ ]] && [ "$current_base_sha" = "$AUTHORIZED_BASE_SHA" ] || {
   echo "::error::terminal merge rejected a moved or malformed default-branch ref"

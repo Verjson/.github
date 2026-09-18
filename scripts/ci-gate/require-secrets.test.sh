@@ -57,7 +57,8 @@ contract_errors() {
     && [ "$(grep -cE '^[[:space:]]+(bash |gh )' <<<"$merge_step")" -eq 1 ] \
     && [ "$(grep -c 'gh ' "$terminal_helper")" -eq 3 ] \
     && grep -qF 'repos/$TARGET_REPO/pulls/$PR_NUMBER' "$terminal_helper" \
-    && grep -qF 'repos/$TARGET_REPO/git/ref/heads/$DEFAULT_BRANCH' "$terminal_helper" \
+    && grep -qF 'branch_path="$(jq -rn --arg branch "$DEFAULT_BRANCH"' "$terminal_helper" \
+    && grep -qF 'repos/$TARGET_REPO/git/ref/heads/$branch_path' "$terminal_helper" \
     && grep -qF 'gh pr merge "$PR_NUMBER"' "$terminal_helper" \
     || printf '%s\n' 'merge App token is not confined to exact-target live-base reads and terminal merge'
 
