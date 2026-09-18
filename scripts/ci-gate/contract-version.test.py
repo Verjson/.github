@@ -746,13 +746,18 @@ class UsesShapeCoverage(unittest.TestCase):
 
     def test_a_key_merely_ending_in_uses_is_not_a_reference(self):
         # The cost of making the path segment optional: `uses` is a substring of
-        # `statuses`, and `USES_RE` is unanchored, so the pathless form can be
-        # read out of a key that is not `uses:` at all. Scoping the case flag off
-        # the key alone does not stop this one -- `statuses` is lowercase -- so
-        # the lookbehind is what rejects it (Verjson/.github#1472).
+        # `statuses`, so an unanchored pattern reads a key that is not `uses:` at
+        # all. Scoping the case flag off the key does not stop this one --
+        # `statuses` is lowercase -- so the delimiter anchor is what rejects it:
+        # the character before the key must be the line start, a quote, a
+        # backtick, a `#`, or an escaped newline, and `t` is none of those. Both
+        # shapes are asserted, because the path form carried this hazard long
+        # before the pathless form existed (Verjson/.github#1472).
         root = self.repo()
         (root / ".github" / "workflows" / "statuses.yml").write_text(
-            "jobs:\n  ci:\n    statuses: Verjson/.github@" + "b" * 40 + "\n")
+            "jobs:\n  ci:\n    statuses: Verjson/.github@" + "b" * 40 + "\n"
+            "    statuses: Verjson/.github/.github/workflows/node-ci.yml@"
+            + "c" * 40 + "\n")
         track(root)
         self.assertEqual([f.kind for f in self.verify(root)], [])
 
@@ -765,19 +770,21 @@ class UsesShapeCoverage(unittest.TestCase):
         # documented rationale exists to prevent (Verjson/.github#1472).
         root = self.repo()
         (root / "README.md").write_text(
-            "- Uses: Verjson/.github@" + "b" * 40 + " for its CI.\n")
+            "- Uses: Verjson/.github@" + "b" * 40 + " for its CI.\n"
+            "- Uses: Verjson/.github/.github/workflows/node-ci.yml@"
+            + "c" * 40 + " for its CI.\n")
         track(root)
         self.assertEqual([f.kind for f in self.verify(root)], [])
 
     def test_lowercase_prose_reads_alike_in_both_uses_shapes(self):
-        # The residual this fix does not close, pinned rather than left silent.
-        # A lowercase `uses:` mid-sentence is indistinguishable from a key
-        # without anchoring `USES_RE` to the line start, and anchoring it drops
-        # the commented-out pin the header pass depends on -- measured at 181
-        # references lost across the 97-repo fleet. So prose is still read, in
-        # *both* shapes: the pathless form this PR adds is no worse than the
-        # path form the scan has always read, which is what #1472's criterion 5
-        # asks for. If a later change anchors the key, both halves move together.
+        # The residual this fix closes, and the symmetry it must preserve while
+        # closing it. A lowercase `uses:` mid-sentence was read as a key in the
+        # path form long before the pathless form existed; delimiter anchoring
+        # rejects it in *both*, because the character before a real key is the
+        # line start, a quote, a backtick, a `#`, or an escaped newline, and
+        # English puts a space there. The two shapes never diverge -- that is
+        # what #1472's criterion 5 asks for -- and they now agree on the
+        # stricter verdict rather than on the looser one (Verjson/.github#1472).
         root = self.repo()
         (root / "PROSE.md").write_text(
             "The repo uses: Verjson/.github@" + "b" * 40 + " today.\n"
@@ -785,6 +792,62 @@ class UsesShapeCoverage(unittest.TestCase):
             + "c" * 40 + " today.\n")
         track(root)
         self.assertEqual([f.kind for f in self.verify(root)], [])
+
+    def test_a_pin_inside_a_source_string_fixture_is_still_read(self):
+        # The `\\n` alternative in the delimiter class. Deleting it alone drops
+        # 22 of the 632 references the fleet carries -- 13 `.py`, 3 `.sh`, 3
+        # `.js`, 2 `.ts`, 1 `.mjs` -- pins written inside a source-string
+        # literal, where the key follows a two-character `\\n` escape rather
+        # than a real line break. Line anchoring drops these too, which with the
+        # quoted shape below is the actual reason `^\\s*(?:-\\s+)?` was
+        # rejected (Verjson/.github#1472).
+        root = self.repo()
+        (root / "fixture.py").write_text(
+            'EXPECTED = "jobs:\\n  ci:\\n    uses: '
+            'Verjson/.github/.github/workflows/node-ci.yml@' + "b" * 40 + '"\n')
+        track(root)
+        self.assertEqual([f.kind for f in self.verify(root)], ["PIN_MISMATCH"])
+
+    def test_a_shell_grep_assertion_quoting_a_pin_is_still_read(self):
+        # The quote alternative, which is the one the anchor most depends on:
+        # deleting it alone drops 122 of the fleet's 632 references, 105 of them
+        # `.sh` assertions that quote the pin they expect. The key here follows
+        # the opening `"` of the grep pattern,
+        # never the line start, so an anchor that only accepts the line start
+        # reports a repository with skewed assertions as carrying no reference
+        # at all (Verjson/.github#1472).
+        root = self.repo()
+        (root / "check.sh").write_text(
+            'grep -qF "uses: Verjson/.github/.github/workflows/node-ci.yml@'
+            + "b" * 40 + '" "$1"\n')
+        track(root)
+        self.assertEqual([f.kind for f in self.verify(root)], ["PIN_MISMATCH"])
+
+    def test_a_pin_inside_a_backtick_literal_is_still_read(self):
+        # The backtick alternative, which the other three do not cover and which
+        # nothing else in this suite would have killed. Deleting it alone drops
+        # 24 of the fleet's 632 references: 16 `.md` lines documenting a pin as
+        # inline code, and 8 `.ts`/`.py` template literals that build a caller
+        # fixture. A consumer test asserting a stale pin is a real skew the sweep
+        # exists to report, and the backtick opens a string in exactly the way
+        # the quote characters do.
+        #
+        # The verdict is UNPINNED_REFERENCE rather than PIN_MISMATCH, and that is
+        # asserted rather than worked around: the ref class excludes whitespace
+        # and the two quotes but *not* a backtick, so the closing backtick is
+        # absorbed into the ref and a backtick-delimited pin never compares equal
+        # to a release commit. That is the ref class's behaviour, not the
+        # anchor's -- it is identical under the pattern this PR replaces -- so it
+        # is pinned here and left to Verjson/.github#1483 rather than changed
+        # inside a key-side change (Verjson/.github#1472).
+        root = self.repo()
+        (root / "surface.test.ts").write_text(
+            "const pinnedUses = `    uses: "
+            "Verjson/.github/.github/workflows/node-ci.yml@" + "b" * 40 + "`;\n")
+        track(root)
+        findings = self.verify(root)
+        self.assertEqual([f.kind for f in findings], ["UNPINNED_REFERENCE"])
+        self.assertIn("b" * 40 + "`", findings[0].detail)
 
     def test_an_expression_ref_stops_at_its_own_closing_braces(self):
         # Discriminates lazy from greedy, which the first version of this test
