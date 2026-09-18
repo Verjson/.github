@@ -26,21 +26,38 @@ pass() { printf 'ok   - %s\n' "$1"; }
 fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 
 # (a) The mechanism itself, deterministically. A producer that matches on its
-# first line and keeps writing afterwards makes the race certain rather than
-# probable, so this pins the behavior the scan below exists to prevent — without
-# a stress loop whose own runtime would depend on runner load.
+# first line and then writes more than a pipe can hold makes the failure certain
+# rather than probable, so this pins the behavior the scan below exists to
+# prevent — without a stress loop whose runtime would depend on runner load.
 #
 # The `-q` is assembled rather than written, so the scan in (b) does not have to
 # exempt this file and thereby stop covering it.
 q='q'
-producer() { printf 'match\n'; sleep 0.3; printf 'tail\n'; }
 
+# The payload after the match is a megabyte, far past any pipe buffer, so the
+# producer MUST block until the consumer reads it. `grep -q` has already left,
+# so the write fails every time, on every scheduler. Sleeping instead would make
+# this guard's own reliability depend on runner load — the very property it
+# exists to remove from the suite.
+producer() {
+  printf 'match\n'
+  head -c $((1024 * 1024)) /dev/zero | tr '\0' 'x'
+  printf '\n'
+}
+
+# The status the hazard produces is platform-dependent and must not be pinned:
+# where the producer dies on the signal, pipefail reports 141; where bash
+# handles EPIPE in a builtin `printf` instead, the producer returns 1 and
+# pipefail reports that. Both are false verdicts, and 1 is the worse of the two
+# — it is indistinguishable from an honest "pattern not found". What the
+# assertion pins is the lie itself: a non-zero status for a pattern that is
+# genuinely present, which the next assertion proves is present.
 status=0
 ( set -o pipefail; producer | grep -"$q" '^match$' ) || status=$?
-if [ "$status" -eq 141 ]; then
-  pass "grep -${q} kills a still-writing producer with SIGPIPE, and pipefail reports 141"
+if [ "$status" -ne 0 ]; then
+  pass "grep -${q} makes a still-writing producer fail the pipeline (status $status) despite the match"
 else
-  fail "expected the grep -${q} pipeline to report 141; got $status (the hazard may have changed shape)"
+  fail "the grep -${q} pipeline reported success; the hazard has changed shape and this guard no longer describes it"
 fi
 
 status=0
