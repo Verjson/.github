@@ -29,3 +29,22 @@ than implied by its green run: the joiner models quotes but not here-document
 delimiters, so a here-doc inside a capture can merge two neighbouring sites into
 one reported record, and a literal `exit` in an `END` block still reads as an
 offender even though `END` runs only after the input is read to EOF.
+
+Review of the first revision found that reaching the program across a
+double-quoted `-v name="$value"` but not a single-quoted `-v FS='|'` was a
+coverage *regression* against the arm being replaced, which matched both. No
+tracked script was dropped by it, which is exactly why it needed a fixture
+rather than a sweep: the bridge now crosses either quoting and each spelling is
+pinned. The cost is stated rather than hidden — crossing quoted values also lets
+the arm walk past a program to a later quoted string, so
+`awk '{print}' || fail 'the job did exit early'` reads as an offender although
+nothing truncates. That is the safe direction, and it surfaces only inside the
+already-excluded generator today.
+
+An offending record is now reported at the line the match starts on rather than
+the line the record starts on. Merged records are not confined to the excluded
+generator — `complete-authorization.test.sh` buffers 129-387 and
+`actions-ci-groups.test.sh` 85-321 — and an offender planted at
+`actions-ci-groups.test.sh:201` was previously reported at `:85`, 116 lines away
+from itself. The offset map that fixes that is emitted by the joiner and read
+only for records `grep` has already kept.
