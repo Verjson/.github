@@ -353,6 +353,7 @@ changelog-release	python3 scripts/changelog.py validate --repo-root .
 changelog-release	bash scripts/changelog-fragment-schema.test.sh
 changelog-release	python3 scripts/v1-readiness-contract.test.py
 platform	bash scripts/actions-ci-python-dependencies.test.sh
+platform	bash scripts/ci-gate/hub-changelog-validate.sh
 LOAD_BEARING_COMMANDS
 }
 
@@ -362,19 +363,52 @@ else
   fail "manifest is missing, malformed, duplicated, or incompletely grouped"
 fi
 
-# A behavioral gate test that is registered nowhere does not run in Actions, and
-# nothing says so: it keeps passing locally, keeps looking like coverage in the
-# tree, and silently rots. Nine did (#1320) — the topology they extracted was
-# removed by ADR 0079/0081, and the deregistration that removed them from this
-# manifest left the files behind for a month before anyone ran them.
+# A gate that is registered nowhere does not run in Actions, and nothing says so:
+# it keeps passing locally, keeps looking like coverage in the tree, and silently
+# rots. Nine tests did (#1320) -- the topology they extracted was removed by ADR
+# 0079/0081, and the deregistration that removed them from this manifest left the
+# files behind for a month before anyone ran them.
 #
-# The exemption list is not new policy: the hosted-compatibility job above is
-# already the authoritative second execution path, and this file already asserts
-# that its three commands are absent from the manifest. This check reads the same
-# two sources, so every ci-gate test is provably reachable by exactly one of them.
+# THE RULE (#1450). Until now this check found its candidates by the `*.test.sh`
+# suffix, so `hub-changelog-validate.sh` -- a gate that is not a test -- was
+# invisible to it and had to pin its own registration from inside its test file.
+# That does not generalize: the next non-test gate added without its own pin is
+# unprotected again and nothing signals it. So the candidate set is now stated,
+# not inferred from a filename:
+#
+#   Every tracked `*.sh` or `*.py` file under `scripts/ci-gate/` is a gate script
+#   and must be reachable in Actions, UNLESS it is declared below as a library
+#   module. "Reachable in Actions" means named as a command argument in
+#   `scripts/actions-ci-groups.tsv`, or in the hosted-compatibility job's run
+#   step, or named anywhere in a tracked workflow or composite action under
+#   `.github/` -- each of which is an execution path Actions actually takes.
+#
+# Adding a file under `scripts/ci-gate/` therefore has exactly two honest
+# outcomes: register it somewhere Actions runs it, or declare it here as a
+# library with a reason. Nothing is exempt by virtue of what it is called.
+#
+# What the declaration list can and cannot do: a declaration that goes stale
+# reddens below, so the list cannot decay silently. It cannot tell a genuine
+# library from a real gate parked here to silence it -- that is not a computable
+# property. Declaring a gate here passes. Reviewing a diff to this list is the
+# control for that, which is why the list is here and not in a data file.
+#
+# The hosted-compatibility route is not new policy: that job is already the
+# authoritative second execution path, and this file already asserts that its
+# three commands are absent from the manifest.
+#
+# Deliberate residual, stated rather than papered over: this proves a gate is
+# *named* on an Actions execution path, not that the path executes. A script
+# named only by a workflow whose triggers never fire, or guarded by an `if:` that
+# is never true, still counts as reachable here -- as does one named only by a
+# `sparse-checkout:` entry or an `env:` value while its invocation is deleted,
+# since the name is matched anywhere in the workflow text and those shapes are
+# real in this tree. Reachability of workflows themselves is a separate
+# invariant and a separate check.
 if python3 - "$root" "$manifest" "$workflow" <<'PY'
 import pathlib
 import shlex
+import subprocess
 import sys
 
 import yaml
@@ -382,6 +416,41 @@ import yaml
 root = pathlib.Path(sys.argv[1])
 manifest_text = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8")
 document = yaml.safe_load(pathlib.Path(sys.argv[3]).read_text(encoding="utf-8"))
+
+# Declared library modules: imported by a ci-gate script, never invoked as a
+# command of their own, so no manifest row could run them. Each entry carries the
+# reason it is not a gate; adding one is a reviewable act, not a naming accident.
+NON_GATE_MODULES = {
+    "scripts/ci-gate/conformance/adopter.py": (
+        "adopter fixture loader imported by conformance.test.py"
+    ),
+    "scripts/ci-gate/conformance/contract_steps.py": (
+        "contract step library imported by conformance.test.py"
+    ),
+    "scripts/ci-gate/conformance/expressions.py": (
+        "expression evaluator imported by the conformance modules"
+    ),
+    "scripts/ci-gate/conformance/model.py": (
+        "workflow model imported by the conformance modules"
+    ),
+}
+
+
+def tracked(*pathspecs):
+    """The index is what Actions checks out, so enumerate it -- not the filesystem."""
+    result = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "-z", "--", *pathspecs],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise SystemExit(
+            "git ls-files failed, so the gate-script inventory could not be read: "
+            + result.stderr.strip()
+        )
+    return sorted(entry for entry in result.stdout.split("\0") if entry)
+
+
 hosted_run = next(
     (
         step["run"]
@@ -396,13 +465,15 @@ if hosted_run is None:
         "execution path cannot be read"
     )
 
-discovered = sorted(
-    path.relative_to(root).as_posix()
-    for pattern in ("scripts/ci-gate/*.test.sh", "scripts/ci-gate/*.test.py")
-    for path in root.glob(pattern)
-)
-if not discovered:
-    raise SystemExit("discovered no ci-gate tests; the glob or repository root is wrong")
+gate_scripts = [
+    path
+    for path in tracked("scripts/ci-gate")
+    if path.endswith((".sh", ".py"))
+]
+if not gate_scripts:
+    raise SystemExit(
+        "discovered no ci-gate scripts; the pathspec or repository root is wrong"
+    )
 
 
 def referenced(text):
@@ -419,31 +490,85 @@ def referenced(text):
     return seen
 
 
-reachable = referenced(manifest_text) | referenced(hosted_run)
+def workflow_source(path):
+    """A tracked path missing from the worktree is a stated failure, not a traceback."""
+    try:
+        return (root / path).read_text(encoding="utf-8")
+    except OSError as error:
+        raise SystemExit(
+            f"{path} is tracked but could not be read, so gate-script reachability "
+            f"could not be established: {error}"
+        ) from error
 
 
-def orphans(candidate_paths):
-    return [path for path in candidate_paths if path not in reachable]
+workflow_text = "\n".join(
+    workflow_source(path)
+    for path in tracked(".github/workflows", ".github/actions")
+    if path.endswith((".yml", ".yaml"))
+)
 
 
-orphaned = orphans(discovered)
+exact_commands = referenced(manifest_text) | referenced(hosted_run)
+
+
+def is_reachable(path):
+    # The manifest and the hosted step are executed verbatim, so match their
+    # command arguments exactly. A workflow may interpolate a path into a longer
+    # expression, so accept it being named anywhere in one.
+    return path in exact_commands or path in workflow_text
+
+
+def unaccounted(candidate_paths):
+    return [
+        path
+        for path in candidate_paths
+        if path not in NON_GATE_MODULES and not is_reachable(path)
+    ]
+
+
+orphaned = unaccounted(gate_scripts)
 if orphaned:
     raise SystemExit(
-        "ci-gate tests are registered in neither the actions-ci manifest nor the "
-        "hosted-compatibility job, so they never run in Actions:\n  "
+        "ci-gate scripts run nowhere in Actions -- they are named in neither the "
+        "actions-ci manifest, the hosted-compatibility job, nor any workflow, and "
+        "are not declared library modules:\n  "
         + "\n  ".join(orphaned)
     )
 
-# Negative control: an empty result must mean "nothing is orphaned", never "the
-# detector cannot see an orphan". Feed it one and require exactly that answer.
-probe = "scripts/ci-gate/never-registered-probe.test.sh"
-if orphans([*discovered, probe]) != [probe]:
-    raise SystemExit("the orphan detector does not flag a known-unregistered test")
+# A declaration that has gone stale is the same failure wearing the opposite
+# sign: it would exempt a future gate script that reused the name, or hide that a
+# module became a gate. Require every declared entry to still be a tracked,
+# unreachable module.
+for path, reason in sorted(NON_GATE_MODULES.items()):
+    if path not in gate_scripts:
+        raise SystemExit(
+            f"declared non-gate module is not a tracked ci-gate script: {path} "
+            f"({reason})"
+        )
+    if is_reachable(path):
+        raise SystemExit(
+            f"declared non-gate module is registered as a gate anyway: {path} "
+            f"({reason}) -- delete the declaration or the registration"
+        )
+
+# Negative controls: an empty result must mean "nothing runs nowhere", never "the
+# detector cannot see it". Feed it an unregistered test and an unregistered
+# non-test gate -- the #1450 case the suffix rule missed -- and require both.
+probes = [
+    "scripts/ci-gate/never-registered-probe.test.sh",
+    "scripts/ci-gate/never-registered-probe.sh",
+    "scripts/ci-gate/never-registered-probe.py",
+]
+if unaccounted([*gate_scripts, *probes]) != probes:
+    raise SystemExit(
+        "the detector does not flag every known-unregistered gate script; it must "
+        "not depend on the `.test.` suffix"
+    )
 PY
 then
-  pass "every ci-gate test runs in the actions-ci manifest or the hosted compatibility job"
+  pass "every ci-gate script runs in the actions-ci manifest, the hosted compatibility job, or a workflow"
 else
-  fail "a ci-gate test is registered nowhere and therefore never runs in Actions"
+  fail "a ci-gate script runs nowhere in Actions, or a non-gate declaration has gone stale"
 fi
 
 for command_id in schema readiness; do
