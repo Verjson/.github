@@ -106,9 +106,10 @@ Widening the class to `[^()\s|]+` therefore discarded, as an arm label, any word
 narrower pre-widening class, and a miss is #1448's own bug class.
 
 What the lead-in relies on now is stated by the pattern rather than by prose about bash: an
-arm label is the **whole** word, and its terminating `)` is **unescaped** —
-`\(?[^()\s|]*[^()\s|\\]\)$`. Anchoring to end-of-word is what recovers `x="b)"`, `x='b)'`
-and `x=${r%)}`; requiring the `)` to be unescaped is what recovers `x=b\)` too, and it is
+arm label is the **whole** word, and escapes inside it are consumed in **pairs**, so whether
+its terminating `)` is escaped is decided by parity —
+`\(?(?:[^()\s|\\]|\\.)*\)$`. Anchoring to end-of-word is what recovers `x="b)"`, `x='b)'`
+and `x=${r%)}`; consuming escape pairs is what recovers `x=b\)` too, and it is
 also what still separates `x=b\)` from the arm label `a=1)`. All four recovered forms are
 injection cases, as are both directions of the `a=1)` forge and the arm-label shapes the
 corpus already pins: `a)`, `(a)`, and a `case` nested inside an arm. The remaining shapes
@@ -121,11 +122,25 @@ segment, and `has_secret` is a name the reset must list, so that run is not vacu
 so that half starts its own segment and must strip with no `case … in` in front of it;
 that is why the lead-in strips arm labels generically rather than only after `in`.
 
-Anchoring costs one shape, recorded rather than glossed: an arm label whose own `)` is
-backslash-escaped — `case … in a\)) x=1 ;;` — is no longer stripped, so an assignment
-sharing that segment is missed. The plain end-of-word anchor misses it identically, so the
-unescaped requirement is free; it is a **miss**, the same direction as the four it recovers
-and never a forge; and it is pinned as an injection case so it cannot drift.
+Deciding escapedness by parity rather than by a single lookback costs nothing. An earlier
+revision of this fragment claimed otherwise twice — it recorded the escaped arm label
+`case … in a\)) x=1 ;;` as the unavoidable price of anchoring, and called the unescaped
+requirement "free" — and both claims are **withdrawn**. Substituting each generation of the
+alternative into the corpus and counting failures gives the actual trade:
+
+| Arm-label alternative | Assignment forms missed | Arm-label shapes missed |
+| --- | --- | --- |
+| `\(?[^()\s\|]+\)` (unanchored) | all 4 — `x="b)"`, `x='b)'`, `x=${r%)}`, `x=b\)` | none |
+| `\(?[^()\s\|]+\)$` (anchored only) | 1 — `x=b\)` | 2 — `a\))`, `\))` |
+| `\(?[^()\s\|]*[^()\s\|\\]\)$` (anchored, one lookback) | none | 3 — `a\))`, `\))`, `a\\)` |
+| `\(?(?:[^()\s\|\\]\|\\.)*\)$` (anchored, escape pairs) | none | none |
+
+So anchoring cost **two** shapes rather than one, and the unescaped requirement was not
+free — it cost a third, `case … in a\\) x=1 ;;`, whose doubled backslash escapes the
+backslash and leaves the `)` genuinely unescaped. All three are real arm labels: bash
+reports `declare -- y="1"` for each. The parity form removes the cost rather than
+documenting it, and each of the three is now an injection case that reddens, so the
+recovery cannot drift back.
 
 A newline inside a quoted string is data, not a command separator, so the scanner collapses
 it. Without that, the inner lines of any multi-line quoted string that is not recognized as
@@ -145,7 +160,16 @@ Which mechanism absorbs which text is now measured rather than assumed. The six
 multi-line `absorbed` rows were credited to the excision; they are not. Hard-wiring
 `opens_embedded` to `return False`, disabling every excision, left the whole corpus green
 before this change — 0 failures — because the newline collapse absorbs multi-line program
-bodies on its own. Mutating the collapse instead reddens 2 of those 6 rows; the other 4 are
+bodies on its own. Mutating the collapse instead reddens 2 of those 6 rows. The collapse
+meant here is the newline-to-space substitution inside a *quoted region* — the two sites in
+`Excision.run` that emit `" "` for a `\n` under `kind == "single"` and `kind == "double"` —
+and the mutant is emitting the newline unchanged at both. It is **not** the line-continuation
+join above `ASSIGN`: mutating that one instead reddens 77 of the 83 injection rows, because the reset
+statement is itself continuation-joined, so the collector's own `the per-repository reset is
+mispositioned or has drifted` check fails first and every injection row then reddens for the
+wrong reason. The 2 the collapse mutant reddens are the multi-line quoted string that is no
+program at all and the `--jq=` body written as one word; the other 4 — the `awk`, `jq`,
+`gh --jq`, and double-quoted `sed` bodies — are
 absorbed by either mechanism independently, which is defense in depth rather than a pin on
 either. The excision *is* load-bearing — an assigning expansion inside a **single-line**
 double-quoted program is text the per-word walk would otherwise read — so that is now an
@@ -225,11 +249,11 @@ Its non-vacuity is measured against three collectors rather than asserted:
 
 | Collector the corpus is run against | Corpus result |
 | --- | --- |
-| the collector as it stood before this whole change (`9a5d237`) | **24 of 80 fail** |
-| the collector as it stood one revision ago (`eb1a2af`) | **10 of 80 fail** — the three forging surfaces above in both directions, the backslash-escape surface in both, the escaped-quote misreport, and the escaped arm-label boundary |
-| this collector with `opens_embedded` hard-wired to `return False` | **1 of 80 fails** — before this change it was 0, which is what showed the excision was unpinned |
+| the collector as it stood before this whole change (`9a5d237`) | **24 of 83 fail** |
+| the collector as it stood one revision ago (`eb1a2af`) | **10 of 83 fail** — the three forging surfaces above in both directions, the backslash-escape surface in both, and the escaped-quote misreport |
+| this collector with `opens_embedded` hard-wired to `return False` | **1 of 83 fails** — before this change it was 0, which is what showed the excision was unpinned |
 
-Staying green against a mutant collector is not by itself distinguishing — 55 of the 80
+Staying green against a mutant collector is not by itself distinguishing — 58 of the 83
 rows are green against all three, because each mutant regressed only part of the collector.
 What distinguishes a row is surviving a *mechanism* being disabled. Disabling the newline
 collapse reddens exactly 2 of the 6 multi-line `absorbed` rows, and disabling the excision
@@ -264,7 +288,8 @@ five rows are pins on the record rather than on a mechanism.
 | a double-quoted `awk` program containing an escaped quote | nothing — an escaped quote does not close the region |
 | a `<<'EOT'` heredoc body naming a variable the reset does not list | `assigned per repository but never reset: ['forged_by_heredoc']` — the loud direction of the documented miss |
 | a `<<'EOT'` heredoc body naming a variable the reset **does** list | nothing — the **silent** direction of the same documented miss, pinned as a known miss |
-| `case … in a\)) x=1 ;;` — an arm label whose own `)` is backslash-escaped | nothing — the documented cost of anchoring the arm label to the end of the word, pinned as a known miss |
+| an assignment behind an arm label carrying a backslash — `case … in a\)) x=1 ;;`, `\)) x=1 ;;`, or `a\\) x=1 ;;` | `assigned per repository but never reset:` naming it — consuming escape pairs keeps all three labels strippable, so none of the three hides its assignment |
+| an assignment behind a quoted arm label whose `)` is inside the quotes — `case … in "a)") x=1 ;;` | nothing — the one arm-label shape still missed, pinned as a known miss |
 
 ## Where the collector stops
 
@@ -281,10 +306,12 @@ possible.
   injection case now pins it.
 - **An assignment inside a function defined in the loop body** is not modelled.
 - **An assignment inside an excised program's own `$( … )`** goes with the excision.
-- **A `case` arm label whose terminating `)` is backslash-escaped is not stripped**, so an
-  assignment written in the same segment — `case … in a\)) x=1 ;;` — is missed. This is the
-  price of anchoring the arm label to the end of the word, which is what lets an assignment
-  word contain a `)` at all; the plain end-of-word anchor misses it identically. It is a
+- **A `case` arm label is decided by the unquoted `)` that terminates it**, so a label whose
+  own `)` sits *inside* quotes — `case … in "a)") x=1 ;;` — is not stripped and an
+  assignment sharing its segment is missed. bash really treats it as an arm label
+  (`declare -- z="1"`). Closing it means tracking quoting inside the lead-in alternative,
+  which is where a real `case`-label parser would earn its keep rather than a fourth regex
+  generation; the audited script's quoted labels are `""`-shaped and carry no `)`. It is a
   miss, never a forge, and an injection case pins it.
 - **ANSI-C quoting `$'…'` is not modelled.** `echo $'a\'${x:=1}'` assigns nothing under
   bash, but the collector reads the `\'` as a literal inside a single-quoted span and ends

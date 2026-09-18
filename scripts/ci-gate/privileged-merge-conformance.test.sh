@@ -843,14 +843,18 @@ LEADIN = re.compile(r"""^(?:
     | [{}]
     | \[\[?
     | \]\]?
-    | \(?[^()\s|]*[^()\s|\\]\)$   # a case arm label, `(x)` and `a=1)` too: an arm label is
+    | \(?(?:[^()\s|\\]|\\.)*\)$  # a case arm label, `(x)` and `a=1)` too: an arm label is
                                 #  a pattern, never an assignment, and excluding `=` here
                                 #  let `case $x in a=1)` forge the name `a`. This is a
                                 #  prefix match, so the whole word must be the label:
                                 #  unanchored, `x="b)"`, `x='b)'`, `x=${r%)}` and `x=b\)`
                                 #  were all discarded as arm labels and silently missed.
-                                #  The terminating `)` must also be unescaped, which is
-                                #  what separates `x=b\)` from the label `a=1)`.
+                                #  Escapes are consumed in *pairs*, so whether the final
+                                #  `)` is escaped is decided by parity, not by one lookback:
+                                #  `a\))`, `\))` and `a\\)` are all real arm labels under
+                                #  bash and all strip, while `x=b\)` -- whose `)` really is
+                                #  escaped -- is kept, which is what still separates it
+                                #  from the label `a=1)`.
   )""", re.X)
 
 # Options that consume the following word, per command. Getting this right is what keeps
@@ -1436,11 +1440,27 @@ reddens 'a dead reset entry spelled only by a case arm label' \
   sub '  unset metadata' '  unset forged_by_arm_label metadata' \
   :: insert before-done '  case "$relation" in forged_by_arm_label=1) : ;; *) : ;; esac'
 # Anchoring the arm-label alternative to the end of the word is what lets an assignment
-# word contain a `)`. The cost is an arm label whose own `)` is backslash-escaped: `a\))`
-# no longer strips, so an assignment sharing that segment is missed. That is a miss, the
-# same direction as the four it recovers, and it is pinned here so it cannot drift.
-boundary 'an arm label ending in an escaped ) hides an assignment in its segment' \
+# word contain a `)`. Escapes are consumed in *pairs*, so a label whose text contains a
+# backslash still strips and the assignment sharing its segment is still seen. All three
+# shapes below are real arm labels under bash -- each yields `declare -- y="1"` -- and each
+# would be a silent miss if the alternative decided escapedness by a single lookback.
+reddens 'an arm label whose own ) is backslash-escaped, followed by an assignment' \
+  "assigned per repository but never reset: ['form_arm_escaped']" \
   insert before-done '  case "$relation" in a\)) form_arm_escaped=1 ;; *) : ;; esac'
+reddens 'an arm label that is nothing but an escaped ), followed by an assignment' \
+  "assigned per repository but never reset: ['form_arm_bare_escaped']" \
+  insert before-done '  case "$relation" in \)) form_arm_bare_escaped=1 ;; *) : ;; esac'
+reddens 'an arm label ending in an escaped backslash, whose own ) is unescaped' \
+  "assigned per repository but never reset: ['form_arm_doubled']" \
+  insert before-done '  case "$relation" in a\\) form_arm_doubled=1 ;; *) : ;; esac'
+# The label is still decided by the unquoted `)` that terminates it, so a label whose own
+# `)` sits *inside* quotes -- `case … in "a)") x=1 ;;` -- is not stripped, and an assignment
+# sharing its segment is missed. bash really treats it as an arm label (`declare -- z="1"`).
+# Closing it means tracking quoting inside the alternative, which is the point at which a
+# real `case`-label parser is warranted rather than a fourth regex; the audited script's
+# quoted labels are `""`-shaped and carry no `)`, so it is recorded instead.
+boundary 'a quoted arm label whose ) sits inside the quotes hides an assignment' \
+  insert before-done '  case "$relation" in "a)") form_arm_quoted=1 ;; *) : ;; esac'
 
 # A heredoc body is parsed as bash, so it forges a name. That is a documented boundary, and
 # it is silent in one direction and loud in the other: a name the reset does not list
@@ -1455,9 +1475,9 @@ boundary 'a heredoc body keeping a dead reset entry green, the silent direction 
 
 # The corpus size is asserted, not merely reported: a case deleted or skipped would
 # otherwise shrink it silently, which is the failure mode this whole contract exists for.
-[ "$injection_cases" -eq 80 ] \
+[ "$injection_cases" -eq 83 ] \
   && pass "the reset contract was exercised against all $injection_cases injected mutations" \
-  || fail "the injection corpus has changed size: expected 80 cases, ran $injection_cases"
+  || fail "the injection corpus has changed size: expected 83 cases, ran $injection_cases"
 
 GH_TOKEN='' run_audit \
   && fail "missing audit credential reported green" \
