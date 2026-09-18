@@ -4,9 +4,6 @@ set -uo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 audit="$root/scripts/privileged-merge-conformance.sh"
-# Assigned here, not defaulted at the call site, so an inherited environment value cannot
-# redirect the suite at a script the per-call prefix below never chose.
-AUDIT_SCRIPT="$audit"
 generator="$root/scripts/gen-privileged-merge-caller.sh"
 workflow="$root/.github/workflows/privileged-merge-conformance.yml"
 contract_sha=848c49fd4dac307f26180acd420760a27ceff0ba
@@ -203,7 +200,7 @@ run_audit() {
     WORKFLOW_STATE="${WORKFLOW_STATE-active}" \
     CHECK_APP_ID="${CHECK_APP_ID-15368}" \
     PRIVILEGED_MERGE_AUDIT_SHA="${PRIVILEGED_MERGE_AUDIT_SHA-$audit_sha}" \
-    bash "$AUDIT_SCRIPT" >"$tmp/out" 2>&1
+    bash "$audit" >"$tmp/out" 2>&1
 }
 
 run_audit \
@@ -496,50 +493,176 @@ HISTORICAL_WORKFLOW_CONTENT="$(printf '%s\n' 'name: incompatible' | base64 | tr 
       || fail "incompatible caller pin lacks interface evidence"
   }
 
-ALPHA_CONTENT="$(bash "$generator" "$contract_sha" "$required_checks" | sed "s/@$contract_sha/@main/" | base64 | tr -d '\n')" run_audit \
-  && fail "mutable caller pin reported green" \
-  || {
-    grep -q 'Invalid privileged merge caller pin' "$tmp/out" \
-      && pass "consumer inventory fails closed on a mutable canonical workflow pin" \
-      || fail "mutable caller pin lacks actionable evidence"
-  }
-
-# The 40-hex pin guard cannot fire against today's extractor, whose capture group is
-# literally ([0-9a-f]{40}) -- the guard exists to survive that extractor changing. Widening
-# the capture is exactly that change, and it is the only way to measure the guard's control
-# flow rather than describe it. The fixture is ordered: Verjson/alpha populates every
-# loop-scoped variable with a conforming value, Verjson/beta then trips the guard, and
-# Verjson/.github follows. Each must be judged on its own evidence.
-widened_root="$tmp/widened"
-widened_audit="$widened_root/scripts/privileged-merge-conformance.sh"
-mkdir -p "$widened_root/scripts" "$widened_root/.github/workflows"
-ln -sf "$root/.github/workflows/ai-privileged-merge.yml" \
-  "$root/.github/workflows/ai-promotion-retry.yml" "$widened_root/.github/workflows/"
-sed 's/ai-privileged-merge\\\.yml@(\[0-9a-f\]{40})/ai-privileged-merge\\\.yml@([0-9A-Za-z]+)/' \
-  "$audit" >"$widened_audit"
-# A test against a mutated copy is only worth anything if the mutation is confined to the
-# one line it claims to change, so require exactly one replaced line -- one `<`, one `>`.
-widened_changed_lines="$(diff "$audit" "$widened_audit" | grep -c '^[<>]')"
-if [ "$widened_changed_lines" -eq 2 ] \
-  && grep -q 'ai-privileged-merge\\\.yml@(\[0-9A-Za-z\]+)' "$widened_audit"; then
-  pass "pin-extractor widening fixture mutates the caller pin extractor and nothing else"
-else
-  fail "pin-extractor widening fixture changed $widened_changed_lines line(s) instead of the extractor alone"
-fi
-
+# A mutable ref is the most likely wrong pin, so it must draw the diagnostic that names it
+# rather than the one for a missing or duplicated `uses:` line. Both refuse; only the
+# explanation differs, and the wrong one sends an operator hunting a line that is present.
+# The fixture is ordered: Verjson/alpha populates every loop-scoped variable with a
+# conforming value, Verjson/beta then trips the guard, and Verjson/.github follows. Each
+# must be judged on its own evidence.
 mutable_pin_caller="$(bash "$generator" "$contract_sha" "$required_checks" | sed "s/@$contract_sha/@main/" | base64 | tr -d '\n')"
-AUDIT_SCRIPT="$widened_audit" \
-  ACTIVE_REPOSITORIES=$'Verjson/alpha\nVerjson/beta\nVerjson/.github' \
+ACTIVE_REPOSITORIES=$'Verjson/alpha\nVerjson/beta\nVerjson/.github' \
   SECRET_REPOSITORIES=$'Verjson/alpha\nVerjson/.github' \
   BETA_CONTENT="$mutable_pin_caller" run_audit \
-  && fail "non-40-hex caller pin reported green under a widened extractor" \
+  && fail "mutable caller pin reported green" \
   || {
     grep -q "pin is not a 40-hex commit SHA" "$tmp/out" \
+      && ! grep -q 'expected exactly one immutable canonical workflow pin' "$tmp/out" \
       && grep -q 'Missing privileged merge App key access::repository=Verjson/beta' "$tmp/out" \
       && ! grep -q 'repository=Verjson/\.github' "$tmp/out" \
       && grep -q 'result=nonconformant repositories_scanned=3 consumers=3' "$tmp/out" \
-      && pass "a repository that trips the 40-hex pin guard is still judged on its own secret-access evidence" \
-      || fail "the 40-hex pin guard abandoned the repository's remaining evidence: $(<"$tmp/out")"
+      && pass "a mutable pin draws the non-SHA diagnostic and is still judged on its own secret-access evidence" \
+      || fail "mutable caller pin lacks the non-SHA diagnostic or abandoned its evidence: $(<"$tmp/out")"
+  }
+
+# The pin-count arm keeps its own meaning, which is what makes the split worth having: a
+# caller carrying no canonical `uses:` line, and one carrying two, are structurally
+# different from a present-but-mutable pin and must not borrow its message.
+ALPHA_CONTENT="$(bash "$generator" "$contract_sha" "$required_checks" \
+  | sed "s#uses: Verjson/\.github/\.github/workflows/ai-privileged-merge\.yml@#uses: Verjson/other/.github/workflows/ai-privileged-merge.yml@#" \
+  | base64 | tr -d '\n')" run_audit \
+  && fail "caller with no canonical pin reported green" \
+  || {
+    grep -q 'expected exactly one immutable canonical workflow pin' "$tmp/out" \
+      && ! grep -q 'pin is not a 40-hex commit SHA' "$tmp/out" \
+      && pass "a caller carrying zero canonical pins draws the pin-count diagnostic" \
+      || fail "zero canonical pins lacks the pin-count diagnostic: $(<"$tmp/out")"
+  }
+
+ALPHA_CONTENT="$(bash "$generator" "$contract_sha" "$required_checks" \
+  | sed "s#^\( *\)\(uses: Verjson/\.github/\.github/workflows/ai-privileged-merge\.yml@.*\)\$#\1\2\n\1\2#" \
+  | base64 | tr -d '\n')" run_audit \
+  && fail "caller with two canonical pins reported green" \
+  || {
+    grep -q 'expected exactly one immutable canonical workflow pin' "$tmp/out" \
+      && ! grep -q 'pin is not a 40-hex commit SHA' "$tmp/out" \
+      && pass "a caller carrying two canonical pins draws the pin-count diagnostic" \
+      || fail "two canonical pins lacks the pin-count diagnostic: $(<"$tmp/out")"
+  }
+
+# A conformant pin PLUS a second mutable `uses:` line is the one shape where the two
+# extractors differ in pin *count*, not only in diagnostic: the narrow capture saw one pin,
+# reached the compare API, and accepted. The widened capture sees two and refuses. This
+# closes a fail-open, so it is pinned rather than left to the count arm's general case.
+ALPHA_CONTENT="$(bash "$generator" "$contract_sha" "$required_checks" \
+  | sed "s#^\( *\)\(uses: Verjson/\.github/\.github/workflows/ai-privileged-merge\.yml@\).*\$#\1\2$contract_sha\n\1\2main#" \
+  | base64 | tr -d '\n')" run_audit \
+  && fail "a conformant pin alongside a mutable pin reported green" \
+  || {
+    grep -q 'expected exactly one immutable canonical workflow pin' "$tmp/out" \
+      && pass "a conformant pin alongside a second mutable pin is refused, not accepted on the first" \
+      || fail "a smuggled second mutable pin was accepted: $(<"$tmp/out")"
+  }
+
+# Renovate and Dependabot write the pin with a trailing version comment. That is a
+# correctly-pinned caller, and refusing it with the pin-count message is exactly the
+# wrong-diagnosis class this change exists to remove. Accepting it is safe because the
+# 40-hex guard still judges the captured ref. Proof that the pin was accepted: the run
+# reaches the canonical-content comparison, which only pin-bearing callers reach.
+ALPHA_CONTENT="$(bash "$generator" "$contract_sha" "$required_checks" \
+  | sed "s|\(ai-privileged-merge\.yml@$contract_sha\)\$|\1 # v1.2.3|" \
+  | base64 | tr -d '\n')" run_audit \
+  && fail "a pin with a trailing comment unexpectedly reported fully green" \
+  || {
+    ! grep -q 'Invalid privileged merge caller pin' "$tmp/out" \
+      && grep -q 'Non-canonical privileged merge caller' "$tmp/out" \
+      && pass "a pin carrying a trailing version comment is recognized as a pin" \
+      || fail "a trailing-comment pin was not recognized: $(<"$tmp/out")"
+  }
+
+# The other side of that boundary: YAML needs whitespace before `#` to start a comment, so
+# `@<sha>#v1` is one ref, not a pin plus a comment, and must stay refused as a non-SHA.
+ALPHA_CONTENT="$(bash "$generator" "$contract_sha" "$required_checks" \
+  | sed "s|\(ai-privileged-merge\.yml@$contract_sha\)\$|\1#v1|" \
+  | base64 | tr -d '\n')" run_audit \
+  && fail "a pin with an unseparated hash suffix reported green" \
+  || {
+    grep -q 'pin is not a 40-hex commit SHA' "$tmp/out" \
+      && pass "a hash suffix with no separating space is not treated as a comment" \
+      || fail "an unseparated hash suffix was mistaken for a trailing comment: $(<"$tmp/out")"
+  }
+
+# The retry pin extractor carried the identical narrow capture, so the fail-open just
+# closed at the caller site was still open 113 lines below it: a conformant retry pin plus
+# a mutable one yielded a single pin equal to the caller SHA and was accepted.
+ALPHA_RETRY_CONTENT="$(bash "$generator" "$contract_sha" --retry "$retry_workflow_names" "$required_checks" \
+  | sed "s#^\( *\)\(uses: Verjson/\.github/\.github/workflows/ai-promotion-retry\.yml@\).*\$#\1\2$contract_sha\n\1\2main#" \
+  | base64 | tr -d '\n')" run_audit \
+  && fail "a conformant retry pin alongside a mutable retry pin reported green" \
+  || {
+    grep -q 'retry must pin the same immutable contract SHA as privileged merge' "$tmp/out" \
+      && pass "a second mutable promotion retry pin is refused, not accepted on the first" \
+      || fail "a smuggled second mutable retry pin was accepted: $(<"$tmp/out")"
+  }
+
+# `base64 --decode` succeeds on an empty stream, so a fetch that returned nothing decodes
+# to an empty artifact that is then read as content. Without a guard the audit does not go
+# quiet -- it makes a confident claim about the adopter it never established. This script
+# feeds merge-authorization conformance, so an empty decode reads as a conformance
+# determination that was never made. The verdict must name a failed read, and must not be
+# reachable from the vocabulary used for an adopter that genuinely lacks the wiring.
+ALPHA_CONTENT="" run_audit \
+  && fail "an empty fetched caller artifact reported green" \
+  || {
+    grep -q "Empty privileged merge caller::repository=Verjson/alpha" "$tmp/out" \
+      && grep -q "decoded to no content" "$tmp/out" \
+      && ! grep -q 'expected exactly one immutable canonical workflow pin' "$tmp/out" \
+      && pass "an empty fetched caller artifact faults as a failed read, not as a pin problem" \
+      || fail "empty caller artifact drew a verdict it never established: $(<"$tmp/out")"
+  }
+
+ALPHA_RETRY_CONTENT="" run_audit \
+  && fail "an empty fetched promotion retry artifact reported green" \
+  || {
+    grep -q "Empty promotion retry::repository=Verjson/alpha" "$tmp/out" \
+      && grep -q "decoded to no content" "$tmp/out" \
+      && pass "an empty fetched promotion retry artifact faults as a failed read" \
+      || fail "empty retry artifact drew a verdict it never established: $(<"$tmp/out")"
+  }
+
+# A guard that tests the byte count catches only a zero-byte payload. A one-byte newline
+# (base64 `Cg==`) is a non-empty file whose content is still nothing: `"$(<file)"` strips
+# it to the empty string, and every wrong verdict above returns. The guard must test the
+# content it is about to read, not the size of the file it landed in.
+blank_artifact="$(printf '\n' | base64 | tr -d '\n')"
+ALPHA_CONTENT="$blank_artifact" run_audit \
+  && fail "a whitespace-only fetched caller artifact reported green" \
+  || {
+    grep -q "Empty privileged merge caller::repository=Verjson/alpha" "$tmp/out" \
+      && ! grep -q 'expected exactly one immutable canonical workflow pin' "$tmp/out" \
+      && pass "a whitespace-only caller artifact faults as a failed read, not as a pin problem" \
+      || fail "a whitespace-only caller artifact slipped past the emptiness guard: $(<"$tmp/out")"
+  }
+
+ALPHA_RETRY_CONTENT="$blank_artifact" run_audit \
+  && fail "a whitespace-only fetched promotion retry artifact reported green" \
+  || {
+    grep -q "Empty promotion retry::repository=Verjson/alpha" "$tmp/out" \
+      && pass "a whitespace-only promotion retry artifact faults as a failed read" \
+      || fail "a whitespace-only retry artifact slipped past the emptiness guard: $(<"$tmp/out")"
+  }
+
+# The canonical repository reads the same two artifacts through the same branch, where an
+# empty decode would otherwise be explained as remote bytes differing from the audited
+# revision -- a byte-comparison verdict drawn from bytes that were never fetched.
+ACTIVE_REPOSITORIES=$'Verjson/.github' SECRET_REPOSITORIES=$'Verjson/.github' \
+  CANONICAL_CONTENT="" run_audit \
+  && fail "an empty fetched canonical workflow reported green" \
+  || {
+    grep -q 'Empty canonical privileged merge workflow::repository=Verjson/\.github' "$tmp/out" \
+      && grep -q "decoded to no content" "$tmp/out" \
+      && ! grep -q 'remote bytes differ from the checked-out audit revision' "$tmp/out" \
+      && pass "an empty fetched canonical workflow faults as a failed read, not as a byte mismatch" \
+      || fail "empty canonical workflow drew a byte-comparison verdict: $(<"$tmp/out")"
+  }
+
+# The distinction the verdict exists to carry: an adopter that genuinely lacks the file
+# still reports absence, and must not be relabelled a failed read by this guard.
+ALPHA_CALLER=missing run_audit \
+  && fail "a missing caller reported green" \
+  || {
+    ! grep -q 'Empty privileged merge caller' "$tmp/out" \
+      && pass "a genuinely absent caller is not reported as an empty fetch" \
+      || fail "absence was relabelled as a failed read: $(<"$tmp/out")"
   }
 
 # The remaining early exits leak loop-scoped state without a reachable read-before-assignment
