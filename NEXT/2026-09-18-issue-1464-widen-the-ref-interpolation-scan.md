@@ -59,3 +59,27 @@ update and merging on a review performed against a stale base.
 The boundary validation added to `scripts/container_deployment_review_producer.py` moves
 the container-deployment contract digest, so adopters must regenerate at a new contract
 SHA.
+
+A cited guard is checked for being live, not merely present. `grep -F` alone found the
+text anywhere in the file, so commenting the guard out or appending `|| true` left this
+gate green — the same rot one level up. A citing entry now requires the pinned text on a
+line that is not commented out ahead of it and does not swallow its own failure there. It
+is a line-level anchor and says so: a guard moved into a branch that never runs still
+satisfies it.
+
+The new `HEAD_SHA` constraint is covered by its own negative cases rather than only by the
+positive ones continuing to pass. Eight non-40-hex values — a short SHA, a branch name, a
+traversal suffix, an uppercase SHA, the empty string — must exit non-zero with the `gh`
+stub never called, so the test proves the constraint fires before the request rather than
+after the URL is addressed, and two further cases prove it does not fire on the
+`workflow_dispatch` and `push` paths that never build that URL.
+
+The `ci-eligibility` composite action records the exception this creates in its own
+contract: it documents failing OPEN on status uncertainty, and an invalid `head-sha` now
+fails it CLOSED. External consumers passing a branch name or an abbreviated SHA will
+hard-fail.
+
+ADR 0194 also records the residual this change does not close: `2>/dev/null || echo 0` on
+the same compare call still turns a genuine API outage into `behind=0` and proceeds.
+Tracked as #1476.
+

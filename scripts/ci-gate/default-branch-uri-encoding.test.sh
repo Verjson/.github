@@ -50,8 +50,15 @@
 #     name; the proof for a positional is at the call site, not at the use.
 #   * An interpolation split across source lines, and any ref-bearing path segment not in
 #     REF_PATH_SEGMENT.
-#   * The sites in REF_SITE_ALLOWLIST -- exempted by hand, each with its reason, and
-#     each citing guard pinned by its literal text so the exemption cannot outlive it.
+#   * The sites in REF_SITE_ALLOWLIST -- exempted by hand, each with its reason. An
+#     entry that cites a guard pins that guard's literal text, and `guard_is_live`
+#     requires it to be un-commented and not to swallow its own failure on that
+#     line, so deleting, commenting out, or `|| true`-ing the cited check reddens
+#     here. That is a LINE-LEVEL anchor and nothing more: a guard MOVED into a
+#     branch that never runs, or made vacuous by editing the value it tests rather
+#     than the test itself, still satisfies the pin. Proving otherwise needs
+#     reachability analysis this test does not do. Read the pin as "the cited check
+#     is still written and still fails", not as "the cited check still runs".
 # The recognized-site count is pinned in RECOGNIZED_REF_SITES for the same reason the
 # allowlist is explicit: moving an interpolation out of a recognized shape is a way to
 # lose coverage without losing a green run.
@@ -561,6 +568,32 @@ RECOGNIZED_REF_SITES=77
 [ "$py_sites" -ge 18 ] || fail "the ref-interpolation scan found only $py_sites Python sites; it is not reaching the Python callers"
 [ "$py_encoders" -ge 6 ] || fail "only $py_encoders Python encoder calls were exercised; the semantics check is not reaching them"
 
+# A plain literal match for a cited guard is not enough. `grep -qF` finds the text anywhere
+# in the file, so commenting the guard out, or appending `|| true` to it, left this test
+# green while the guard no longer guarded anything -- the same rot one level up. A cited
+# guard counts as live only if the pinned text occurs on a line that is not commented out
+# ahead of it and does not swallow its own failure on that line.
+#
+# This is a line-level anchor, not a reachability analysis. See the ceiling note in the
+# header: a guard MOVED into a branch that never executes still satisfies this.
+guard_is_live() { # $1 = file, $2 = literal guard text
+  local line before after
+  while IFS= read -r line; do
+    # Anything opening a comment ahead of the pinned text disarms the whole line.
+    before="${line%%"$2"*}"
+    case "$before" in *'#'*) continue ;; esac
+    # A guard whose failure is swallowed on its own line is decoration.
+    after="${line#*"$2"}"
+    case "$after" in
+      *'|| true'*|*'|| :'*|*'||true'*|*'or True'*) continue ;;
+    esac
+    return 0
+    # Redirected, not pipe-fed: this loop returns on its first live match and would
+    # SIGPIPE a still-writing `grep` (#1430, #1445).
+  done < <(grep -F -- "$2" "$1")
+  return 1
+}
+
 # A stale allowlist entry is a silent hole: it would keep vouching for a site that has
 # moved, been renamed, or been fixed, and would quietly cover a future site that happens to
 # reuse the name. Every entry must have been consulted by a live site.
@@ -570,15 +603,15 @@ for entry in "${REF_SITE_ALLOWLIST[@]}"; do
   grep -qxF "$entry" < <(printf '%s\n' "${allowlisted_hits[@]:-}") \
     || fail "stale ref-site allowlist entry, no site matched it: ${entry//$'\t'/ }"
 
-  # An entry that cites a guard pins its literal text, so deleting the guard reddens HERE
+  # An entry that cites a guard pins its literal text, so removing the guard reddens HERE
   # instead of quietly turning the entry into a vouch for a value nothing constrains.
   IFS=$'\t' read -r entry_file entry_subject guard_file guard_text <<<"$entry"
   [ -n "$guard_file" ] || continue
   label="ref-site allowlist entry $entry_file \$$entry_subject"
   [ -f "$root/$guard_file" ] \
     || fail "$label cites a guard file that is missing: $guard_file"
-  grep -qF -- "$guard_text" "$root/$guard_file" \
-    || fail "$label cites a guard that is gone from $guard_file: $guard_text"
+  guard_is_live "$root/$guard_file" "$guard_text" \
+    || fail "$label cites a guard that is gone, commented out, or neutered in $guard_file: $guard_text"
 done
 
 echo "PASS: $sites ref interpolations ($py_sites of them Python) across ${#scanned[@]} workflows"

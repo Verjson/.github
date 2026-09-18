@@ -3,7 +3,7 @@
 - **Date:** 2026-09-18
 - **Status:** Accepted
 - **Related:** [ADR 0192](../0192-encode-adopter-ref-names-before-they-reach-a-url/README.md), [ADR 0184](../0184-merge-gates-assert-execution-not-absence-of-red/README.md)
-- **Issues:** [#1464](https://github.com/Verjson/.github/issues/1464), [#1470](https://github.com/Verjson/.github/issues/1470)
+- **Issues:** [#1464](https://github.com/Verjson/.github/issues/1464), [#1470](https://github.com/Verjson/.github/issues/1470), [#1476](https://github.com/Verjson/.github/issues/1476)
 
 ## Context
 
@@ -101,6 +101,24 @@ the disagreement recorded in the entry and tracked in #1470.
 gains boundary validation on its commit arguments, and it is digest-pinned by
 `scripts/gen-container-deployment.sh`, so the container-deployment contract digest moves.
 
+**The compare call still fails open on an outage, and that is NOT closed here.** The
+encoding fixes the *misresolution* route into `behind=0`. It does not touch
+`2>/dev/null || echo 0`, so a genuine API failure — rate limit, outage, a token that lost
+its scope — still yields `behind=0`, skips the branch update, and proceeds. By this ADR's
+own argument that a guard which fails open is worse than an absent one, that residual is
+named rather than left implicit: the swallow is deliberate today and changing it changes
+merge-gate behavior for every PR, so it is separate work, tracked as
+[#1476](https://github.com/Verjson/.github/issues/1476). Read this ADR as closing the
+encoding route into the fail-open path, not the path itself.
+
+**The allowlist pin is a line-level anchor, not a reachability proof.** An entry that cites
+a guard requires that guard's literal text to be present, un-commented, and not to swallow
+its own failure on that line — commenting it out or appending `|| true` reddens the gate. A
+guard *moved* into a branch that never executes, or made vacuous by changing the value it
+tests rather than the test itself, still satisfies the pin. The test header says so in the
+same words; a pin that overstated its own reach would be the defect this ADR is about, one
+level up.
+
 **The gate can still be outgrown.** The stated ceiling is the honest boundary: it says what
 this scan recognizes, not that every ref in the repository is covered. Widening it again is
 the same procedure — measure the miss first.
@@ -110,4 +128,5 @@ the same procedure — measure the miss first.
 - Issue #1464 — the reported anchor-narrowness defect
 - Issue #1470 — the unresolved `rules/branches/` encoding disagreement
 - PR #1469 — the implementation
+- Issue #1476 — the residual fail-open swallow on the same compare call
 - ADR 0192 — the position-dependent encoding rule this gate enforces

@@ -438,10 +438,14 @@ jobs:
           # here turns that message into a lie, so generalize it in the same
           # change — it is the only explanation a deferred head ever gets.
           # The head SHA reaches a `commits/<sha>` PATH segment on the next line, so constrain
-          # it HERE. node-ci-protected takes this value from a caller input, and the only other
-          # assert on it lives in a job declaring `needs: eligibility`, which therefore runs
-          # strictly later and cannot vouch for this use. The three copies of this script are
-          # byte-identical by contract, so the guard is in all of them (Verjson/.github#1464).
+          # it HERE. node-ci-protected takes this value from a caller input, and the nearest
+          # other assert on it is in `acquire-secretless-dependencies`, which declares
+          # `needs: eligibility` and therefore runs strictly later. That job DOES revalidate
+          # ADMITTED_HEAD_SHA independently, and `build-test` is `if: always()`, so a failed
+          # eligibility job is not by itself what stands between a bad input and a run. Read
+          # this guard narrowly: it protects THIS request, which nothing earlier does. The
+          # three copies of this script are byte-identical by contract, so the guard is in all
+          # of them (Verjson/.github#1464).
           [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] \
             || { echo "::error::head-sha is not a 40-hex object name"; exit 1; }
           pending=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/status" \
