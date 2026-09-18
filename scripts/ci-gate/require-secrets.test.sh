@@ -24,12 +24,16 @@ job() {
 }
 
 step() {
-  local workflow="$1" job_name="$2" step_name="$3"
-  job "$workflow" "$job_name" | awk -v wanted="$step_name" '
+  local workflow="$1" job_name="$2" step_name="$3" block
+  # Captured rather than piped, and captured in its own statement: a here-string
+  # cannot report the producer's status, so reading `job` inline would discard
+  # the failure this file exists to notice.
+  block="$(job "$workflow" "$job_name")" || return "$?"
+  awk -v wanted="$step_name" '
     $0 == "      - name: " wanted { found=1; print; next }
     found && /^      - name:/ { exit }
     found { print }
-  '
+  ' <<<"$block"
 }
 
 contract_errors() {

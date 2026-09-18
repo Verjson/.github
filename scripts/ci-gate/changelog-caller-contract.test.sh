@@ -375,12 +375,12 @@ renovate_inert_node_versions="$(printf '%s\n' "$default_release" | grep -cF "nod
   || fail "release-node emitted $renovate_inert_node_versions of 2 Node-version fields as Renovate-inert expressions"
 
 stamp_command="$(
-  printf '%s\n' "$custom_release" | awk '
+  awk '
     /^      - name: Stamp the dispatched package versions$/ { found = 1; next }
     found && /^        run: \|$/ { in_run = 1; next }
     in_run && /^      - name:/ { exit }
     in_run { sub(/^          /, ""); print }
-  '
+  ' <<<"$custom_release"
 )"
 stamp_root="$(mktemp -d)"
 printf '{"name":"same-version-fixture","version":"0.1.0"}\n' >"$stamp_root/package.json"
