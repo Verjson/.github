@@ -111,16 +111,54 @@ merge-gate behavior for every PR, so it is separate work, tracked as
 [#1476](https://github.com/Verjson/.github/issues/1476). Read this ADR as closing the
 encoding route into the fail-open path, not the path itself.
 
-**The allowlist pin is a line-level anchor, not a reachability proof.** An entry that cites
-a guard requires that guard's literal text to be present, un-commented, and not to swallow
-its own failure on that line — commenting it out or appending `|| true` reddens the gate. A
-guard *moved* into a branch that never executes, or made vacuous by changing the value it
-tests rather than the test itself, still satisfies the pin. The test header says so in the
-same words; a pin that overstated its own reach would be the defect this ADR is about, one
-level up.
+**The guard pin is a command-level anchor, and it allow-lists failure, not swallowing.**
+This claim has now been corrected twice, which is itself the lesson: the first version said
+a cited guard "still fails", the second narrowed that to "does not swallow its own failure
+on that line", and an independent re-review showed the second was still false. The anchor
+carried a denylist of four swallowing literals (`|| true`, `|| :`, `||true`, `or True`), and
+against the cited guard at `.github/workflows/gate-rearm.yml:168` six further forms —
+`||:`, `|| { :; }`, `|| echo skipped`, `| cat`, a trailing `&`, and `|| exit 0` — all kept
+the gate green. A line-level anchor also could not see the shape this PR itself introduced,
+where `node-ci.yml` writes the guard on one line and its `|| { …; exit 1; }` on the next:
+replacing that continuation with `|| true` left nothing on the pinned line to notice.
+
+So the anchor is no longer a denylist and no longer line-level. It joins continuations — a
+trailing `\`, a trailing `&&`/`||`/`|`, and a multi-line `|| { … }` branch are one command —
+and then requires the tail following the pinned text to match an **allow-list of shapes that
+leave the guard**: `|| exit N`, `|| return N`, `|| continue`, `|| break`,
+`|| fail|fault|die|abort …`, a `|| { … }` whose body contains one of those, or an empty
+tail, which under `set -euo pipefail` means the guard's own status is the command's.
+Enumerating swallows is a losing game; enumerating the one acceptable shape fails closed, so
+a swallowing form nobody has written yet reddens rather than passing. All eight forms above,
+plus the continuation-line `|| true`, are permanent regression cases in
+`scripts/ci-gate/default-branch-uri-encoding.test.sh`, alongside the accepted shapes.
+
+**What the corrected claim still does NOT cover.** Two things, stated plainly rather than
+implied away:
+
+- **Python guards get the comment check and nothing more.** Every cited Python guard is a
+  sub-expression of an `if … is None:` test or a `require(…)` call, and there is no single
+  tail shape that means "this raises" without parsing the file. Five of the eleven allowlist
+  entries are in this weaker class, as is the shell-shaped proof that is really a pinned
+  assertion *string* inside a `.py` list. For those, read the pin as "the cited check is
+  still written" — not "still fails".
+- **It is a command-level anchor, not reachability analysis.** A guard *moved* into a branch
+  that never executes, one made vacuous by changing the value it tests rather than the test
+  itself, and a `fault` helper redefined as a no-op all still satisfy the pin. The
+  terminating helper names are allow-listed by name, not by any proof that they terminate.
+
+The test header states the same boundary in the same words. A pin that overstated its own
+reach would be the defect this ADR is about, one level up — which is exactly what the first
+two versions of this paragraph were.
 
 **The gate can still be outgrown.** The stated ceiling is the honest boundary: it says what
-this scan recognizes, not that every ref in the repository is covered. Widening it again is
+this scan recognizes, not that every ref in the repository is covered. It now names
+composite actions explicitly, because `scanned` covers `.github/workflows/*.yml`,
+`scripts/*.sh` and `scripts/*.py` and not `.github/actions/*/action.yml` — so the
+adopter-facing `commits/${HEAD_SHA}/status` read in `.github/actions/ci-eligibility/action.yml`
+is never judged by this gate. It is covered indirectly, by the byte-parity assertion at
+`scripts/ci-gate/ci-eligibility.test.sh:55-63` between that composite script and node-ci's
+inline copy, and that indirection holds only while the parity assertion does. Widening it again is
 the same procedure — measure the miss first.
 
 ## Related

@@ -60,12 +60,42 @@ The boundary validation added to `scripts/container_deployment_review_producer.p
 the container-deployment contract digest, so adopters must regenerate at a new contract
 SHA.
 
-A cited guard is checked for being live, not merely present. `grep -F` alone found the
-text anywhere in the file, so commenting the guard out or appending `|| true` left this
-gate green — the same rot one level up. A citing entry now requires the pinned text on a
-line that is not commented out ahead of it and does not swallow its own failure there. It
-is a line-level anchor and says so: a guard moved into a branch that never runs still
-satisfies it.
+A cited guard is checked for still FAILING, not merely for being present or uncommented.
+`grep -F` alone found the text anywhere in the file, so commenting the guard out or
+appending `|| true` left this gate green — the same rot one level up. A first pass added a
+denylist of four swallowing literals; an independent re-review then showed that denylist
+was under-specified, and that against the cited guard in `gate-rearm.yml` six further forms
+(`||:`, `|| { :; }`, `|| echo skipped`, `| cat`, a trailing `&`, `|| exit 0`) all kept the
+gate green, while the inline 40-hex proof — the anchor for the `HEAD_SHA` constraint this
+change adds to node-ci — had no liveness treatment at all and accepted every one of them
+plus an outright comment-out.
+
+The anchor is now an allow-list, not a denylist, and command-level, not line-level. It
+joins continuations first — a trailing `\`, a trailing `&&`/`||`/`|`, and a multi-line
+`|| { … }` branch are one command — which is what closes the shape this change itself
+introduced, where node-ci writes the guard on one line and its `|| { …; exit 1; }` on the
+next. It then requires the tail after the pinned text to be one of the shapes that leave
+the guard: `|| exit N`, `|| return N`, `|| continue`, `|| break`,
+`|| fail|fault|die|abort …`, a `|| { … }` whose body contains one of those, or nothing at
+all, which under `set -euo pipefail` means the guard's own status is the command's.
+Anything else reads as disarmed, so a swallow nobody has written yet reddens rather than
+passing. All eight forms, the continuation-line `|| true`, and the accepted shapes are
+permanent regression cases against synthetic fixtures.
+
+Two limits are stated rather than implied away. A Python guard gets the comment check and
+nothing more — every cited Python guard is a sub-expression of an `if … is None:` or a
+`require(…)` call, with no single tail shape meaning "this raises" — so five of the eleven
+allowlist entries are pinned only as "still written". And even at its strongest this is a
+command-level anchor, not reachability analysis: a guard moved into a branch that never
+runs, one made vacuous by editing the value it tests, or a `fault` helper redefined as a
+no-op all still satisfy it.
+
+The scan's file set is also named in the ceiling now: it covers `.github/workflows/*.yml`,
+`scripts/*.sh` and `scripts/*.py`, and NOT `.github/actions/*/action.yml`. The
+adopter-facing `commits/${HEAD_SHA}/status` read in the `ci-eligibility` composite action
+is therefore never judged by this gate directly; it is covered by the byte-parity assertion
+between that composite script and node-ci's inline copy, and only while that assertion
+holds.
 
 The new `HEAD_SHA` constraint is covered by its own negative cases rather than only by the
 positive ones continuing to pass. Eight non-40-hex values — a short SHA, a branch name, a

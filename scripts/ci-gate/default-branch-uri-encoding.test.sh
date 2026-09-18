@@ -50,15 +50,38 @@
 #     name; the proof for a positional is at the call site, not at the use.
 #   * An interpolation split across source lines, and any ref-bearing path segment not in
 #     REF_PATH_SEGMENT.
+#   * Composite actions. `scanned` covers `.github/workflows/*.yml`, `scripts/*.sh` and
+#     `scripts/*.py`; `.github/actions/*/action.yml` is NOT in it, so the adopter-facing
+#     `commits/${HEAD_SHA}/status` read in `.github/actions/ci-eligibility/action.yml` is
+#     never judged here. What covers it is `scripts/ci-gate/ci-eligibility.test.sh:55-63`,
+#     which asserts byte parity between that composite script and node-ci's inline copy:
+#     the guard this scan proves on the inline copy is the same bytes. That is an indirect
+#     proof and it holds only while the parity assertion does.
 #   * The sites in REF_SITE_ALLOWLIST -- exempted by hand, each with its reason. An
-#     entry that cites a guard pins that guard's literal text, and `guard_is_live`
-#     requires it to be un-commented and not to swallow its own failure on that
-#     line, so deleting, commenting out, or `|| true`-ing the cited check reddens
-#     here. That is a LINE-LEVEL anchor and nothing more: a guard MOVED into a
-#     branch that never runs, or made vacuous by editing the value it tests rather
-#     than the test itself, still satisfies the pin. Proving otherwise needs
-#     reachability analysis this test does not do. Read the pin as "the cited check
-#     is still written and still fails", not as "the cited check still runs".
+#     entry that cites a guard pins that guard's literal text, and `guard_is_live` then
+#     asks whether that guard still FAILS. What it asks depends on the language:
+#       - shell (a workflow `run:` block or a `.sh` script): continuations are joined
+#         first -- a trailing `\`, a trailing `&&`/`||`/`|`, and a multi-line `|| { … }`
+#         branch are one command -- and the tail that follows the pinned text must match
+#         an ALLOW-LIST of shapes that leave the guard (`|| exit N`, `|| return N`,
+#         `|| continue`, `|| break`, `|| fail|fault|die|abort …`, or a `|| { … }` whose
+#         body contains one of those), or be empty, which under `set -euo pipefail` means
+#         the guard's own status is the command's. Anything else -- `|| true`, `|| :`,
+#         `||:`, `|| { :; }`, `|| echo skipped`, `| cat`, a trailing `&`, `|| exit 0`, a
+#         bare `&&` chain with no `||` -- is not on the list and reads as disarmed. The
+#         allow-list direction is the point: the denylist this replaced named four
+#         literals and six other swallows walked straight past it (#1464 re-review).
+#       - Python: the comment check and NOTHING MORE. Every cited Python guard is a
+#         sub-expression of an `if … is None:` or `require(…)`, and there is no single
+#         tail shape that means "this raises" without parsing the file. `SHA.fullmatch(x)`
+#         is judged by still being written, not by still failing. Five of the eleven
+#         allowlist entries are in this weaker class, and so is the shell-shaped proof
+#         that is really a pinned assertion STRING inside a `.py` list.
+#     Even at its strongest this is a COMMAND-level anchor, not reachability analysis: a
+#     guard MOVED into a branch that never runs, one made vacuous by editing the value it
+#     tests rather than the test itself, and a `fault` redefined as a no-op all still
+#     satisfy the pin. Read the shell pin as "the cited check is still written and still
+#     fails", and the Python pin as "the cited check is still written".
 # The recognized-site count is pinned in RECOGNIZED_REF_SITES for the same reason the
 # allowlist is explicit: moving an interpolation out of a recognized shape is a way to
 # lose coverage without losing a green run.
@@ -168,6 +191,8 @@ grep -qF "ai-review-label-rearm.yml?ref=$NESTED_BRANCH" "$GH_CALLS" \
 # shell that does (the generated node required-workflow admission step is one).
 # `*.test.sh`, `*.test.py` and `*_test.py` are excluded deliberately: their `?ref=` strings
 # are stub matchers and expected-URL assertions, not privileged reads.
+# `.github/actions/*/action.yml` is NOT scanned -- see the composite-action bullet in the
+# ceiling above for what covers `ci-eligibility`'s copy of the same read instead.
 # --------------------------------------------------------------------------------------
 mapfile -t scanned < <(
   git -C "$root" ls-files -- '.github/workflows/*.yml' 'scripts/*.sh' 'scripts/*.py' \
@@ -259,6 +284,144 @@ block_slice() {
   fi
 }
 
+# Bash runs a command, not a source line. A guard split with a trailing `\`, or chained
+# with a trailing `&&`/`||`/`|`, carries its failure handling on a LATER line: the anchor
+# below would read the pinned text on one line and never see the `|| true` on the next.
+# That is the hole that let node-ci's continuation-form head-sha guard be neutered while
+# this test stayed green (#1464 re-review), and it is strictly worse than commenting the
+# guard out, because nothing on the pinned line changes. Join continuations first, then
+# judge the whole command.
+logical_lines() { # reads text on stdin, emits one line per command
+  awk '
+    { line = $0; sub(/[[:space:]]+$/, "", line) }
+    # `|| {` opens a multi-line failure branch; it is one command until its closing brace.
+    brace {
+      buf = buf " " line
+      if (line ~ /^[[:space:]]*[}][[:space:]]*;?$/) { print buf; buf = ""; brace = 0 }
+      next
+    }
+    # A YAML block-scalar introducer (`run: |`) ends in "|" without continuing a command.
+    line ~ /:[[:space:]]*\|[-+0-9]*$/ { print buf line; buf = ""; next }
+    line ~ /(\|\||&&)[[:space:]]*[{]$/ { buf = buf line; brace = 1; next }
+    line ~ /\\$/ { sub(/\\$/, "", line); buf = buf line; next }
+    line ~ /(&&|\|\|)$/ || line ~ /(^|[^|])\|$/ { buf = buf line " "; next }
+    { print buf line; buf = "" }
+    END { if (buf != "") print buf }
+  '
+}
+
+# An ALLOW-LIST of what may follow a guard on its own command without disarming it. The
+# denylist this replaces named four swallowing literals and missed at least six more --
+# `||:`, `|| { :; }`, `|| echo skipped`, `| cat`, a trailing `&`, and `|| exit 0` all kept
+# a cited guard reading as live (#1464 re-review). Enumerating swallows is a losing game;
+# enumerating the shapes that still fail is not. A tail that is not on this list reads as
+# disarmed, so a swallow nobody has written yet reddens here rather than passing.
+# `return N` is here alongside `exit N` because the gate-rearm receipt guards live inside
+# shell functions, where a non-zero return is how the failure leaves the guard, and
+# `continue`/`break` because a loop that skips the iteration never reaches the URL the
+# guard protects -- which is the only property this anchor claims. The four
+# named helpers are this repository's terminating idioms (`fail`, `fault`, `die`, `abort`)
+# and are allow-listed BY NAME, not by any proof that they terminate: redefining one as a
+# no-op is the same vacuous-guard ceiling the header already states, not a new hole.
+GUARD_FATAL_ACTION='((exit|return)[[:space:]]+[1-9][0-9]*|continue|break)'
+GUARD_FATAL_HELPER='(fail|fault|die|abort)[[:space:]][^|&]*'
+# Anchored at the START of the tail, not the end: a guard may sit inside a larger group
+# (`[ -z "$head" ] || { [[ … ]] || return 2; ref_query="?ref=$head"; }`), so what matters
+# is that the continuation IMMEDIATELY following it is fatal, not what trails after that.
+# A leading `&&` chain is skipped because only the element after the FINAL `&&`/`||`
+# escapes `set -e`; `[[ … ]] && foo` with no `||` is therefore NOT fatal and is rejected.
+GUARD_TAIL_FATAL="^[[:space:]]*(&&[^|]*)*\|\|[[:space:]]*(${GUARD_FATAL_ACTION}([^A-Za-z_]|\$)|${GUARD_FATAL_HELPER}|[{][^}]*[^A-Za-z_]${GUARD_FATAL_ACTION}([^A-Za-z_][^}]*)?[}])"
+guard_tail_is_fatal() { # $1 = the text following the pinned guard on its logical line
+  # Nothing follows: the command's own non-zero status IS the command's status, and every
+  # block this test reads runs under `set -euo pipefail`.
+  [[ "$1" =~ ^[[:space:]]*\;?[[:space:]]*$ ]] && return 0
+  [[ "$1" =~ $GUARD_TAIL_FATAL ]]
+}
+
+# A plain literal match for a cited guard is not enough. `grep -qF` finds the text anywhere
+# in the file, so commenting the guard out, or appending a swallow to it, left this test
+# green while the guard no longer guarded anything -- the same rot one level up. A guard
+# counts as live only if its pinned text sits on a logical line that is not commented out
+# ahead of it and whose tail is on the fatal allow-list above.
+#
+# This is a command-level anchor, not a reachability analysis. See the ceiling note in the
+# header: a guard MOVED into a branch that never executes still satisfies this.
+guard_live_literal() { # $1 = literal proof text; reads the text on stdin
+  local line
+  while IFS= read -r line; do
+    case "$line" in *"$1"*) ;; *) continue ;; esac
+    # Anything opening a comment ahead of the pinned text disarms the whole line.
+    case "${line%%"$1"*}" in *'#'*) continue ;; esac
+    guard_tail_is_fatal "${line#*"$1"}" || continue
+    return 0
+    # Redirected, not pipe-fed: this loop returns on its first live match and would
+    # SIGPIPE a still-writing producer (#1430, #1445).
+  done < <(logical_lines)
+  return 1
+}
+
+guard_live_re() { # $1 = ERE whose match is the proof; reads the text on stdin
+  local line match
+  while IFS= read -r line; do
+    [[ "$line" =~ $1 ]] || continue
+    match="${BASH_REMATCH[0]}"
+    case "${line%%"$match"*}" in *'#'*) continue ;; esac
+    guard_tail_is_fatal "${line#*"$match"}" || continue
+    return 0
+  done < <(logical_lines)
+  return 1
+}
+
+# Python has no single tail shape that means "this raises": every cited Python guard is a
+# sub-expression of an `if … is None:` test or a `require(…)` call, so there is nothing to
+# allow-list without parsing the file. A Python guard therefore gets the comment check and
+# NOTHING MORE. This is the weaker of the two anchors, deliberately and visibly so; the
+# header's ceiling says which entries it covers.
+py_guard_is_live() { # $1 = file, $2 = literal guard text
+  local line
+  while IFS= read -r line; do
+    case "${line%%"$2"*}" in *'#'*) continue ;; esac
+    return 0
+  done < <(grep -F -- "$2" "$1")
+  return 1
+}
+
+guard_is_live() { # $1 = file, $2 = literal guard text
+  if [ "${1##*.}" = py ]; then
+    py_guard_is_live "$1" "$2"
+    return
+  fi
+  guard_live_literal "$2" <"$1"
+}
+
+# A 40-hex-constrained value needs no encoding: the constraint already excludes every
+# character that could change the meaning of the URL. Three spellings count, and in a shell
+# file each is held to the same liveness rule as a cited guard -- this is the anchor for the
+# head-sha constraint #1464 added to node-ci, so it may not be the weaker of the two.
+#
+# In a `.py` file the shell-shaped proof may be a pinned assertion STRING rather than a
+# command (`scripts/cli-projects-package-surface-ruleset.py:169` is one), whose tail is
+# Python list punctuation and never a `||` continuation. Those get the comment check only,
+# the same weaker anchor `py_guard_is_live` applies, and the header ceiling says so.
+sha_constrained() { # $1 = variable name, $2 = block slice, $3 = the file it came from
+  local var="$1"
+  if [ "${3##*.}" = py ]; then
+    grep -qF "[[ \"\$$var\" =~ ^[0-9a-f]{40}\$ ]]" <<<"$2" && return 0
+    grep -qE "(^|[[:space:]])$var[:=][[:space:]]*[\"']?[0-9a-f]{40}[\"']?[[:space:]]*\$" <<<"$2" && return 0
+    grep -qE "^[[:space:]]*$var=\"\\\$\(jq -er .*\^\[0-9a-f\]\{40\}\\\$" <<<"$2" && return 0
+    return 1
+  fi
+  guard_live_literal "[[ \"\$$var\" =~ ^[0-9a-f]{40}\$ ]]" <<<"$2" && return 0
+  guard_live_re "(^|[[:space:]])$var[:=][[:space:]]*[\"']?[0-9a-f]{40}[\"']?([[:space:]]|\$)" <<<"$2" && return 0
+  # The same 40-hex constraint spelled inside the jq program that produced the value.
+  # `jq -er` exits non-zero when `select` drops the value, and `set -euo pipefail` at the
+  # top of every one of these blocks turns that into an abort, so the constraint is as
+  # load-bearing as the `[[ … =~ ]]` form above -- provided the assignment itself is not
+  # the thing that swallows, which is why the match runs to the closing `)"`.
+  guard_live_re "^[[:space:]]*$var=\"[\$][(]jq -er .*\^\[0-9a-f\][{]40[}][\$].*[)]\"" <<<"$2" && return 0
+  return 1
+}
+
 
 # --------------------------------------------------------------------------------------
 # 0. The recognizer's own coverage, measured rather than described. Each case below is a
@@ -321,6 +484,80 @@ def read(repo, branch):
 PYFX
 ( root="$tmp/fx"; py_quote_unshadowed unshadowed.py ) \
   || fail "the stdlib 'from urllib.parse import quote' was mistaken for a shadow"
+
+# The guard-liveness anchor's own coverage. Every `dead` tail below kept a cited guard
+# reading as live while it no longer failed (#1464 re-review): the anchor used to carry a
+# DENYLIST of four swallowing literals, and `||:`, `|| { :; }`, `|| echo skipped`, `| cat`,
+# a trailing `&`, and `|| exit 0` all walked past it. Enumerating swallows is a losing
+# game, so the anchor now allow-lists the tails that DO fail and rejects everything else.
+# These cases run against synthetic files, so fixing a real guard cannot retire one.
+HEX_GUARD='[[ "$head_sha" =~ ^[0-9a-f]{40}$ ]]'
+
+guard_tail_case() { # $1 = live|dead, $2 = label, $3… = the guard's physical lines
+  local expect="$1" label="$2"; shift 2
+  printf '%s\n' "$@" >"$tmp/fx/guard.sh"
+  if guard_is_live "$tmp/fx/guard.sh" "$HEX_GUARD"; then
+    [ "$expect" = live ] || fail "the cited-guard anchor accepted a disarmed guard: $label"
+  else
+    [ "$expect" = dead ] || fail "the cited-guard anchor rejected a live guard: $label"
+  fi
+  # The inline 40-hex proof reads the same shapes out of a block slice, and the two must
+  # not disagree: the guard this PR added to node-ci is judged by the inline path.
+  if sha_constrained head_sha "$(printf '%s\n' "$@")" "$tmp/fx/guard.sh"; then
+    [ "$expect" = live ] || fail "the inline 40-hex proof accepted a disarmed guard: $label"
+  else
+    [ "$expect" = dead ] || fail "the inline 40-hex proof rejected a live guard: $label"
+  fi
+}
+
+guard_tail_case live 'a same-line `|| { …; exit 1; }`' \
+  "$HEX_GUARD"' || { echo "::error::current PR head is unavailable"; exit 1; }'
+guard_tail_case live 'the line-continuation form node-ci uses' \
+  "$HEX_GUARD"' \' \
+  '  || { echo "::error::head-sha is not a 40-hex object name"; exit 1; }'
+guard_tail_case live 'an && chain closing in `|| exit 1`' \
+  "$HEX_GUARD"' &&' \
+  '  [[ "$head_sha" != /* ]] || exit 1'
+guard_tail_case dead 'the guard commented out' \
+  '# '"$HEX_GUARD"' || { echo "::error::x"; exit 1; }'
+guard_tail_case dead 'a `|| true` on the continuation line, not the pinned one' \
+  "$HEX_GUARD"' \' \
+  '  || true'
+for swallow in '|| true' '|| :' '||:' '|| { :; }' '|| echo skipped' '| cat' '&' '|| exit 0'; do
+  guard_tail_case dead "a \`$swallow\` tail" "$HEX_GUARD $swallow"
+done
+
+# The rest of the fatal allow-list, pinned so a later narrowing cannot drop a shape this
+# repository actually writes -- and its near-misses, pinned so widening it stays deliberate.
+guard_tail_case live 'a `|| return 2` inside a function' \
+  "$HEX_GUARD"' || return 2'
+guard_tail_case live 'a guard nested in a larger group, fatal branch first' \
+  '[ -z "$head_sha" ] || { '"$HEX_GUARD"' || return 2; ref_query="?ref=$head_sha"; }'
+guard_tail_case live 'a `|| { …; continue; }` that skips the iteration' \
+  "$HEX_GUARD"' || { echo "::error::bad pin"; failures=$((failures + 1)); continue; }'
+guard_tail_case live 'a `|| fault …` named terminating helper' \
+  "$HEX_GUARD"' || fault 1 "could not resolve a head SHA"'
+guard_tail_case live 'a multi-line `|| {` failure branch' \
+  "$HEX_GUARD"' || {' \
+  '  echo "::error::could not resolve a head SHA" >&2' \
+  '  exit 1' \
+  '}'
+guard_tail_case dead 'an && chain with no || at all: set -e exempts the failing element' \
+  "$HEX_GUARD"' && echo ok'
+guard_tail_case dead 'an unlisted helper name, which nothing here proves terminates' \
+  "$HEX_GUARD"' || notice "head sha looks wrong"'
+guard_tail_case dead 'a `|| { … }` branch whose body never leaves' \
+  "$HEX_GUARD"' || { echo "::warning::head sha looks wrong"; }'
+
+# A command whose own non-zero status ends the step needs no continuation at all; that is
+# how the repo-hygiene entry is written. Swallowing it still has to redden.
+BARE_GUARD='resolved="$(git -C .repo-hygiene rev-parse HEAD)"'
+printf '%s\n' "$BARE_GUARD" >"$tmp/fx/guard.sh"
+guard_is_live "$tmp/fx/guard.sh" "$BARE_GUARD" \
+  || fail "the cited-guard anchor rejected a bare command whose own status ends the step"
+printf '%s\n' "$BARE_GUARD"' || true' >"$tmp/fx/guard.sh"
+guard_is_live "$tmp/fx/guard.sh" "$BARE_GUARD" \
+  && fail "the cited-guard anchor accepted a bare command whose failure is swallowed"
 
 # --------------------------------------------------------------------------------------
 # 2. Semantics: evaluate every encoder expression this repository actually ships.
@@ -532,21 +769,7 @@ while IFS=$'\t' read -r file line kind var syntax; do
     assert_encoder "$label" "$program" "$kind" "$jq_arg"
     continue
   fi
-  # A 40-hex-constrained value needs no encoding: the constraint already excludes every
-  # character that could change the meaning of the URL.
-  if grep -qF "[[ \"\$$var\" =~ ^[0-9a-f]{40}\$ ]]" <<<"$slice"; then
-    continue
-  fi
-  if grep -qE "(^|[[:space:]])$var[:=][[:space:]]*[\"']?[0-9a-f]{40}[\"']?[[:space:]]*\$" <<<"$slice"; then
-    continue
-  fi
-  # The same 40-hex constraint spelled inside the jq program that produced the value.
-  # `jq -er` exits non-zero when `select` drops the value, and `set -euo pipefail` at the
-  # top of every one of these blocks turns that into an abort, so the constraint is as
-  # load-bearing as the `[[ … =~ ]]` form above.
-  if grep -qE "^[[:space:]]*$var=\"\\\$\(jq -er .*\^\[0-9a-f\]\{40\}\\\$" <<<"$slice"; then
-    continue
-  fi
+  sha_constrained "$var" "$slice" "$file" && continue
   ref_site_allowlisted "$file" "$var" && continue
   fail "$label reaches a gh api $kind position without a percent-encoding or a 40-hex constraint in its block"
 done < <(ref_sites)
@@ -567,32 +790,6 @@ RECOGNIZED_REF_SITES=77
 [ "$encoders" -ge 16 ] || fail "only $encoders encoder expressions were exercised; the semantics check is not reaching the fixed sites"
 [ "$py_sites" -ge 18 ] || fail "the ref-interpolation scan found only $py_sites Python sites; it is not reaching the Python callers"
 [ "$py_encoders" -ge 6 ] || fail "only $py_encoders Python encoder calls were exercised; the semantics check is not reaching them"
-
-# A plain literal match for a cited guard is not enough. `grep -qF` finds the text anywhere
-# in the file, so commenting the guard out, or appending `|| true` to it, left this test
-# green while the guard no longer guarded anything -- the same rot one level up. A cited
-# guard counts as live only if the pinned text occurs on a line that is not commented out
-# ahead of it and does not swallow its own failure on that line.
-#
-# This is a line-level anchor, not a reachability analysis. See the ceiling note in the
-# header: a guard MOVED into a branch that never executes still satisfies this.
-guard_is_live() { # $1 = file, $2 = literal guard text
-  local line before after
-  while IFS= read -r line; do
-    # Anything opening a comment ahead of the pinned text disarms the whole line.
-    before="${line%%"$2"*}"
-    case "$before" in *'#'*) continue ;; esac
-    # A guard whose failure is swallowed on its own line is decoration.
-    after="${line#*"$2"}"
-    case "$after" in
-      *'|| true'*|*'|| :'*|*'||true'*|*'or True'*) continue ;;
-    esac
-    return 0
-    # Redirected, not pipe-fed: this loop returns on its first live match and would
-    # SIGPIPE a still-writing `grep` (#1430, #1445).
-  done < <(grep -F -- "$2" "$1")
-  return 1
-}
 
 # A stale allowlist entry is a silent hole: it would keep vouching for a site that has
 # moved, been renamed, or been fixed, and would quietly cover a future site that happens to
