@@ -181,21 +181,44 @@ coverage:
   **How that number was counted**, stated here because two earlier ones (67, then 123) were
   not, and neither could be reproduced. *Universe:* the scan's own file set — `git ls-files
   '.github/workflows/*.yml' 'scripts/*.sh' 'scripts/*.py'` with `*.test.sh`, `*.test.py` and
-  `*_test.py` removed, 144 files. No `.py` file contains a `|| { … }`, so the 87 shell and
-  YAML files among them give the same answer, and no figure quoted against a "206-file" or
-  "174-file" universe belongs to this measurement. *Predicate:* a logical line, as
+  `*_test.py` removed, 144 files. An earlier revision said "no `.py` file contains a
+  `|| { … }`". That is false — `scripts/gen-node-ci-protected.py:778`, `:781` and `:782`
+  contain them inside emitted-shell string literals — and so is the narrower restatement
+  "no `.py` line's structural tail is `|| {`": line 778 *does* end that way structurally,
+  because `shell_structure` has no model of Python's `\"` escapes and its quote state
+  ping-pongs across them. What is true, and what the count actually rests on, is that
+  **no `.py` record whose structural tail is `|| {` is accepted by `brace_body_is_fatal`**:
+  three reach that test and all three are rejected. So the 87 shell and YAML files give the
+  same answer, and no figure quoted against a "206-file" or "174-file" universe belongs to
+  this measurement. *Predicate:* a logical line, as
   `logical_lines slice` emits them, whose tail is `|| {`, whose body `brace_body_is_fatal`
   accepts, and whose source text contains `>&2` — this gate's own two functions, not a regex
   approximating them. *Command:* source those functions out of
   `scripts/ci-gate/default-branch-uri-encoding.test.sh` and apply the predicate to each file
-  in the set. 397 of those branches are fatal; 97 carry the redirection. Re-derive it rather
-  than trusting it — each figure it replaces survived a full review round.
+  in the set; 97 of the branches it accepts carry the redirection. Re-derive it rather than
+  trusting it — each figure it replaces survived a full review round.
+
+  An earlier revision also quoted a denominator, "397 of those branches are fatal". It is
+  **withdrawn**, not corrected: re-deriving it gives 395, and the predicate as stated does
+  not pin which number is right, because it does not say whether the unit is the logical
+  line or the brace, nor whether the `&& {` form that `logical_lines` joins identically is
+  in scope. Only the three figures that reproduce exactly from the text above — **97**,
+  **17** and **144** — are stated. A denominator returns only with a predicate that pins it.
 - An action reached only through a `&&`/`||` chain inside the body is not unconditionally
   reached. This anchor does not evaluate conditions: it cannot tell `{ false && exit 1; }`
   from `{ [ -n "$x" ] && exit 1; }`, and reads both as disarmed.
 - The structural pass is a lexical scan, not a shell parser. It models quotes, backticks,
   backslashes, `${…}`, `$(…)` and word-position `#` — not here-documents, `case` patterns,
-  or quoting nested inside `$(…)`. Where it is unsure it blanks, which reads as not fatal.
+  or quoting nested inside `$(…)`. *Within one line* it blanks where it is unsure, which
+  reads as not fatal. **Across lines that direction reverses**, and an earlier revision of
+  this bullet stated only the safe half. The scan starts every physical line unquoted, so a
+  here-document body and a string continued onto the next line read as ordinary *commands*.
+  For any consumer that counts structure across records that is a fail-**open**, not a
+  fail-closed blank: it is how a bare `if` inside either raised the depth in
+  `negated_branch_dominates`, consumed the real `fi` one level too deep, and read a use
+  sitting below `fi` as though it were inside the protected arm. Detecting such a region is
+  bounded where modelling it is not, so that walk now detects and declines instead — which
+  is fail-closed, and costs a guard whose `else` arm legitimately contains a here-document.
 - `continue`/`break` are never accepted, in or out of a loop, so a guard that genuinely
   protects a URL by skipping its iteration reads as disarmed. They were accepted, behind a
   lexical `do`/`done` loop-depth count, and that count is now **deleted**. Two reasons. It was
@@ -209,6 +232,17 @@ coverage:
   the merged tree failed nothing but the fixtures that tested the count itself. Roughly 60
   lines whose only consumer was its own test, carrying a fail-open, in exchange for a
   fail-closed gap no current site occupies.
+
+  `do`/`done` are read again in `branch_events`, and this is not that count returning.
+  That one licensed `continue`/`break` as *terminating actions* on a lexical loop-depth
+  guess, and spanned a whole slice from a single stray `do`. This one only raises and lowers
+  the same compound-statement depth `if`/`fi` already raise, alongside `case`/`esac`, within
+  the records `negated_branch_dominates` walks, and its effect is strictly to REJECT more:
+  a statement nested in a loop or `case` body stops counting as a statement of the arm.
+  `continue`/`break` remain rejected outright, in or out of a loop. "Rejects more" is what
+  was observed across every fixture in this file, the five previously-rejected negated-branch
+  shapes and the real site included, not a proof: this raises a depth counter, and a depth
+  counter that loses its place can move a verdict either way.
 - A **positive** `if <guard>; then <use>` is not accepted, nor a negated branch whose only
   `else` belongs to a nested `if`, nor one where the guard is only an operand of a `&&`/`||`
   in the condition. A negated branch with no `else`, or with a vacuous one, is accepted only
@@ -217,8 +251,19 @@ coverage:
   all this anchor can tell". That was false in the other direction too: seven shapes it
   *accepted* also fell through to the use, and they are now rejected and pinned.
 
+  Round 5 found two further classes it accepted, both now rejected and pinned with controls:
+  a fatal statement nested in a `while`/`for`/`until`/`select` body or a `case` arm, which
+  `branch_events` could not see because it tracked only `if`/`fi`, so an empty loop list or a
+  matching-nothing `case` reached the use unchecked; and a here-document or a string
+  continued onto the next line inside the `else` arm, per the structural-pass bullet above.
+  Two near-misses of the here-document detection itself — an introducer blanked away inside
+  an unclosed `$(`, and a delimiter not beginning with a letter — were found by probing the
+  first form of that detection and are pinned too.
+
 *Fail-open* — these satisfy the pin while the guard no longer guards, and are the honest
-ceiling of a command-level anchor:
+ceiling of a command-level anchor. This is an enumeration of what is **known** to be open,
+not a claim that it is all that is: every round of this PR so far has stated one of these
+lists as complete, and every one of those statements was falsified in the round after it.
 
 - **Python guards get the comment check and nothing more.** Every cited Python guard is a
   sub-expression of an `if … is None:` test or a `require(…)` call, and there is no single

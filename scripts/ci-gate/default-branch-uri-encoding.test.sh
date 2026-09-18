@@ -96,7 +96,17 @@
 #           · `shell_structure` is a lexical scan, not a shell parser. It models quotes,
 #             backticks, backslashes, `${…}`, `$(…)` and word-position `#`, and nothing
 #             else -- not here-documents, not `case` patterns, not quoting nested inside
-#             `$(…)`. Where it is unsure it blanks, which reads as NOT fatal.
+#             `$(…)`. WITHIN one line, where it is unsure it blanks, which reads as NOT
+#             fatal. ACROSS lines that direction reverses, and saying otherwise was a
+#             fail-OPEN (#1464 re-review round 5): the scan starts every physical line
+#             unquoted, so a here-document body, and a string continued onto the next line,
+#             read as ORDINARY COMMANDS rather than blanking. Any caller that counts
+#             structure across records must therefore detect those regions and decline --
+#             `negated_branch_dominates` does, via `shell_data_unclosed` and
+#             `HEREDOC_INTRODUCER`. That decline is fail-CLOSED: a guard that genuinely
+#             protects a use from inside an `else` arm containing a here-document, or a
+#             record merely quoting the text `<<WORD`, now reads as disarmed. No site in
+#             this repository is written that way today.
 #           · `continue`/`break` are rejected outright rather than modelled. They leave a
 #             guard only inside a loop, the lexical `do`/`done` count that established that
 #             was ~60 lines whose last real site #1466 rewrote into an `elif`, and in
@@ -126,9 +136,15 @@
 #         entry's pinned guard, read from a whole file -- there is no use to cut at, so the
 #         END OF THE FILE stands in for it, and a file that happens to end inside the `else`
 #         arm reads as protecting a use that may be anywhere, including in another file. No
-#         allowlist entry is written that way today, and this is the only fail-OPEN in that
-#         class after round 4; every shape listed under `negated_branch_dominates` is now
-#         rejected.
+#         allowlist entry is written that way today.
+#       · that `whole`-mode residual is what is KNOWN to be open in the negated-branch class,
+#         not all that is. Round 4 called it "the only fail-OPEN in that class"; round 5 then
+#         found two more -- a fatal statement nested in a loop or `case` body, which
+#         `branch_events` could not see, and a here-document or multi-line string in the
+#         `else` arm, which inflated the depth count. Both are now REJECTED, and both are
+#         pinned as fixtures with controls. Five consecutive rounds shipped a sentence of the
+#         form "this is the only ..." about this anchor and every one was falsified within a
+#         round. Enumerate what is open; do not write another one.
 #       · that same proof is positional, not dataflow: it establishes that the use LINE is
 #         inside the protected arm, not that the value reaching the use is the value the
 #         guard tested. A re-assignment between the guard and the use, or a different
@@ -395,6 +411,7 @@ function shell_structure(s,   out, i, n, c, q, d) {
     if (c == "#" && (out == "" || substr(out, length(out), 1) ~ /[[:space:];&|()]/)) break
     out = out c
   }
+  SHELL_DATA_OPEN = q
   return out
 }
 function brace_delta(st,   i, n, c, d) {
@@ -407,6 +424,25 @@ function brace_delta(st,   i, n, c, d) {
 shell_structure() { # $1 = shell text -> the same text with data spans blanked
   awk "$SHELL_STRUCTURE_AWK"'{ print shell_structure($0) }' <<<"$1"
 }
+
+# `shell_structure` reads ONE PHYSICAL LINE and starts each one unquoted, so a quote or a
+# backtick opened on one line and closed on the next is not a data span to it: the opening
+# line's remainder blanks, and every following line up to the closer reads as COMMANDS.
+# Callers that count structure across lines must know when that happened.
+shell_data_unclosed() { # $1 = shell text -> 0 when some line ends inside a data span
+  awk "$SHELL_STRUCTURE_AWK"'
+    { shell_structure($0); if (SHELL_DATA_OPEN != "") found = 1 }
+    END { exit(found ? 0 : 1) }' <<<"$1"
+}
+
+# A here-document body is the same blind spot with an explicit introducer. This matches ANY
+# `<<` that is not a here-STRING (`<<<`, single-line and not one), rather than trying to
+# recognize a delimiter word: `<<'9EOF'` is a legal delimiter that a `[[:alpha:]_]` class
+# missed, and every such near-miss is a fail-OPEN. Over-matching here only declines.
+# It is applied to the RAW record, not the structural text, for the same reason: an
+# introducer inside an unclosed `$(` is blanked away before the structural text exists, and
+# reading it raw also declines on a `<<WORD` that is merely quoted data. Both are refusals.
+HEREDOC_INTRODUCER='(^|[^<])<<(-|[^<]|$)'
 
 # Emits one logical line per command. A brace branch is closed by BRACE DEPTH, not by a bare `}` line: a
 # closer carrying a tail (`} >&2`, `} || true`) used to leave the state machine open and
@@ -562,7 +598,16 @@ branch_events() { # $1 = structural text -> its command-position if/fi/else/elif
   local IFS=';'
   for part in $st; do
     part="${part#"${part%%[![:space:]]*}"}"; part="${part%%[[:space:]]*}"
-    case "$part" in if | fi | else | elif) printf '%s\n' "$part" ;; esac
+    case "$part" in
+      if | fi | else | elif) printf '%s\n' "$part" ;;
+      # `do`/`done` and `case`/`esac` open and close a compound statement exactly as
+      # `if`/`fi` do. They were invisible here, so a fatal statement nested in a loop or a
+      # `case` arm read as a statement of the `then` arm itself and the guard ACCEPTed with
+      # the use reached on an empty loop list (#1464 re-review round 5). `do` is counted
+      # rather than `while`/`for`/`until`/`select`, because `do` is the token that always
+      # pairs with `done`, in both the same-line and the split spelling.
+      do | done | case | esac) printf '%s\n' "$part" ;;
+    esac
   done
 }
 
@@ -607,6 +652,17 @@ negated_branch_dominates() { # $1 = index of the guard's record in GUARD_RECORDS
   local i d=0 event struct in_then=1 arm_terminates=1 depth_at_start
   for ((i = $1 + 1; i < ${#GUARD_RECORDS[@]}; i++)); do
     struct="$(shell_structure "${GUARD_RECORDS[i]}")"
+    # This walk counts structure ACROSS records, which is exactly what the per-line
+    # structural pass cannot do for a here-document body or a string continued onto the next
+    # line: a bare `if` inside either raised `d`, the real `fi` was consumed one level too
+    # deep, and the records ran out with `in_then=0` -- reading as a use inside the protected
+    # arm when the use actually sat below `fi` with a non-terminating `then` arm. That is a
+    # fail-OPEN, and the header's blanket "where it is unsure it blanks, which reads as not
+    # fatal" was the wrong direction for it (#1464 re-review round 5).
+    # Modelling those regions is shell parsing. DETECTING them is not, so the anchor detects
+    # them and declines -- the same move `brace_body_is_fatal` already makes for `<<`.
+    [[ "${GUARD_RECORDS[i]}" =~ $HEREDOC_INTRODUCER ]] && return 1
+    shell_data_unclosed "${GUARD_RECORDS[i]}" && return 1
     depth_at_start=$d
     # Only a statement of the arm ITSELF is unconditionally reached: one nested inside a
     # further branch is not, which is the same reason `{ false && exit 1; }` is rejected.
@@ -616,9 +672,12 @@ negated_branch_dominates() { # $1 = index of the guard's record in GUARD_RECORDS
     fi
     while IFS= read -r event; do
       case "$event" in
-        if) d=$((d + 1)) ;;
+        if | do | case) d=$((d + 1)) ;;
         # `arm_terminates` is already 0-for-yes, so it IS the answer below the construct.
         fi) [ "$d" -eq 0 ] && return "$arm_terminates"; d=$((d - 1)) ;;
+        # A `done`/`esac` closing at depth 0 would close a construct this walk never saw
+        # opened, so the depth model has lost the file. Decline rather than guess.
+        done | esac) [ "$d" -eq 0 ] && return 1; d=$((d - 1)) ;;
         else | elif) [ "$d" -eq 0 ] && in_then=0 ;;
       esac
     done < <(branch_events "$struct")
@@ -921,6 +980,124 @@ guard_tail_case dead 'a negated `if` whose `else` belongs to a nested branch' \
   '  fi' \
   'fi' \
   'gh api "repos/$repository/commits/$head_sha"'
+# A fatal statement nested in a LOOP or a `case` arm is not a statement of the `then` arm:
+# the loop may run zero times and the `case` may match no pattern, so the use below `fi` is
+# reached with an unchecked value. `branch_events` tracked only `if`/`fi`, so `do`/`done` and
+# `case`/`esac` were invisible and all three shapes ACCEPTed (#1464 re-review round 5).
+#
+# Each is paired with a CONTROL that moves the SAME fatal statement out of the nested body to
+# the arm's own top level and must stay live. Without it a `dead` verdict proves nothing: the
+# first `case` shape tried here was rejected only because `a) exit 1 ;;` does not BEGIN with a
+# fatal action, which would have pinned the wrong cause.
+guard_tail_case dead 'a fatal statement inside a `while` body in the `then` arm' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  while read -r line; do' \
+  '    exit 1' \
+  '  done' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+guard_tail_case live 'the same `exit 1` below `done`, at the arm top level' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  while read -r line; do' \
+  '    echo "::warning::$line"' \
+  '  done' \
+  '  exit 1' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+guard_tail_case dead 'a fatal statement inside a `for` body in the `then` arm' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  for candidate in $refs; do' \
+  '    exit 1' \
+  '  done' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+guard_tail_case live 'the same `exit 1` below that `done`, at the arm top level' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  for candidate in $refs; do' \
+  '    echo "::warning::$candidate"' \
+  '  done' \
+  '  exit 1' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+guard_tail_case dead 'a fatal statement inside a `case` arm in the `then` arm' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  case "$head_sha" in' \
+  '    "")' \
+  '      exit 1' \
+  '      ;;' \
+  '  esac' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+guard_tail_case live 'the same `exit 1` below `esac`, at the arm top level' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  case "$head_sha" in' \
+  '    "")' \
+  '      echo "::warning::empty"' \
+  '      ;;' \
+  '  esac' \
+  '  exit 1' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+
+# `shell_structure` reads one physical line at a time, so a here-document body and a string
+# continued onto the next line read as COMMANDS. A bare `if` in either, inside the `else` arm,
+# raised the depth, consumed the real `fi` one level too deep, and left the walk inside what
+# looked like the protected arm -- while the use sat below `fi` with a `then` arm that only
+# counts and falls through. Both ACCEPTed (#1464 re-review round 5). The anchor cannot model
+# those regions, so it detects and declines them; the CONTROLs pin that the decline is caused
+# by the unmodellable region and not by the surrounding shape, which stays live.
+guard_tail_case dead 'a bare `if` inside a here-document in the `else` arm' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  failures=$((failures + 1))' \
+  'else' \
+  '  cat <<EOF' \
+  'if this were code it would open a branch; then' \
+  'EOF' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+guard_tail_case dead 'a bare `if` inside a string continued onto the next line' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  failures=$((failures + 1))' \
+  'else' \
+  '  message="head_sha was rejected' \
+  'if this were code it would open a branch; then' \
+  '"' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+guard_tail_case live 'the same shape with neither, whose use IS in the `else` extent' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  failures=$((failures + 1))' \
+  'else' \
+  '  gh api "repos/$repository/commits/$head_sha"'
+# Two near-misses of the introducer match itself, found by probing the first form of it and
+# pinned so a later narrowing cannot reopen them. Both ACCEPTed while it read the STRUCTURAL
+# text and tried to recognize a delimiter WORD.
+guard_tail_case dead 'a here-document introducer blanked away inside an unclosed `$(`' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  failures=$((failures + 1))' \
+  'else' \
+  '  summary=$(cat <<EOF' \
+  'if this were code it would open a branch; then' \
+  'EOF' \
+  '  )' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+guard_tail_case dead 'a here-document delimiter that does not begin with a letter' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  failures=$((failures + 1))' \
+  'else' \
+  "  cat <<'9EOF'" \
+  'if this were code it would open a branch; then' \
+  '9EOF' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+guard_tail_case live 'a here-STRING below `fi`, which is single-line and not a here-document' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  exit 1' \
+  'fi' \
+  'read -r probe <<<"$head_sha"' \
+  'gh api "repos/$repository/commits/$head_sha"'
+
 guard_tail_case dead 'a POSITIVE `if` condition, whose failing arm is the unguarded one' \
   'if '"$HEX_GUARD"'; then' \
   '  gh api "repos/$repository/commits/$head_sha"' \

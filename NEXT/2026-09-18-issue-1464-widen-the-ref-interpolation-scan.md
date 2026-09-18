@@ -214,3 +214,35 @@ ADR 0194 also records the residual this change does not close: `2>/dev/null || e
 the same compare call still turns a genuine API outage into `behind=0` and proceeds.
 Tracked as #1476.
 
+
+Re-review round 5 closed two more fail-opens in the negated-branch anchor, neither of which
+the round-4 "this is the only fail-OPEN in that class" sentence admitted. A fatal statement
+nested in a `while`/`for`/`until`/`select` body or a `case` arm counted as a statement of
+the `then` arm, because the depth counter tracked only `if`/`fi` — so a loop that runs zero
+times, or a `case` that matches nothing, reached the use with an unchecked value.
+`branch_events` now tracks `do`/`done` and `case`/`esac` too. This is not the deleted
+loop-depth count returning: it never licenses `continue`/`break`, and every fixture in the
+file, the real site included, keeps its previous verdict except the shapes it is meant to
+flip. That is an observation over the fixtures, not a proof that a depth counter can only
+reject more.
+
+The second is the structural pass being per-line. It starts every physical line unquoted,
+so a here-document body, and a string continued onto the next line, read as ordinary
+commands rather than blanking — a bare `if` in either, inside the `else` arm, inflated the
+depth and made a use sitting below `fi` read as protected. Modelling those regions is shell
+parsing; detecting them is not, so the walk now declines on a here-document introducer or an
+unclosed data span instead. That is fail-closed, and costs a guard whose `else` arm
+legitimately contains a here-document. Probing the first form of that detection found two
+near-misses of its own — an introducer blanked away inside an unclosed `$(`, and a delimiter
+not beginning with a letter — which are closed and pinned as well.
+
+Every new shape is pinned with a control that moves the same fatal statement to the arm's
+top level and must stay live, so a `dead` verdict cannot pass for the wrong reason.
+
+Two ADR 0194 measurements were corrected rather than restated. "No `.py` file contains a
+`|| { … }`" was false, and so is the narrower "no `.py` line's structural tail is `|| {`":
+`scripts/gen-node-ci-protected.py:778` does end that way structurally, because the quote
+model has no account of Python's `\"` escapes. What holds is that no such `.py` record is
+accepted by `brace_body_is_fatal`. The `397` denominator is withdrawn, not corrected: it
+re-derives as 395 and the stated predicate does not pin which is right. Only `97`, `17` and
+`144`, which reproduce exactly, are stated.
