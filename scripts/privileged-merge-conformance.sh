@@ -267,6 +267,18 @@ while IFS= read -r repository; do
     fi
     failures=$((failures + 1))
     [ "$direct_consumer" = true ] || continue
+  elif [ ! -s "$caller_file" ]; then
+    # `base64 --decode` succeeds on an empty stream, so a fetch that returned nothing
+    # decodes to an empty artifact that reads as content. Left unguarded that is not a
+    # missing signal but a wrong one: the audit states a fact about the adopter's caller
+    # that it never established. Name the failed read instead, distinctly from absence.
+    if [ "$direct_consumer" = true ]; then
+      echo "::error title=Empty canonical privileged merge workflow::repository=$repository path=$CALLER_PATH audit_sha=$AUDIT_SHA reason='fetched artifact decoded to no content, which is a failed read rather than an absent file'"
+    else
+      echo "::error title=Empty privileged merge caller::repository=$repository path=$CALLER_PATH reason='fetched artifact decoded to no content, which is a failed read rather than an absent file'"
+    fi
+    failures=$((failures + 1))
+    [ "$direct_consumer" = true ] || continue
   else
     caller_available=true
     caller_content="$(<"$caller_file")"
@@ -284,6 +296,11 @@ while IFS= read -r repository; do
     failures=$((failures + 1))
   elif ! printf '%s' "$retry_response" | base64 --decode >"$retry_file" 2>/dev/null; then
     echo "::error title=Unreadable promotion retry::repository=$repository path=$RETRY_PATH reason='invalid base64 content'"
+    failures=$((failures + 1))
+  elif [ ! -s "$retry_file" ]; then
+    # Same construction, same hazard: an empty decode leaves $retry_available false so no
+    # downstream check reads it as evidence, and the failed read is reported on its own.
+    echo "::error title=Empty promotion retry::repository=$repository path=$RETRY_PATH reason='fetched artifact decoded to no content, which is a failed read rather than an absent file'"
     failures=$((failures + 1))
   else
     retry_available=true

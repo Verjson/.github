@@ -539,6 +539,55 @@ ALPHA_CONTENT="$(bash "$generator" "$contract_sha" "$required_checks" \
       || fail "two canonical pins lacks the pin-count diagnostic: $(<"$tmp/out")"
   }
 
+# `base64 --decode` succeeds on an empty stream, so a fetch that returned nothing decodes
+# to an empty artifact that is then read as content. Without a guard the audit does not go
+# quiet -- it makes a confident claim about the adopter it never established. This script
+# feeds merge-authorization conformance, so an empty decode reads as a conformance
+# determination that was never made. The verdict must name a failed read, and must not be
+# reachable from the vocabulary used for an adopter that genuinely lacks the wiring.
+ALPHA_CONTENT="" run_audit \
+  && fail "an empty fetched caller artifact reported green" \
+  || {
+    grep -q "Empty privileged merge caller::repository=Verjson/alpha" "$tmp/out" \
+      && grep -q "decoded to no content" "$tmp/out" \
+      && ! grep -q 'expected exactly one immutable canonical workflow pin' "$tmp/out" \
+      && pass "an empty fetched caller artifact faults as a failed read, not as a pin problem" \
+      || fail "empty caller artifact drew a verdict it never established: $(<"$tmp/out")"
+  }
+
+ALPHA_RETRY_CONTENT="" run_audit \
+  && fail "an empty fetched promotion retry artifact reported green" \
+  || {
+    grep -q "Empty promotion retry::repository=Verjson/alpha" "$tmp/out" \
+      && grep -q "decoded to no content" "$tmp/out" \
+      && pass "an empty fetched promotion retry artifact faults as a failed read" \
+      || fail "empty retry artifact drew a verdict it never established: $(<"$tmp/out")"
+  }
+
+# The canonical repository reads the same two artifacts through the same branch, where an
+# empty decode would otherwise be explained as remote bytes differing from the audited
+# revision -- a byte-comparison verdict drawn from bytes that were never fetched.
+ACTIVE_REPOSITORIES=$'Verjson/.github' SECRET_REPOSITORIES=$'Verjson/.github' \
+  CANONICAL_CONTENT="" run_audit \
+  && fail "an empty fetched canonical workflow reported green" \
+  || {
+    grep -q 'Empty canonical privileged merge workflow::repository=Verjson/\.github' "$tmp/out" \
+      && grep -q "decoded to no content" "$tmp/out" \
+      && ! grep -q 'remote bytes differ from the checked-out audit revision' "$tmp/out" \
+      && pass "an empty fetched canonical workflow faults as a failed read, not as a byte mismatch" \
+      || fail "empty canonical workflow drew a byte-comparison verdict: $(<"$tmp/out")"
+  }
+
+# The distinction the verdict exists to carry: an adopter that genuinely lacks the file
+# still reports absence, and must not be relabelled a failed read by this guard.
+ALPHA_CALLER=missing run_audit \
+  && fail "a missing caller reported green" \
+  || {
+    ! grep -q 'Empty privileged merge caller' "$tmp/out" \
+      && pass "a genuinely absent caller is not reported as an empty fetch" \
+      || fail "absence was relabelled as a failed read: $(<"$tmp/out")"
+  }
+
 # The remaining early exits leak loop-scoped state without a reachable read-before-assignment
 # today, so no fixture can observe them. Pin the two structural invariants that keep them
 # unobservable: the per-repository reset runs before any branch can leave the iteration, and
