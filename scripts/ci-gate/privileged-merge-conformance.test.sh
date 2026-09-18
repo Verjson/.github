@@ -559,30 +559,125 @@ assert source.count(opener) == 1, "the fleet loop header is no longer unique"
 assert source.count(closer) == 1, "the fleet loop footer is no longer unique"
 body = source[source.index(opener) + 1:source.index(closer)]
 
+# Join backslash continuations before anything else looks at the text. The reset statement
+# is continuation-joined and the loop already wraps long commands, so a collector that
+# reads raw lines would drop every name written past a wrap -- silently, which is the
+# failure mode this whole contract exists to prevent.
+joined = []
+pending = ""
+for line in body:
+    stripped = line.rstrip()
+    if stripped.endswith("\\"):
+        pending += stripped[:-1]
+        continue
+    joined.append(pending + line)
+    pending = ""
+assert not pending, "the loop body ends inside a line continuation"
+
 # An embedded awk/sed/jq program is a foreign language that happens to spell assignment the
-# same way bash does. Excise those regions by structure rather than relying on their lines
-# beginning with `$0` or a bare word, which is an incidental fact about today's program.
-# The opener's own bash prefix is kept, because that is where the capture is assigned.
-EMBEDDED_OPEN = re.compile(r"\$\(\s*(?:awk|sed|jq)\s+'")
+# same way bash does. Match the command in word position -- bare, after `!`, after a pipe,
+# or inside `$(`/`<(` -- with any options between it and its opening quote, because the
+# loop calls `jq -e '` bare twice and `$(awk '` only once. Anchoring on `$(` would hand
+# both jq programs to the bash tokenizer verbatim.
+EMBEDDED_CMD = re.compile(r"(?:^|[\s(|&;!])(awk|sed|jq)\b[^'\n]*'")
 code = []
 inside_embedded = False
-for line in body:
-    if inside_embedded:
-        if "'" in line:
+carry = ""
+for line in joined:
+    buffered, rest = carry, line
+    carry = ""
+    while True:
+        if inside_embedded:
+            close = rest.find("'")
+            if close < 0:
+                rest = ""
+                break
             inside_embedded = False
-        continue
-    match = EMBEDDED_OPEN.search(line)
-    if match and "'" not in line[match.end():]:
-        inside_embedded = True
-        line = line[:match.start()].rstrip("\"'") + "EMBEDDED_PROGRAM"
-    code.append(line)
+            rest = rest[close + 1:]
+            continue
+        match = EMBEDDED_CMD.search(rest)
+        if not match:
+            buffered += rest
+            break
+        # Splice the program out in place rather than emitting the opener's prefix and the
+        # closer's remainder as two lines. The region sits inside `"$(...)"`, so cutting it
+        # in two leaves each half with an unbalanced quote -- and the tokenizer would then
+        # swallow `|| name=1` written just past the closing quote, which is the loop's
+        # dominant idiom and a silent false negative.
+        buffered += rest[:match.start(1)] + "EMBEDDED_PROGRAM"
+        after = rest[match.end():]
+        close = after.find("'")
+        if close < 0:
+            inside_embedded = True
+            break
+        rest = after[close + 1:]
+    if inside_embedded:
+        carry = buffered
+    else:
+        code.append(buffered)
 assert not inside_embedded, "an embedded program region was never closed"
+
+# Whole-line comments are prose: neither a `continue` nor an `unset` written in one is
+# control flow. Trailing comments are dropped by the tokenizer below.
+uncommented = [line for line in code if not line.lstrip().startswith("#")]
+
+# Anchor the reset on being the loop's only top-level `unset` rather than on being the first
+# line that happens to start with one, so an unrelated `unset` cannot satisfy this vacuously.
+reset_starts = [i for i, line in enumerate(uncommented) if re.match(r"^  unset\s", line)]
+assert len(reset_starts) == 1, f"expected exactly one per-repository reset, found {len(reset_starts)}"
+reset_at = reset_starts[0]
+reset = set(uncommented[reset_at].replace("unset", "", 1).split())
+assert reset, "the reset statement named nothing"
+
+exits = [i for i, line in enumerate(uncommented) if re.search(r"\b(?:continue|break)\b", line)]
+# The only legitimate pre-reset exit skips a blank inventory line before any state is set.
+assert exits and uncommented[exits[0]].strip() == '[ -n "$repository" ] || continue', uncommented[exits[0]]
+early = [uncommented[i].strip() for i in exits[1:] if i < reset_at]
+assert not early, f"early exits precede the reset: {early}"
+
+# An assignment can sit behind a `case` arm label, a control keyword, a `!`, a pipe, a brace
+# group, or a short-circuit after a test -- `has_secret` alone is written three of those
+# ways. Strip lead-ins from each segment rather than demanding the name lead the line.
+LEADIN = re.compile(r"""^(?:
+      (?:if|elif|while|until|then|else|do|done|fi|case|in|esac|time|!
+        |command|builtin|env|exec|nohup|stdbuf)$
+    | [{}]
+    | \[\[?
+    | \]\]?
+    | [^()\s|=]+\)                                          # a case arm label
+  )""", re.X)
+
+# Options that consume the following word, per command. Getting this right is what keeps
+# `read -d '' name` and `mapfile -d '' -t name` from losing their variable to an argument.
+ARG_TAKING = {
+    "mapfile": set("dnOsCcu"),
+    "readarray": set("dnOsCcu"),
+    "read": set("adinNptu"),
+}
+# For `read`, the argument of -a is itself a variable being assigned.
+NAMES_ITS_ARG = {"read": set("a")}
+DECLARATORS = ("declare", "typeset", "export", "readonly", "local")
+NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(?:\[[^]]*\])?\+?=")
+LET_TARGET = re.compile(r"^[\"']?([A-Za-z_][A-Za-z0-9_]*)\s*(?:\+\+|--|[-+*/%&|^]?=)")
+# `${name:=default}` and `${name=default}` assign wherever they are expanded, including
+# inside double quotes, so they are found on the whole line rather than per word.
+ASSIGN_EXPANSION = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*):?=")
+# Arithmetic assigns through `=`, every compound operator, and pre/post increment.
+ARITH_TARGET = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*(?:\+\+|--|(?:[-+*/%&|^]|<<|>>)?=(?!=))")
+ARITH_PREFIX = re.compile(r"(?:\+\+|--)\s*([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def unquote(word):
+    """Strip shell quoting from a candidate name. `read -r "brandnew"` names a variable
+    exactly as `read -r brandnew` does; leaving the quotes on drops it silently."""
+    return re.sub(r"\$?[\"']", "", word)
 
 
 def segments(line):
     """Split a line into command segments and each segment into words, honoring quotes,
-    `$(...)`, and `${...}` so a `;` or `&&` inside a string cannot split a token, and
-    dropping an unquoted trailing comment."""
+    `$(…)`, `<(…)`, `${…}`, and `((…))` so a separator inside a string or an arithmetic
+    header cannot split a token, and dropping an unquoted trailing comment."""
     words, current, out = [], "", []
     quote, depth, index = None, 0, 0
 
@@ -613,10 +708,15 @@ def segments(line):
             current += char
             index += 1
             continue
-        if pair in ("$(", "${") or (depth and char == "("):
+        if pair in ("$(", "${", "<(", ">("):
             depth += 1
-            current += pair if pair in ("$(", "${") else char
-            index += 2 if pair in ("$(", "${") else 1
+            current += pair
+            index += 2
+            continue
+        if char == "(" and (depth or not current):
+            depth += 1
+            current += char
+            index += 1
             continue
         if depth and char in ")}":
             depth -= 1
@@ -633,7 +733,7 @@ def segments(line):
             flush_segment()
             index += 2
             continue
-        if char == ";":
+        if char in ";|&":
             flush_segment()
             index += 1
             continue
@@ -647,73 +747,42 @@ def segments(line):
     return out
 
 
-# Whole-line comments are prose: neither a `continue` nor an `unset` written in one is
-# control flow. Trailing comments are dropped by the tokenizer above.
-uncommented = [line for line in code if not line.lstrip().startswith("#")]
-
-# Anchor the reset on being the loop's only top-level `unset` rather than on being the first
-# line that happens to start with one, so an unrelated `unset` cannot satisfy this vacuously.
-reset_starts = [i for i, line in enumerate(uncommented) if re.match(r"^  unset\s", line)]
-assert len(reset_starts) == 1, f"expected exactly one per-repository reset, found {len(reset_starts)}"
-reset_at = reset_starts[0]
-
-statement = []
-index = reset_at
-while True:
-    statement.append(uncommented[index].rstrip())
-    if not statement[-1].endswith("\\"):
-        break
-    statement[-1] = statement[-1][:-1]
-    index += 1
-reset = set(" ".join(statement).replace("unset", "", 1).split())
-assert reset, "the reset statement named nothing"
-
-exits = [i for i, line in enumerate(uncommented) if re.search(r"\b(?:continue|break)\b", line)]
-# The only legitimate pre-reset exit skips a blank inventory line before any state is set.
-assert exits and uncommented[exits[0]].strip() == '[ -n "$repository" ] || continue', uncommented[exits[0]]
-early = [uncommented[i].strip() for i in exits[1:] if i < reset_at]
-assert not early, f"early exits precede the reset: {early}"
-
-# An assignment can sit behind a `case` arm label, a control keyword, a `!`, or a
-# short-circuit after a test -- `has_secret` is written through all three shapes. Strip
-# lead-ins from each segment rather than demanding the name be the first thing on the line.
-LEADIN = re.compile(r"""^(?:
-      (?:if|elif|while|until|then|else|do|time|coproc|!)$   # a control keyword
-    | \[\[?                                                 # an opening test bracket
-    | \]\]?                                                 # ...and its close
-    | [^()\s|=]+(?:\|[^()\s|=]+)*\)                         # a case arm label
-  )""", re.X)
-
-# Options that consume the following word, per command. Getting this right is what keeps
-# `read -d '' name` and `mapfile -d '' -t name` from losing their variable.
-ARG_TAKING = {
-    "mapfile": set("dnOsCcu"),
-    "readarray": set("dnOsCcu"),
-    "read": set("adinNptu"),
-}
-# For `read`, the argument of -a is itself a variable being assigned.
-NAMES_ITS_ARG = {"read": set("a")}
-DECLARATORS = ("declare", "typeset", "export", "readonly", "local")
-NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(?:\[[^]]*\])?\+?=")
-ARITHMETIC = re.compile(r"^\(\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*[-+*/%]?=")
-LET_TARGET = re.compile(r"^[\"']?([A-Za-z_][A-Za-z0-9_]*)\s*[-+*/%]?=")
+def arithmetic_names(word):
+    """Names assigned inside `((…))`, including a C-style `for` header's three clauses."""
+    if not word.startswith("(("):
+        return set()
+    inner = word[2:]
+    if inner.endswith("))"):
+        inner = inner[:-2]
+    found = set()
+    for clause in re.split(r"[,;]", inner):
+        found |= set(ARITH_TARGET.findall(clause)) | set(ARITH_PREFIX.findall(clause))
+    return found
 
 
 def names_from_command(words):
-    """Variables named by mapfile/readarray/read and the declaration builtins."""
+    """Variables named by a command rather than by a bare `name=` assignment."""
     command, rest = words[0], words[1:]
     found = set()
     if command == "printf":
         for index, word in enumerate(rest):
-            if word == "-v" and index + 1 < len(rest) and NAME.match(rest[index + 1]):
-                found.add(rest[index + 1])
+            if word == "-v" and index + 1 < len(rest):
+                candidate = unquote(rest[index + 1])
+                if NAME.match(candidate):
+                    found.add(candidate)
         return found
-    if command == "for" and len(rest) >= 2 and rest[1] == "in" and NAME.match(rest[0]):
-        return {rest[0]}
+    if command in ("for", "select") and len(rest) >= 2 and rest[1] == "in":
+        candidate = unquote(rest[0])
+        return {candidate} if NAME.match(candidate) else set()
+    if command == "coproc" and rest:
+        candidate = unquote(rest[0])
+        return {candidate} if NAME.match(candidate) else set()
+    if command == "getopts" and len(rest) >= 2:
+        candidate = unquote(rest[1])
+        return {candidate} if NAME.match(candidate) else set()
     if command == "let":
         for word in rest:
-            match = LET_TARGET.match(word)
+            match = LET_TARGET.match(unquote(word))
             if match:
                 found.add(match.group(1))
         return found
@@ -721,7 +790,7 @@ def names_from_command(words):
         for word in rest:
             if word.startswith("-"):
                 continue
-            candidate = word.split("=", 1)[0].split("[", 1)[0]
+            candidate = unquote(word).split("=", 1)[0].split("[", 1)[0]
             if NAME.match(candidate):
                 found.add(candidate)
         return found
@@ -735,7 +804,7 @@ def names_from_command(words):
             cluster = set(word[1:])
             if cluster & takes and index + 1 < len(rest):
                 if cluster & names_arg:
-                    candidate = rest[index + 1].split("[", 1)[0]
+                    candidate = unquote(rest[index + 1]).split("[", 1)[0]
                     if NAME.match(candidate):
                         found.add(candidate)
                 index += 2
@@ -744,7 +813,7 @@ def names_from_command(words):
             continue
         if word.startswith("<") or word.startswith(">"):
             break
-        candidate = word.split("[", 1)[0]
+        candidate = unquote(word).split("[", 1)[0]
         if NAME.match(candidate):
             found.add(candidate)
         index += 1
@@ -754,12 +823,19 @@ def names_from_command(words):
 assigned = set()
 ifs_sites = []
 for line in uncommented:
+    assigned |= set(ASSIGN_EXPANSION.findall(line))
     for words in segments(line):
+        for word in words:
+            assigned |= arithmetic_names(word)
+        # `case "$x" in` is three words of scaffolding before the first arm label; on a
+        # single-line `case` the arm and its assignment follow on the same segment.
+        if words and words[0] == "case":
+            while words and words[0] != "in":
+                words = words[1:]
         while words and LEADIN.match(words[0]):
             words = words[1:]
         # Leading `NAME=value` words are assignments; more than one may stack, and anything
         # after them is the command they prefix.
-        prefixes = 0
         while words:
             match = ASSIGN.match(words[0])
             if not match:
@@ -768,14 +844,8 @@ for line in uncommented:
             if match.group(1) == "IFS":
                 ifs_sites.append((line, len(words) > 1))
             words = words[1:]
-            prefixes += 1
-        if not words:
-            continue
-        arithmetic = ARITHMETIC.match(" ".join(words))
-        if arithmetic:
-            assigned.add(arithmetic.group(1))
-            continue
-        assigned |= names_from_command(words)
+        if words:
+            assigned |= names_from_command(words)
 
 # Confirmed by reading the script, not inherited from review: these are the only loop-body
 # assignments that must survive an iteration. The three counters are fleet totals reported
