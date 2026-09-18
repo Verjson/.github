@@ -100,8 +100,21 @@ import re
 # legal tag, and without it the scan read the first 40 characters as a pin and
 # invented a PIN_MISMATCH against a ref nobody pinned -- the very case the false
 # refname rationale claimed to have covered. Enumerating ref-continuing
-# characters is what closes it; "cannot continue a refname" would have admitted
-# `}`, `]` and `,` and left `@` out, which is the inversion of what is wanted.
+# characters is what closes the `@` case, and only that case: it is an instance,
+# not the class. "cannot continue a refname" would have admitted `}`, `]` and
+# `,` and left `@` out, which is the inversion of what is wanted, so enumerating
+# is still the right direction -- but the enumeration is incomplete by
+# construction, and the paragraph below names what it still lets through.
+# Eleven further characters are legal in a tag name and reproduce the identical
+# invented pin, and none of them is named anywhere else: `%`, `&`, `;`, `!`,
+# `=`, `(`, `)`, `#`, `<`, `>` and `|`. For each, `git check-ref-format
+# refs/tags/<40-hex><c>2` exits 0 while this module reports one pin at the first
+# 40 characters. They are a latent limit on the same footing as the four below,
+# recorded so a later reader does not read the `@` fix as having closed the
+# class. Closing them by enumeration means admitting every character git permits
+# in a refname, which is the argument for eventually inverting this to an
+# allow-list of the shapes a pin may take.
+#
 # The general class still admits `{`, `}`, `,` and `]`, and deliberately: this
 # corpus writes refs as `@{PIN}` and `@${ref}` substitutions in generator and
 # fixture sources, and excluding those characters drops 27 of the 140 references
@@ -213,12 +226,12 @@ import re
 # direction is inventing rather than muting, which is the worse one, so it is
 # named here rather than waved off: the corpus carries no such line today, and
 # the cost is latent, not absent.
-# Four characters in this pattern are deliberately unasserted, and they are
-# named because the alternative is a later reader mistaking "no test covers it"
-# for "nobody thought about it". Every character in the delimiter class and the
-# ref class was mutated one at a time against the whole suite; these are what
-# survived, and each survived for a stated reason rather than for want of a
-# fixture.
+# Five guards across this module's two patterns -- `USES_RE` below and `SHA_RE`
+# further down -- are deliberately unasserted, and they are named because the
+# alternative is a later reader mistaking "no test covers it" for "nobody
+# thought about it". Every character in the delimiter class and the ref class
+# was mutated one at a time against the whole suite; these are what survived,
+# and each survived for a stated reason rather than for want of a fixture.
 #   * the two quotes in the *path* class `[^@\s"']+`. A quote can only reach
 #     that class by sitting between the hub name and the `@` the path is
 #     required to end on, and no path anyone writes does. They are

@@ -173,8 +173,19 @@ files this scans, which is a judgement about context rather than a fact about re
 Read correctly, the lookahead enumerates the characters treated as ref-continuing — and
 `@` was missing from it. `<40-hex>@2` is a legal tag, and the scan read its first 40
 characters as a pin, inventing a PIN_MISMATCH against a SHA nobody wrote. `@` is in the
-class now and the case is closed rather than documented; a test pins `/b`, `+b`, `@2`,
-`-rc1` and `.1` all falling through to the general class.
+class now and **that instance** is closed rather than documented; a test pins `/b`, `+b`,
+`@2`, `-rc1` and `.1` all falling through to the general class.
+
+The class it belongs to is not closed, and saying otherwise would repeat the mistake this
+paragraph is about. Eleven further characters are legal in a tag name and reproduce the
+identical invented pin — `%`, `&`, `;`, `!`, `=`, `(`, `)`, `#`, `<`, `>` and `|`. For
+each, `git check-ref-format refs/tags/<40-hex><c>2` exits 0 while the recognizer reports a
+pin at the first 40 characters; `@` is the only one of the twelve that now returns none.
+They are named in `scripts/contract_reference.py` beside the `{`/`}`/`,`/`]` limit. The
+reason they are not closed by adding eleven more characters is that doing so approaches
+enumerating everything git permits in a refname, which is the argument for eventually
+inverting this to an allow-list of the shapes a pin may take rather than a deny-list of
+the characters that may follow one.
 
 The general class still admits `{`, `}`, `,` and `]`, and that is measured rather than
 assumed — re-measured at this tree, because the earlier figures were taken at `6d60385`
