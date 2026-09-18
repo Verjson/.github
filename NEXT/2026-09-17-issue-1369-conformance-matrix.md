@@ -94,9 +94,9 @@ Requirements 2 and 3 of #1369 (PR #1399), consolidated into this entry because
 
 Requirement 5 (PR for #1369). The set `scripts/gen-changelog-caller.sh` emits —
 the changelog caller, the PR gate, the renderer, the emitted contract test, the
-release caller, the release proposer, the split generated-artifacts caller and
-the ADR index test — is one artifact spread across several files, all pinned to
-one contract commit. "A partial regeneration is the divergence the generator
+release caller, the release proposer, the Renovate attribution caller and the
+ADR index test — is one artifact spread across several files, all pinned to one
+contract commit. "A partial regeneration is the divergence the generator
 exists to prevent" was, until now, prose in the generated headers. Prose does
 not redden. The only machine-checked expression of it was an org Renovate
 grouping rule, which bumps *action digests* together and says nothing when a
@@ -115,12 +115,36 @@ composed from a mode literal in the generator and the suite's own
 
 Every arm reports positive evidence. A member that is absent, unreadable, not a
 regular file, unscannable, emptied to zero bytes, carrying a pin declaration
-that no longer parses, or declaring two different pins is a finding in its own
-right — the check can no longer establish that member was generated at the pin,
-and reading that as conformance is the defect class the matrix exists to close.
-With the check removed from the generator, six of those states pass silently and
-the whole-set case reports nothing; the hub suite was run against exactly that
-mutant, and fourteen of the new cases redden against it.
+that no longer parses, declaring two different pins, or declaring a generator
+mode that does not write its path is a finding in its own right — the check can
+no longer establish that member was generated at the pin, and reading that as
+conformance is the defect class the matrix exists to close.
+
+The hub suite was run against a mutant of the generator with the whole block
+deleted, and these numbers are measured rather than reasoned. Nineteen cases
+redden, and exactly **three** of them redden by *accepting* a state that is not
+conformant: a changelog caller left at an earlier contract commit, a member
+declaring two different pins, and this suite itself declaring two. Every other
+divergent or malformed member does redden — but on a pre-existing per-member
+assertion that names neither the commit the member claims nor the commit the set
+is pinned at, so none of those messages was ever evidence about the pin, and
+correcting a subset regeneration from them means rediscovering one member per
+iteration. That is the reporting this block replaces, not a gap it opens. The
+remaining cases are the block's own whole-set, every-member-at-once and
+remedy-wording assertions, which have nothing to report once it is deleted.
+
+A member's header also states which generator mode produced it, and that is part
+of the claim rather than decoration: a `changelog.yml` carrying a `pr-gate`
+header at the correct commit is not the changelog caller. Each member names the
+modes that write its path, so a verdict printed before every per-member
+assertion never agrees with a file it has not identified. Where several modes
+write one path the remedy names all of them and says how they differ — a remedy
+hardcoded to one mode is worse than none across ninety-five repositories, since
+following `generated-artifacts` on a repository that adopted
+`generated-artifacts-with-adr-index` silently drops `adr-index: true`, the
+pinned `scripts/gen-adr-index.sh`, and the generator-test path with it. Every
+enumerated member is itself checked against the paths the generator's usage
+block says it writes, so a member no mode can produce cannot be enumerated.
 
 A member's header is adopter-controlled text on roughly ninety-five
 repositories. It is read as a **claim**, constrained to forty lowercase hex
@@ -132,8 +156,17 @@ trace. That pair was control-tested against a deliberately permissive,
 
 Optional members remain optional: a repository that never adopted Renovate
 attribution, a release proposer or the ADR index is not failed for the absent
-file. Once present, it is held to the same pin as everything else. Requirements
-1 and 4 of #1369 remain follow-up work.
+file. Once present, it is held to the same pin as everything else.
+
+That is a limitation as much as a feature, and it is stated rather than left to
+be inferred: **a deleted optional member is undetectable here.** The emitted
+suite holds no hub-controlled record of which optional members an adopter
+selected — `--autonomy` and the release flags are consumed by `release-propose`
+and `release-node` and never reach `contract-test` — so "never adopted" and
+"deleted during a partial regeneration" are literally the same observation, and
+the second one passes. Closing it would require the selected modes to be
+recorded at generation time, which is a contract-shape change beyond this
+requirement. Requirements 1 and 4 of #1369 remain follow-up work.
 
 Requirement 5 also surfaced a fail-open in `required-checks-audit.sh`, found
 because the larger generated contract test tripped it. `base64 --decode` exits 0
@@ -147,3 +180,13 @@ line; a single argument is capped at `MAX_ARG_STRLEN` (128 KiB on Linux) against
 a 4/3 base64 expansion, so it began failing with `E2BIG` once the generated
 contract test passed roughly 96 KiB. It is 96 KiB now and grows with every
 contract addition, so the stub passes the content through a file.
+
+Review of the same commit found the identical fail-open one function away, at
+the audit's workflow-source fetch. There it did not merely mis-name a fault: an
+empty `$source` makes the workflow inspector report absent changelog wiring and
+no path filter, and the caller scan find no job, so the repository was reported
+**nonconformant** with `stack-caller-missing` for a workflow that was never
+retrieved. The fetch is the only place that can distinguish "returned nothing"
+from "wires nothing", so it fails closed there and the repository is counted
+unaudited. The inspector's behavior on empty input is asserted directly, because
+it is the reason the guard cannot live any further downstream.
