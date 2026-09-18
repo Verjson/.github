@@ -25,17 +25,46 @@ fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 
 [ -x "$gen" ] || { echo "FAIL - $gen is not executable"; exit 1; }
 
-workflow="$(bash "$gen" workflow "$sha")"
-renderer="$(bash "$gen" renderer "$sha")"
-default_release="$(bash "$gen" release-node "$sha")"
-custom_release="$(bash "$gen" release-node "$sha" --scope @acme --node-version 22.23.1 --package-dir compat --release-asset contract/schema.graphql --release-asset contract/schema.sha256)"
-custom_contract="$(bash "$gen" contract-test "$sha" --scope @acme --node-version 22.23.1 --package-dir compat --release-asset contract/schema.graphql --release-asset contract/schema.sha256)"
-generated_artifacts="$(bash "$gen" generated-artifacts "$sha")"
-generated_artifacts_with_adr="$(bash "$gen" generated-artifacts-with-adr-index "$sha")"
-renovate_attribution="$(bash "$gen" renovate-attribution "$sha")"
-adr_index_generator="$(bash "$gen" adr-index-generator "$sha")"
-adr_index_test="$(bash "$gen" adr-index-test "$sha")"
-pr_gate="$(bash "$gen" pr-gate "$sha")"
+# `var="$(bash "$gen" mode "$sha")"` discards the generator's status, so a mode
+# that refuses leaves an empty capture and the assertions downstream report that
+# emptiness as a defect in what they test: a refusing `adr-index-test` once read
+# as "adr-index-test did not rewrite the repository root for the adopter layout"
+# (#1427). Take the status here, where the mode's own stderr still names the
+# cause, and keep the emptiness and its explanation in one verdict. Status is
+# taken on the failure branch itself — `if ! bash ...` would invert the very
+# status being read and turn a refusal into a silent empty capture again.
+mode_capture_failures=0
+capture_mode() {
+  local target="$1"
+  shift
+  local mode="$1" out err status=0
+  err="$(mktemp)"
+  out="$(bash "$gen" "$@" 2>"$err")" || status=$?
+  if [ "$status" -ne 0 ]; then
+    fail "generator mode '$mode' exited $status: $(tr '\n' ' ' <"$err" | sed 's/  */ /g; s/ *$//')"
+    mode_capture_failures=$((mode_capture_failures + 1))
+  fi
+  rm -f "$err"
+  printf -v "$target" '%s' "$out"
+}
+
+capture_mode workflow workflow "$sha"
+capture_mode renderer renderer "$sha"
+capture_mode default_release release-node "$sha"
+capture_mode custom_release release-node "$sha" --scope @acme --node-version 22.23.1 --package-dir compat --release-asset contract/schema.graphql --release-asset contract/schema.sha256
+capture_mode custom_contract contract-test "$sha" --scope @acme --node-version 22.23.1 --package-dir compat --release-asset contract/schema.graphql --release-asset contract/schema.sha256
+capture_mode generated_artifacts generated-artifacts "$sha"
+capture_mode generated_artifacts_with_adr generated-artifacts-with-adr-index "$sha"
+capture_mode renovate_attribution renovate-attribution "$sha"
+capture_mode adr_index_generator adr-index-generator "$sha"
+capture_mode adr_index_test adr-index-test "$sha"
+capture_mode pr_gate pr-gate "$sha"
+# Every assertion from here on consumes one of those captures, so a mode that
+# refused would otherwise produce a page of unrelated verdicts about empty
+# strings. One named cause is the whole diagnosis; stop rather than bury it.
+[ "$mode_capture_failures" -eq 0 ] || exit 1
+# The usage text is the one deliberate nonzero: the generator refuses a missing
+# mode and prints usage on stderr, which is what this capture is for.
 usage_text="$(bash "$gen" 2>&1 || :)"
 
 # 1. The workflow pins its `uses:` and its contract_ref to the same commit.
@@ -191,7 +220,8 @@ done
 # #971: the release-node exemption above is only as good as the consuming step
 # it names. Tamper with a genuine release-node workflow two ways and confirm
 # the audit re-flags the checkout instead of trusting the step-name match alone.
-release_node_workflow="$(bash "$gen" release-node "$sha")"
+capture_mode release_node_workflow release-node "$sha"
+[ "$mode_capture_failures" -eq 0 ] || exit 1
 tampered_renamed="$(WORKFLOW="$release_node_workflow" python3 - <<'PY'
 import os
 
