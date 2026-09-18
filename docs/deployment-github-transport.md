@@ -113,13 +113,18 @@ those values are never forwarded to workload adapters.
 
 ## Remaining integration work
 
-CLI v0.29.1 and current main at `de84b4a65faffd9f70178260060901e3743f5de7`
-provide no sufficient mutation-free host export. Existing runner inventory
-acquires and releases a transaction lock over SSH, so it is not a dry-run
-evidence source. Its output also omits required health/tool/drain/lock evidence.
-Issue #504 owns the supported export API and its tests; this broker intentionally
-rejects `host-export` before reading credentials instead of guessing private
-host lifecycle paths or interpreting a mutating inventory as a read.
+`@verjson/cli-cloud@1.0.0` ships the supported export API that
+[verjson-cli-cloud#504](https://github.com/Verjson/verjson-cli-cloud/issues/504)
+owned — `runner-host-evidence`, documented as observation-only — and that issue is
+closed. The upstream blocker is therefore cleared; the broker's rejection is not.
+
+This broker still rejects `host-export` before reading credentials, because nothing
+here constructs a complete request for that command yet: it takes a required
+`--read-only-ssh-private-key`, and the controller has no path that routes a credential
+to it. Failing closed is correct until that wiring exists. The alternative the
+rejection guards against is unchanged — guessing private host lifecycle paths, or
+interpreting the existing runner inventory as a read when it acquires and releases a
+transaction lock over SSH and omits required health/tool/drain/lock evidence.
 
 After #504 lands, the controller integration must construct this complete
 request from the admitted configuration and plan; route manifest/probe operations
