@@ -208,12 +208,6 @@
 #         ACCEPTING what is not on it. Round 9 adds the only POSITIVE claim this file makes
 #         about the walk, stated and tested at `arm_record_is_case_label`: a record treated
 #         as inert emits no `branch_events` at all. Nothing else is claimed.
-#         Known unpinned, so a later round does not mistake it for proven: dropping
-#         `expecting_label=0` on `esac` leaves this whole suite green. Every input that
-#         distinguishes it would need a record that is arm-label-SHAPED, legal bash directly
-#         after `esac`, and read as fatal by `arm_statement_is_fatal` -- and `exit N`,
-#         `return N` and the named helpers cannot be spelled that way. The assignment is kept
-#         because it is the correct model, not because a test forces it.
 #       · that same proof is positional, not dataflow: it establishes that the use LINE is
 #         inside the protected arm, not that the value reaching the use is the value the
 #         guard tested. A re-assignment between the guard and the use, or a different
@@ -670,22 +664,90 @@ guard_tail_is_fatal() { # $1 = the text following the pinned guard
 # Deliberately narrow, and fail-closed on everything else. A positive `if <guard>; then <use>`
 # is NOT accepted: its failing arm is the one that reaches the rest of the file. A negated
 # branch with no `else` is not accepted either, for the same reason.
-branch_events() { # $1 = structural text -> its command-position if/fi/else/elif, in order
-  local st="$1" part
+# EVERY command-position word of a part, not just its first. Taking only the first word was
+# the asymmetry rounds 5 to 9 all built on top of and none of them saw (#1464 re-review
+# round 10). A CLOSER is always first-word, because bash requires `;` or a newline before
+# `fi`/`done`/`esac`; an OPENER is not, because another token can open the part ahead of it.
+# So the first-word reading lost openers and never lost closers -- a net-negative event
+# stream, which is precisely the one direction the header below names as able to fail open.
+# Three legal, `bash -n`-clean, otherwise-modelled spellings each lost one level of relative
+# depth that way, and each let a nested fatal statement be read at depth 0:
+#   `probe || { if q; then a; fi; }`     emitted `fi`        (the `{` opened the part)
+#   `if a; then if b; then c; fi; fi`    emitted `if fi fi`  (the `then` opened the part)
+#   `time if q; then a; fi`              emitted `fi`        (the `time` opened the part)
+#
+# COMMAND POSITION RESTARTS after exactly the tokens bash's grammar lets a command follow
+# with no `;` or newline between them, and the list is closed because it is read off that
+# grammar rather than collected from counterexamples:
+#   · the list-introducing reserved words -- `if`, `elif`, `then`, `else`, `do`, `while`,
+#     `until`. (`while`/`until` introduce a list and so must restart, even though `do` is
+#     still the token counted for depth.)
+#   · the two grouping openers, `{` and `(`. `(` is the one opener bash accepts with no
+#     space after it, so it can be glued to the word it puts in command position (`(if q`).
+#   · the pipeline prefixes `!`, `time`, and `time`'s own `-p`/`--` options.
+#   · `coproc`, which takes a command.
+#   · a `)` ENDING the word, which closes a `case` pattern and puts the arm body in command
+#     position -- `a) if q; then b; fi` inside a `case` is ordinary shell.
+# Deliberately NOT restarts, because the word that follows each is a NAME or a pattern and
+# not a command -- `case if in …`, `for if in …`, `select if in …` and `function if` are all
+# legal and in none of them is `if` a reserved word: `case`, `for`, `select`, `function`,
+# `in`. Neither is an assignment or redirection prefix (`X=1 if …` and `>f if …` are both
+# syntax errors, so a reserved word can never be in command position after one), nor a
+# closer (`fi fi` is a syntax error too).
+# `case` is the one that needs state rather than a verdict: it restarts command position,
+# but only after the `)` that ends its first pattern, so the scan SKIPS from `case` to that
+# `)` and emits nothing in between. Without that skip `case $x in a) if q; then b; fi ;; esac`
+# emitted `case fi esac` -- net-negative, the same direction as the three vectors above.
+# `arm_record_is_modelled` declines that record for its bare `)` before the walk ever reads
+# it, so the miss was fail-closed there; it is fixed in `branch_events` anyway, because the
+# whole lesson of rounds 5 to 9 is that a net-negative stream is repaired at the stream.
+branch_events() { # $1 = structural text -> EVERY command-position if/fi/else/elif/do/done/case/esac
+  local st="$1" part rest word prev at_command trailing in_pattern
   st="${st//&&/;}"; st="${st//||/;}"; st="${st//|/;}"; st="${st//&/;}"
   local IFS=';'
   for part in $st; do
-    part="${part#"${part%%[![:space:]]*}"}"; part="${part%%[[:space:]]*}"
-    case "$part" in
-      if | fi | else | elif) printf '%s\n' "$part" ;;
-      # `do`/`done` and `case`/`esac` open and close a compound statement exactly as
-      # `if`/`fi` do. They were invisible here, so a fatal statement nested in a loop or a
-      # `case` arm read as a statement of the `then` arm itself and the guard ACCEPTed with
-      # the use reached on an empty loop list (#1464 re-review round 5). `do` is counted
-      # rather than `while`/`for`/`until`/`select`, because `do` is the token that always
-      # pairs with `done`, in both the same-line and the split spelling.
-      do | done | case | esac) printf '%s\n' "$part" ;;
-    esac
+    rest="$part"; at_command=1; prev=''; in_pattern=0
+    while [ "$at_command" -eq 1 ]; do
+      rest="${rest#"${rest%%[![:space:]]*}"}"
+      [ -n "$rest" ] || break
+      word="${rest%%[[:space:]]*}"; rest="${rest#"$word"}"
+      # Strip the grouping punctuation off the word so the word itself can be judged. A
+      # leading `(` is a restart by itself; a trailing `)` is one too, per the note above.
+      trailing=0
+      while [ "${word#\(}" != "$word" ]; do word="${word#\(}"; done
+      while [ "${word%\)}" != "$word" ]; do word="${word%\)}"; trailing=1; done
+      # Between `case` and the `)` that ends its first pattern nothing is a command: the
+      # subject word, `in`, and the pattern itself are all data. `case if in a) ;; esac` is
+      # legal bash in which `if` is a PATTERN, so emitting it here would invent an opener.
+      if [ "$in_pattern" -eq 1 ]; then
+        [ "$trailing" -eq 1 ] && in_pattern=0
+        prev="$word"; continue
+      fi
+      # Nothing but parentheses: still command position, and no word to judge.
+      [ -n "$word" ] || { prev='('; continue; }
+      case "$word" in
+        if | fi | else | elif) printf '%s\n' "$word" ;;
+        # `do`/`done` and `case`/`esac` open and close a compound statement exactly as
+        # `if`/`fi` do. They were invisible here, so a fatal statement nested in a loop or a
+        # `case` arm read as a statement of the `then` arm itself and the guard ACCEPTed with
+        # the use reached on an empty loop list (#1464 re-review round 5). `do` is counted
+        # rather than `while`/`for`/`until`/`select`, because `do` is the token that always
+        # pairs with `done`, in both the same-line and the split spelling.
+        do | done | case | esac) printf '%s\n' "$word" ;;
+      esac
+      # `case` does not restart command position -- it opens a pattern, which the branch
+      # above skips until the `)` that ends it.
+      if [ "$word" = case ]; then in_pattern=1; prev="$word"; continue; fi
+      if [ "$trailing" -eq 0 ]; then
+        case "$word" in
+          if | elif | then | else | do | while | until | '{' | '!' | time | coproc) ;;
+          # `time [-p] [--] pipeline`, and only right after `time` or another of its options.
+          -p | --) case "$prev" in time | -p | --) ;; *) at_command=0 ;; esac ;;
+          *) at_command=0 ;;
+        esac
+      fi
+      prev="$word"
+    done
   done
 }
 
@@ -766,15 +828,22 @@ arm_statement_is_fatal() { # $1 = structural text of one top-level `then`-arm st
 #
 #     A RECORD THIS WALK TREATS AS INERT EMITS NO `branch_events` AT ALL.
 #
-# The guarantee is worth what the argument for choosing it is worth. Dropping an OPENING
-# event is the only direction in which a dropped event can fail open: dropping a closer
-# raises the relative depth, so the guarded `fi` fires too deep, or a later `esac`/`done`
-# lands at depth 0 and returns 1; dropping `else`/`elif` leaves `in_then` set, and running
-# out of records still inside the `then` arm proves nothing. The property above is stricter
-# than that argument needs, because it forbids dropping a closer too. That is deliberate:
+# The property stands on its own, and NO directional argument is offered for it any more.
+# Rounds 8 and 9 both justified it with "dropping an OPENING event is the only direction in
+# which a dropped event can fail open", reasoning that a dropped closer raises the relative
+# depth and that a dropped `else`/`elif` leaves `in_then` set so the walk runs out of records
+# still inside the `then` arm and proves nothing. That argument named only ONE of the walk's
+# two exits. The other is `fi) [ "$d" -eq 0 ] && return "$arm_terminates"`: with `in_then`
+# wrongly still 1, a fatal statement in the `ELSE` arm sets `arm_terminates=0` and that `fi`
+# ACCEPTs. Patching `branch_events` to drop only its `else|elif` emission turns
+# `if ! guard; then echo warn; else exit 1; fi` / use -- correctly `dead`, because the `then`
+# arm falls through -- into `live`. So dropping `else`/`elif` is a fail-OPEN direction too,
+# and the sentence was false rather than merely incomplete (#1464 re-review round 10).
+# It is DELETED, not narrowed for a third time. What remains is the property itself:
 # "a label is a label -- it opens nothing and closes nothing" is a claim this model can state
 # once and test, whereas "which drops happen to be fail-closed" is a claim it would have to
-# re-derive on every future edit. Everything outside that one property is UNCLAIMED.
+# re-derive on every future edit, and has twice re-derived wrongly. Everything outside that
+# one property is UNCLAIMED.
 # The one record shape whose bare `)` is NOT a group: a `case` arm's pattern label, with the
 # `;;` that ends an arm. Only when the WHOLE record is the label -- `) || echo swallowed`
 # does not match it, and a `(` with no `)` cannot. `( exit 1 )` DOES match it; an earlier
@@ -1078,14 +1147,16 @@ PYFX
 #
 #     A RECORD THIS WALK TREATS AS INERT EMITS NO `branch_events` AT ALL.
 #
-# Why that is the right property, rather than the ninth shape: an inert record's events are
-# DISCARDED, and a discarded OPENING event is the only direction in which the discard can
-# fail open. A discarded closer raises the relative depth, so the guarded `fi` fires too deep
-# or a later `esac`/`done` lands at depth 0 and returns 1; a discarded `else`/`elif` leaves
-# `in_then` set, and running out of records inside the `then` arm proves nothing. The
-# property asserted here is the stricter "no event at all", because that is a claim about
-# what a label IS, while "no OPENING event" is a claim about which discards this year's
-# control flow happens to survive.
+# Why that is the right property, rather than the ninth shape: it is a claim about what a
+# label IS, and it needs no supporting claim about which discards this year's control flow
+# happens to survive. Rounds 8 and 9 wrote that supporting claim anyway -- "a discarded
+# OPENING event is the only direction in which the discard can fail open" -- and it is FALSE.
+# It named only the walk's run-out-of-records exit and missed its `fi` exit, where a discarded
+# `else`/`elif` leaves `in_then` set, a fatal statement in the ELSE arm sets
+# `arm_terminates=0`, and `fi) [ "$d" -eq 0 ] && return "$arm_terminates"` ACCEPTs; the
+# header records the two-line program that demonstrates it (#1464 re-review round 10). The
+# directional argument is deleted from both places rather than narrowed a third time. "No
+# event at all" is asserted here on its own account.
 #
 # The corpus is the scan's own files, not a fixture list, and it has teeth: it contains
 # records that are arm-label-SHAPED and do emit events -- `.github/workflows/gate-rearm.yml`
@@ -1097,6 +1168,13 @@ PYFX
 #
 # `.py` files are excluded: the shell record model is never applied to them (`py_guard_is_live`
 # takes the weaker comment-only anchor), so their text is not a record corpus for this walk.
+# READ THIS AS A MUTATION DETECTOR, not as a check that can fire on unmutated code. Its two
+# conditions are `arm_record_is_case_label` and "emits an event", and the first ALREADY
+# requires the second to be false, so on this file as written `violations` is necessarily 0.
+# That is the point and not a defect: replacing the emit-nothing clause at
+# `arm_record_is_case_label` with `true` makes it exit 1 with 5 errors on real repository
+# content. The assertion that the corpus can still supply such content is the separate
+# `inert_witnesses` floor below; this function is what turns that content into a failure.
 arm_label_is_inert_violations() { # $1 = file; prints every record that breaks the invariant
   local rec struct
   while IFS= read -r rec; do
@@ -1676,6 +1754,36 @@ guard_tail_case live 'a terminating arm below a nested `case` in the split spell
   '  exit 1' \
   'fi' \
   'gh api "repos/$repository/commits/$head_sha"'
+# `esac` LEAVES arm position, and this is the input that distinguishes that assignment. An
+# earlier revision of the header called it unpinnable, reasoning that a distinguishing record
+# would have to be arm-label-SHAPED, legal directly after `esac`, and read as fatal by
+# `arm_statement_is_fatal`. The third condition was the wrong one: `( probe )` is label-shaped
+# and legal there, and `arm_statement_is_fatal` does NOT call it fatal, yet it distinguishes
+# anyway -- because the mechanism is not the statement check. With `expecting_label=0` in
+# place the record is not a label, so it falls to `arm_record_is_modelled`'s bare-parenthesis
+# refusal and the walk REJECTs; without it the record goes INERT and is skipped, the `exit 1`
+# below is read at relative depth 0, and the `fi` ACCEPTs. The guard really is live here --
+# the `then` arm exits unconditionally -- so `dead` is a fail-CLOSED cost of the paren
+# refusal, and it is the cost that makes the assignment testable (#1464 re-review round 10).
+guard_tail_case dead 'a `( probe )` directly after `esac`, which is no longer a label' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  case "$x" in' \
+  '    a) ;;' \
+  '  esac' \
+  '  ( probe )' \
+  '  exit 1' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+# The control: the same program with the paren record removed stays LIVE, so the `dead` above
+# is caused by the record directly after `esac` and not by the `case` or the arm shape.
+guard_tail_case live 'the same program without the record after `esac`' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  case "$x" in' \
+  '    a) ;;' \
+  '  esac' \
+  '  exit 1' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
 # Round 7 argued the label exception needed no statement rule because "`case_depth > 0`
 # implies `d > 0`". This program falsifies that: `probe || { if q; then a; fi; }` emits a bare
 # `fi` -- `branch_events` reads the `{`-part's first word as `{`, never as `if` -- so `d` drops
@@ -1715,6 +1823,126 @@ guard_tail_case dead 'a bare `fi` that drops `d` to 0 with a `case` still open' 
   '      ( exit 1 )' \
   '      ;;' \
   '  esac' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+
+# ROUND 10, and one level below every round from 5 to 9. Those all patched the label and
+# arm-position logic that READS the event stream; the stream itself under-counted openers.
+# `branch_events` took each part's FIRST word, and a closer is always first-word -- bash
+# requires `;` or a newline before `fi`/`done`/`esac` -- while an opener is not, because
+# another token can open the part ahead of it. So the loss was one-directional, net-negative,
+# and pointed in exactly the direction the header names as the only way to fail open.
+#
+# The stream is pinned directly first. Testing only the programs below would leave a future
+# edit free to restore the asymmetry anywhere the fixtures happen not to reach, which is what
+# let the same defect survive five rounds of fixtures layered on top of it.
+branch_events_case() { # $1 = label, $2 = one record, $3 = its expected event stream
+  local got
+  got="$(branch_events "$(shell_structure "$2")" | tr '\n' ' ')"
+  got="${got% }"
+  [ "$got" = "$3" ] || fail "branch_events read '$2' as [$got], not [$3]: $1"
+  bash -n <<<"$2" 2>/dev/null || fail "the pinned record is not legal bash: $2"
+}
+# The openers a first-word reading loses, one per token that can open a part ahead of them.
+branch_events_case 'a `{` group opening the part' \
+  'probe || { if q; then a; fi; }' 'if fi'
+branch_events_case 'a `then` opening the part' \
+  'if a; then if b; then c; fi; fi' 'if if fi fi'
+branch_events_case 'an `if` introducing a list, opening the part for a second `if`' \
+  'if if a; then b; fi; then c; fi' 'if if fi fi'
+branch_events_case 'a `time` prefix opening the part' \
+  'time if q; then a; fi' 'if fi'
+branch_events_case 'a `time -p --` option run' \
+  'time -p -- if q; then a; fi' 'if fi'
+branch_events_case 'a `!` pipeline negation' \
+  '! if q; then a; fi' 'if fi'
+branch_events_case 'a `(` glued to the word it puts in command position' \
+  '(if q; then a; fi)' 'if fi'
+branch_events_case 'an `else` opening the part' \
+  'if a; then b; else if c; then d; fi; fi' 'if else if fi fi'
+branch_events_case 'a `while` introducing a list, with `do` still the counted token' \
+  'while if q; then a; fi; do b; done' 'if fi do done'
+branch_events_case 'an `until` introducing a list' \
+  'until if q; then a; fi; do b; done' 'if fi do done'
+branch_events_case 'a `do` opening the part' \
+  'for x in 1; do if q; then a; fi; done' 'do if fi done'
+branch_events_case 'an `elif` introducing a list' \
+  'if a; then b; elif if c; then d; fi; then e; fi' 'if elif if fi fi'
+branch_events_case 'a `case` arm label putting its body in command position' \
+  'case $x in a) if q; then b; fi ;; esac' 'case if fi esac'
+branch_events_case 'a `coproc`, which takes a command' \
+  'coproc if q; then a; fi' 'if fi'
+# ... and the words after which a reserved word is NOT one, so the scan must stop. Each of
+# these is legal bash in which `if` is an ordinary NAME or pattern, so emitting it would be
+# a spurious OPENER -- the fail-CLOSED direction, but a false alarm all the same.
+branch_events_case 'a `case` subject word, not a command' 'case if in a) ;; esac' 'case esac'
+branch_events_case 'a `for` loop variable named `if`' 'for if in 1; do :; done' 'do done'
+branch_events_case 'a `select` loop variable named `if`' 'select if in 1; do :; done' 'do done'
+branch_events_case 'a function named `if`' 'function if { :; }' ''
+branch_events_case 'a reserved word as an ARGUMENT' 'echo if a then b fi' ''
+branch_events_case 'a reserved word inside a `[` test' '[ "$x" = if ] || exit 1' ''
+# `X=1 if …` and `>f if …` are both syntax errors, so a reserved word can never sit in
+# command position after an assignment or a redirection prefix. Pinned as the reason those
+# two are absent from the restart set rather than forgotten from it.
+for prefix_not_a_restart in 'X=1 if a; then b; fi' '>/dev/null if a; then b; fi'; do
+  bash -n <<<"$prefix_not_a_restart" 2>/dev/null \
+    && fail "an assignment or redirection prefix now accepts a reserved word: $prefix_not_a_restart"
+  branch_events_case 'no restart after a prefix that cannot precede a reserved word' \
+    "${prefix_not_a_restart%%;*}" ''
+done
+
+# The programs the lost opener let through. Each loses ONE level of relative depth on the
+# marked record, so the `exit 1` nested inside `if outer` is read at relative depth 0, sets
+# `arm_terminates=0`, and the construct's real `fi` returns it -- an ACCEPT for a `then` arm
+# that falls straight through to the warning below it and on past `fi` to the use. This is
+# round 5's vector reopened through a different door, and all three were `bash -n` clean and
+# `arm_record_is_modelled`-clean while they walked past.
+#
+# Each is paired with a CONTROL that keeps the same construct in a genuinely terminating arm
+# alive, so counting more openers cannot be mistaken for a rejection widening.
+guard_tail_case dead 'a `{` group whose `if` was lost, dropping one level of depth' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  if outer; then' \
+  '    probe || { if q; then a; fi; }' \
+  '    exit 1' \
+  '  fi' \
+  '  echo "::warning::head sha looks wrong"' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+guard_tail_case live 'the same `{` group above an `exit 1` at the arm top level' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  probe || { if q; then a; fi; }' \
+  '  exit 1' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+guard_tail_case dead 'a one-line nested `if` whose second `if` was lost' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  if outer; then' \
+  '    if a; then if b; then c; fi; fi' \
+  '    exit 1' \
+  '  fi' \
+  '  echo "::warning::head sha looks wrong"' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+guard_tail_case live 'the same one-line nested `if` above an `exit 1` at the arm top level' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  if a; then if b; then c; fi; fi' \
+  '  exit 1' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+guard_tail_case dead 'a `time` prefix whose `if` was lost' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  if outer; then' \
+  '    time if q; then a; fi' \
+  '    exit 1' \
+  '  fi' \
+  '  echo "::warning::head sha looks wrong"' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+guard_tail_case live 'the same `time` prefix above an `exit 1` at the arm top level' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  time if q; then a; fi' \
+  '  exit 1' \
   'fi' \
   'gh api "repos/$repository/commits/$head_sha"'
 
@@ -2091,8 +2319,10 @@ for entry in "${REF_SITE_ALLOWLIST[@]}"; do
     || fail "$label cites a guard that is gone, commented out, or neutered in $guard_file: $guard_text"
 done
 
-echo "PASS: $sites ref interpolations ($py_sites of them Python) across ${#scanned[@]} workflows"
-echo "      and non-test scripts are percent-encoded or 40-hex-constrained, and all $encoders jq"
+# "files", not "workflows": `scanned` is three globs, and only the `.github/workflows/*.yml`
+# third of it is workflows. Calling the whole count workflows overstated what the number is.
+echo "PASS: $sites ref interpolations ($py_sites of them Python) across ${#scanned[@]} files -- workflows"
+echo "      and non-test scripts -- are percent-encoded or 40-hex-constrained, and all $encoders jq"
 echo "      and $py_encoders Python encoder expressions keep '/' literal in a query value and"
 echo "      encode it as %2F in a path segment"
 echo "      ${#allowlisted_hits[@]} sites are covered by ${#REF_SITE_ALLOWLIST[@]} allowlist entries with a stated reason instead"

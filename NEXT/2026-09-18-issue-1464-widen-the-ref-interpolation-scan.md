@@ -382,9 +382,61 @@ and repeated in ADR 0194 while nothing pinned it; its breakdown re-derives as 57
 `.sh` + 49 `.yml` only after the `*.test.sh`/`*.test.py`/`*_test.py` exclusion, whose naive
 per-extension totals are 144, 157 and 49.
 
-One mutant is known to survive and is named in the header so a later round does not mistake
-it for proven: dropping `expecting_label=0` on `esac` leaves the suite green. Distinguishing
-it would need a record that is arm-label-shaped, legal bash directly after `esac`, and read
-as fatal by `arm_statement_is_fatal`, and `exit N`, `return N` and the named helpers cannot
-be spelled that way. The assignment is kept because it is the correct model, not because a
-test forces it.
+## Round 10
+
+Rounds 5 through 9 each patched the arm-label rule and each shipped a new fail-open. This
+round leaves that rule alone and fixes the layer under it: `branch_events` read only the
+*first* word of each `;`/`&&`/`||`/`|`/`&`-separated part, so every compound opener that
+bash accepts in a later command position was invisible while its closer — which bash
+requires to be first-word — was not. Three repository-legal spellings dropped one level of
+depth each: `probe || { if q; then a; fi; }` read `fi`, `if a; then if b; then c; fi; fi`
+read `if fi fi`, and `time if q; then a; fi` read `fi`. A negative guard whose `then` arm
+terminates below such a record then had its own `fi` fire one level too shallow and read
+LIVE in both `whole` and `slice` mode, against files `bash -n` accepts — the same class of
+fail-open as round 9, reached without touching a label.
+
+`branch_events` now scans *every* command-position word of a part, not just the first, and
+the fix is stated as bash's grammar rather than as a shape list. Command position restarts
+after `{`, `!`, `time`, `time -p`, `time --`, `coproc`, and the list-introducing reserved
+words `if`, `elif`, `then`, `else`, `do`, `while`, `until`; an unmatched leading `(` also
+restarts it, and a `)` that closes the word ends the restart. Each member is pinned by
+`branch_events_case`, which asserts the exact event stream *and* `bash -n` on the record, so
+a pin cannot drift into asserting the reading of a program bash would reject. The stopping
+points are pinned too: `case`, `for`, `select`, `function` and `in` do not restart command
+position, a reserved word in argument position (`echo if a then b fi`) or inside a test
+(`[ "$x" = if ]`) emits nothing, and `X=1 if …` and `>/dev/null if …` are asserted illegal
+rather than assumed inert, because an assignment or redirection prefix cannot precede a
+reserved word. `case` gets one piece of state rather than an exception: the scan skips from
+`case` to the `)` ending its first pattern, so `case $x in a) if q; then b; fi ;; esac`
+reads `case if fi esac` and stays balanced.
+
+The mutation matrix over the restart set kills all sixteen mutants; the `if` token survived
+the first pass and is now pinned by `if if a; then b; fi; then c; fi`, an `if` whose
+condition is itself a compound list.
+
+Two claims are deleted rather than narrowed. The directional sufficiency argument — that a
+dropped event can only make the walk run out of records, so the failure is one-sided —
+is false for `else`/`elif`, and naming both exits does not repair it: the walk's *other*
+exit, `fi` at depth 0 returning `arm_terminates`, is a genuine fail-open when an `else`
+emission is dropped, as `if ! guard; then echo warn; else exit 1; fi` demonstrates. The
+argument is gone from both places it appeared; the stricter property it was decorating
+stands on its own. And the surviving-mutant note is deleted because the mutant no longer
+survives: `( probe )` is arm-label-shaped, legal directly after `esac`, emits nothing and
+is *not* read as fatal, and the mechanism that distinguishes it is `expecting_label=0`
+turning an `arm_record_is_modelled` REJECT into an inert skip — not the statement check
+that earlier rounds were looking at. It is pinned now, so nothing on this branch is carried
+as known-unproven.
+
+`arm_label_is_inert_violations` is tautological on unmutated code — `arm_record_is_case_label`
+already requires emit-nothing — and its comment now says so: it is a mutation detector, and
+the separate witness floor of five corpus records is what keeps it from being vacuous.
+
+The PASS line said "144 workflows"; 144 is files across three globs, of which 49 are
+workflows. It says files.
+
+Cost: none measured. All four published figures are unchanged — 77 ref interpolations (21
+Python), 144 files, 14 allowlisted sites, 11 allowlist entries — the witness floor is still
+five records on the same five sites, and `scripts/privileged-merge-conformance.sh` is
+untouched in this round's delta. Fixing the event stream widens no reading: every new event
+is one bash already executes, so a record that gained an opener also had its matching closer
+counted all along, and the balance it restores can only make the walk stricter.
