@@ -166,6 +166,7 @@ def validate_workflow(path=WORKFLOW):
         "actions/runs/$RUN_ID", 'event_name" = pull_request', 'pr_count" = 1',
         'live_state" = open', 'live_repository" = \'Verjson/verjson-cli-projects\'',
         'live_head_sha" = "$run_head_sha',
+        '[[ "$live_head_sha" =~ ^[0-9a-f]{40}$ ]]',
         "contents/.github/workflows/ci.yml?ref=$live_head_sha",
         '"$CONSUMER_WORKFLOW_SHA256"',
         '} >>"$GITHUB_OUTPUT"',
@@ -313,6 +314,9 @@ def list_named_rulesets(contract):
 
 
 def verify_canonical_bytes(contract, workflow_sha):
+    # Restated locally because this function is what puts the value in a URL: a caller's
+    # guard cannot vouch for a read made here.
+    require(SHA_PATTERN.fullmatch(workflow_sha) is not None, "workflow SHA is invalid")
     comparison = gh_json(f"repos/Verjson/.github/compare/{workflow_sha}...main")
     require(comparison.get("status") in ("ahead", "identical"),
             "workflow SHA is not reachable from protected main")
@@ -360,6 +364,7 @@ def verify_consumer_workflow(contract, expected_sha=None):
     )
     require(generated.returncode == 0, "consumer workflow generation failed")
     branch_sha = consumer_branch_sha()
+    require(SHA_PATTERN.fullmatch(branch_sha), "consumer default-branch SHA is invalid")
     if expected_sha is not None:
         require(branch_sha == expected_sha,
                 "consumer default branch moved during transaction")

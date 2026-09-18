@@ -348,7 +348,10 @@ def valid_added_fragment(client: Any, repository: str, pr_number: int, head_sha:
         if not added or not path.startswith("NEXT/") or path.count("/") != 1:
             continue
         encoded_path = urllib.parse.quote(path, safe="/")
-        encoded_head = urllib.parse.quote(head_sha, safe="")
+        # A query value, so "/" stays literal. `head_sha` is 40-hex by the `require_sha`
+        # above, so both encodings are no-ops on today's input -- the position is the
+        # reason, not a hypothetical ref that cannot reach here.
+        encoded_head = urllib.parse.quote(head_sha, safe="/")
         text = decode_content(
             client.request(
                 "GET", f"repos/{repository}/contents/{encoded_path}?ref={encoded_head}"
@@ -521,7 +524,7 @@ def apply(read_client: Any, write_client: Any, raw_plan: Any) -> str:
     try:
         read_client.request(
             "GET",
-            f"repos/{repository}/contents/{encoded_path}?ref={urllib.parse.quote(head_sha, safe='')}",
+            f"repos/{repository}/contents/{encoded_path}?ref={urllib.parse.quote(head_sha, safe='/')}",
         )
     except GitHubApiError as error:
         if error.status != 404:
