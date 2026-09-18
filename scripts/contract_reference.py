@@ -49,6 +49,18 @@ import re
 # error ADR 0185 calls muting. The leading `/` stays inside the optional group,
 # so `Verjson/.github-mirror@<sha>` still matches nothing: the character after
 # the hub name is either `/` or `@`, never arbitrary text.
+# The ref class excludes a backtick as well as whitespace and the two quotes,
+# because the key anchor above reads a backtick as a string opener and the value
+# has to end where that string does. It did not until Verjson/.github#1483:
+# `` `uses: Verjson/.github/x.yml@<40-hex>` `` absorbed its own closing backtick
+# and yielded a 41-character ref, so a correct, immutable pin never compared
+# equal to a release commit and the verdict was UNPINNED_REFERENCE on a line
+# that is in fact pinned -- the muting direction ADR 0185 names, on the same
+# inline-code and template-literal shapes the backtick anchor was widened to
+# read. The exclusion is pinned from both sides: a ref carrying `.`, `-` and `+`
+# must still survive whole, and two backtick pins written adjacently must be two
+# matches rather than one, which is the assertion a single-instance fixture
+# cannot make.
 # The ref admits a whole `${{ ... }}` expression as one unit. Such a ref is still
 # UNPINNED_REFERENCE -- the verdict was never in question -- but `[^\s"']+` alone
 # stops at the expression's first space and quotes the offending ref back as
@@ -132,7 +144,7 @@ import re
 USES_RE = re.compile(
     r"(?:^|[\"'`#]|\\n)[ \t]*(?:-[ \t]+)?"
     r"(?-i:(?:uses|\"uses\"|'uses'))\s*:\s*[\"']?Verjson/\.github"
-    r"(?:/(?P<path>[^@\s\"']+))?@(?P<ref>(?:\$\{\{[^}\n]{0,200}\}\}|[^\s\"'])+)",
+    r"(?:/(?P<path>[^@\s\"']+))?@(?P<ref>(?:\$\{\{[^}\n]{0,200}\}\}|[^\s\"'`])+)",
     re.IGNORECASE)
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")

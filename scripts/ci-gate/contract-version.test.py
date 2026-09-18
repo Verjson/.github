@@ -823,31 +823,55 @@ class UsesShapeCoverage(unittest.TestCase):
         track(root)
         self.assertEqual([f.kind for f in self.verify(root)], ["PIN_MISMATCH"])
 
-    def test_a_pin_inside_a_backtick_literal_is_still_read(self):
-        # The backtick alternative, which the other three do not cover and which
-        # nothing else in this suite would have killed. Deleting it alone drops
-        # 24 of the fleet's 632 references: 16 `.md` lines documenting a pin as
-        # inline code, and 8 `.ts`/`.py` template literals that build a caller
-        # fixture. A consumer test asserting a stale pin is a real skew the sweep
-        # exists to report, and the backtick opens a string in exactly the way
-        # the quote characters do.
+    def test_a_pin_inside_a_backtick_literal_is_read_as_its_sha(self):
+        # The backtick alternative of the key anchor, which nothing else in this
+        # suite covers: a pin documented as Markdown inline code, or built into
+        # a caller fixture as a template literal, opens its string with a
+        # backtick exactly as the quote characters do.
         #
-        # The verdict is UNPINNED_REFERENCE rather than PIN_MISMATCH, and that is
-        # asserted rather than worked around: the ref class excludes whitespace
-        # and the two quotes but *not* a backtick, so the closing backtick is
-        # absorbed into the ref and a backtick-delimited pin never compares equal
-        # to a release commit. That is the ref class's behaviour, not the
-        # anchor's -- it is identical under the pattern this PR replaces -- so it
-        # is pinned here and left to Verjson/.github#1483 rather than changed
-        # inside a key-side change (Verjson/.github#1472).
+        # This asserted the opposite until Verjson/.github#1483. The ref class
+        # excluded whitespace and the two quotes but not a backtick, so the
+        # closing backtick was absorbed and the ref was 41 characters -- a
+        # correct, immutable 40-hex pin that could never compare equal to a
+        # release commit, so the verdict was UNPINNED_REFERENCE on a line that
+        # is in fact pinned. That is the muting direction ADR 0185 names. The
+        # verdict is now PIN_MISMATCH, which is the true statement about this
+        # fixture: the pin is read, and it is not the tracked release commit.
         root = self.repo()
         (root / "surface.test.ts").write_text(
             "const pinnedUses = `    uses: "
             "Verjson/.github/.github/workflows/node-ci.yml@" + "b" * 40 + "`;\n")
         track(root)
         findings = self.verify(root)
-        self.assertEqual([f.kind for f in findings], ["UNPINNED_REFERENCE"])
-        self.assertIn("b" * 40 + "`", findings[0].detail)
+        self.assertEqual([f.kind for f in findings], ["PIN_MISMATCH"])
+        self.assertIn("b" * 40, findings[0].detail)
+        self.assertNotIn("b" * 40 + "`", findings[0].detail)
+
+    def test_two_adjacent_backtick_pins_are_two_references_not_one(self):
+        # The boundary needs more than one instance to be pinned. With a single
+        # backtick-delimited pin on the line, admitting the backtick and
+        # excluding it differ only in the *content* of one ref; with two written
+        # adjacently, with no whitespace to stop the ref on the pattern's
+        # behalf, they differ in the number of matches -- 1 against 2. Measured
+        # both ways before this test was written: admitting the backtick yields
+        # one match whose ref is `<sha-a>``uses:`, having run straight through
+        # the closing backtick and into the second reference.
+        line = ("`uses: Verjson/.github/.github/workflows/node-ci.yml@" + "a" * 40
+                + "``uses: Verjson/.github/.github/workflows/node-ci.yml@"
+                + "b" * 40 + "`")
+        self.assertEqual([m.group("ref") for m in cv.USES_RE.finditer(line)],
+                         ["a" * 40, "b" * 40])
+
+    def test_the_ref_class_still_admits_a_full_semver_build_ref(self):
+        # The other side of the same boundary. Excluding one character from a
+        # class is the kind of edit that over-narrows by one more, and a ref is
+        # not only ever a 40-hex SHA: `@v2.2.0-rc.1+build` is a legal ref whose
+        # `.`, `-` and `+` must all survive. Truncating it would quote a ref
+        # back at the reader that nobody wrote, which is the complaint that
+        # produced the `${{ ... }}` branch alongside it.
+        line = "  uses: Verjson/.github/.github/workflows/node-ci.yml@v2.2.0-rc.1+build"
+        self.assertEqual([m.group("ref") for m in cv.USES_RE.finditer(line)],
+                         ["v2.2.0-rc.1+build"])
 
     def test_an_expression_ref_stops_at_its_own_closing_braces(self):
         # Discriminates lazy from greedy, which the first version of this test

@@ -61,3 +61,51 @@ anchoring instead of a `(?![0-9a-f])` lookahead inside the pattern.
 `scripts/ci-gate/contract-version.test.py` holds at 81 green across the move.
 `scripts/actions-ci-group.sh platform` passed 85 commands, exit 0, with no
 `::error::group=` line.
+
+## A backtick-delimited pin is now read as a SHA (#1483)
+
+The ref class was `[^\s"']` — whitespace and the two quotes, but not a backtick. The key
+anchor reads a backtick as a string opener, so a pin written as Markdown inline code or as
+a template literal absorbed its own closing backtick: the ref came back 41 characters, a
+correct and immutable 40-hex pin that could never compare equal to a release commit, and
+the verdict was `UNPINNED_REFERENCE` on a line that is in fact pinned. That is the muting
+direction ADR 0185 names, on the same shapes #1472 widened the recognizer to read. The
+class now excludes a backtick too.
+
+This is the first edit to land on the shared definition #1482 created, and it is one edit:
+the inventory's own pattern would have needed the same correction separately under the
+previous arrangement, and nothing would have said so.
+
+`UsesShapeCoverage.test_a_pin_inside_a_backtick_literal_is_still_read` asserted the defect
+— the `UNPINNED_REFERENCE` verdict and the absorbed backtick in the detail string — so
+changing it is the visible, deliberate part of this fix rather than a silent relaxation. It
+now requires `PIN_MISMATCH`, which is the true statement about that fixture: the pin is
+read, and it is not the tracked release commit. Before the class changed, it failed with
+`['UNPINNED_REFERENCE'] != ['PIN_MISMATCH']`.
+
+The boundary is pinned on both sides, and the narrowing side needs two instances to be
+pinned at all. With one backtick-delimited pin on a line, admitting and excluding the
+backtick differ only in the content of a single ref. Written adjacently, with no
+whitespace to stop the ref on the pattern's behalf, they differ in the number of matches:
+admitting it yields **one** match whose ref runs through the closing backtick into the
+second reference as `` <sha-a>``uses: ``, and excluding it yields **two** clean refs. That
+count is what a single-instance fixture cannot assert. On the widening side, a ref
+carrying `.`, `-` and `+` — `@v2.2.0-rc.1+build` — must still survive whole, so an edit
+that over-narrows the class by one more character reddens.
+
+Measured on this repository's own tracked corpus rather than on the fleet: 1388 tracked
+files carry 124 `uses:` references, and 124 both before and after — the fix changes what a
+ref *is*, not how many there are. **12** of them ended in an absorbed backtick before the
+change, in `NEXT/` fragments, two ADRs, `docs/reusable-workflow-versioning.md`, and the
+scan's own sources and tests; 3 of those 12 are prose this branch itself adds. The number
+of references that read as a 40-hex SHA is **18** before and **18** after, so no verdict on
+this corpus changes today: every one of the 12 carries `main`, `v1`, `v2.2.0`, or a
+`<sha>`/`<40-hex>` placeholder. The defect stays latent until a doc or a consumer fixture
+quotes a real contract SHA in inline code, which is what it was filed as.
+
+That is a measurement of one repository, not of the 95-repository fleet #1483 scopes.
+`references()` reads every tracked file, so an end-to-end corpus re-measurement means
+fetching whole trees rather than the `.github/workflows` listing the inventory sweep needs,
+and that was not run here.
+
+`scripts/ci-gate/contract-version.test.py` went from 81 tests to 83, all green.
