@@ -70,6 +70,19 @@ It is six lines long, and it is reproduced here in full and byte-for-byte:
   - `3` — **Gate A**: a context the *base ref's ruleset* requires is absent, pending, not
     passing, or was published by an app the ruleset does not bind. Absent fails closed
     (ADR 0024) and is never satisfied by its own absence. Investigate the named context.
+    Exit `3` also covers the base ref having **no** required context, and there the message
+    distinguishes three conditions with different remedies — read it rather than assuming
+    the ref is ungoverned:
+    - rules *were* returned and none of them requires a status check → the ref is
+      genuinely ungoverned. Add a `required_status_checks` rule to the ruleset that
+      already governs it; do not create a second one.
+    - the rule list came back **empty** → the ref may be ungoverned *or* may not exist
+      under the path queried (a deleted, renamed, or wrongly encoded ref answers `200 []`
+      exactly as an ungoverned one does). Confirm which before acting; adding a ruleset is
+      the wrong move for the second. It is *not* a ruleset your token cannot see — that is
+      refused as exit `1`, not reported here.
+    - the response was not a JSON array → a malformed or unexpected response shape, which
+      says nothing about the ref's governance. Re-read the endpoint directly.
   - `4` — **Gate B**: the head was *deferred*, so nothing on it was verified — no test,
     lint, type check, or repository-local contract guard ran (ADR 0178). Wait for the
     release-age gate to clear and Renovate to rebase, or force a real run with

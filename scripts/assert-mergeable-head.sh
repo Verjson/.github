@@ -46,6 +46,20 @@
 # exits 1 with a message naming the token as the cause and quoting that help; it is
 # never a silent pass and never an undifferentiated API error.
 #
+# An adopter lacking that read therefore fails CLOSED with a message naming the token as
+# the cause -- it is never handed a degraded or empty required set. That matters because
+# the converse was once assumed: that a token able to read the repository but not the
+# organization's rulesets would receive a 200 carrying an empty rule list, and so be
+# misreported as an ungoverned ref. It does not. Verified against the live endpoint
+# (2026-09-18): `repos/Verjson/.github/rules/branches/main` returns its organization-sourced
+# rules in full, `ruleset_source_type: Organization` included, to a WHOLLY UNAUTHENTICATED
+# caller; a caller without repository read is refused 401/403/404 instead. Read access to
+# the repository is the whole requirement, and an unreadable ruleset is not a cause of an
+# empty list. What does produce a 200 with an empty list is an ungoverned ref OR a ref that
+# does not exist under the path requested -- also verified: a nonexistent branch answers
+# 200 `[]` exactly as an ungoverned one does. Gate A names that ambiguity outright rather
+# than asserting either cause, because the two remedies are opposite (#1437).
+#
 #   2  usage error
 #   3  Gate A failed (required contexts absent, misattributed, pending, or not passing)
 #   4  Gate B failed (the head was deferred; nothing on it was verified)
@@ -188,13 +202,17 @@ rules_err="$(mktemp)" \
   || fault 1 "could not allocate a scratch file to capture the ruleset read's diagnostics"
 trap 'rm -f "$rules_err"' EXIT
 # LOAD-BEARING: `set -o pipefail` at the top of this file is what makes the failure of
-# `gh` on the LEFT of this pipe reach the assignment at all. `jq -s 'add // []'` succeeds
-# on empty input and prints `[]`, so without pipefail this would take the success path
-# with an empty rule set, fall through to "declares no required status checks", and --
-# worse -- a future edit that treated an empty set as ungoverned would make it fail OPEN.
-# Do not remove pipefail, and do not rewrite this as a pipeline whose exit status comes
-# from `jq`. That is the cost.
-rules_json="$(gh api --paginate "repos/$repo/rules/branches/$base_ref_path" </dev/null 2>"$rules_err" | jq -s 'add // []')"
+# `gh` on the LEFT of this pipe reach the assignment at all. `jq -s add` succeeds on empty
+# input, so without pipefail this would take the success path, and -- worse -- a future
+# edit that treated its result as ungoverned would make it fail OPEN. Do not remove
+# pipefail, and do not rewrite this as a pipeline whose exit status comes from `jq`.
+#
+# `add` carries NO `// []` default, and that omission is the point: `//` treats `null` and
+# `false` as absent, so `add // []` turned a body of `null`, a body of `false`, and an
+# empty body all into `[]` -- indistinguishable below from a genuine empty rule list, and
+# reported with that arm's remedies. Those are exactly the bodies a proxy or a cached
+# error page produces. Preserving the shape is what lets the discriminator name it.
+rules_json="$(gh api --paginate "repos/$repo/rules/branches/$base_ref_path" </dev/null 2>"$rules_err" | jq -s 'add')"
 rules_rc=$?
 # Replay unconditionally, not only on failure. Capturing stderr to inspect the status
 # redirects it away from the caller on the SUCCESS path too, and a 200 can still carry a
@@ -224,8 +242,32 @@ required="$(jq -c '
 
 required_count="$(jq 'length' <<<"$required")" \
   || fault 1 "failed to count the required contexts of $repo@$base_ref"
-[ "$required_count" -gt 0 ] \
-  || fault 3 "$repo@$base_ref declares no required status checks, so a green rollup proves nothing about it; this assertion cannot gate an ungoverned ref"
+# A zero required set has more than one cause, and they have OPPOSITE remedies. On a merge
+# gate a wrong attribution is a wrong remedy: the ungoverned-ref sentence tells an operator
+# to add a ruleset, which is the wrong move when the ref already has one -- or when the ref
+# itself is what is missing. So the two shapes are named separately (#1437). Both still fail
+# closed with exit 3; the taxonomy ADR 0184 fixed is deliberately not touched here.
+if [ "$required_count" -eq 0 ]; then
+  rule_count="$(jq 'if type == "array" then length else -1 end' <<<"$rules_json")" \
+    || fault 1 "failed to count the rules returned for $repo@$base_ref"
+  # A body that is not a JSON array at all is a third shape again, and it is neither empty
+  # nor ungoverned: `jq -s add` preserves it and `.[]?` silently selects nothing from it,
+  # so it arrives here with a zero required set like the other two. Reporting it as either
+  # of them would name a remedy for a condition that is not the one observed. `null`,
+  # `false`, and an empty body reach this guard only because the `// []` default was
+  # removed above; with it they were reported as an empty rule list.
+  [ "$rule_count" -ge 0 ] \
+    || fault 3 "$repo@$base_ref returned a rules response that is not a JSON array, so Gate A cannot establish a required set from it and refuses rather than reading it as an empty one. This is a malformed or unexpected response shape, not evidence about the ref's governance: neither adding a ruleset nor changing the ref is the remedy. Re-read repos/$repo/rules/branches/$base_ref_path directly and check for a proxy, a cached error body, or an API change."
+  if [ "$rule_count" -gt 0 ]; then
+    # The fallback sits OUTSIDE the object filter on purpose: `objects | (.type // "?")`
+    # drops non-objects before the default can apply, so an array of non-objects rendered
+    # an empty type list into a sentence that promises one.
+    rule_types="$(jq -r '[ .[]? | if type == "object" then (.type // "?") else "?" end ] | unique | join(", ")' <<<"$rules_json")" \
+      || rule_types="unreadable"
+    fault 3 "$repo@$base_ref declares no required status checks, so a green rollup proves nothing about it; this assertion cannot gate an ungoverned ref. Its ruleset WAS read and does govern the ref -- $rule_count rule(s) of type: $rule_types -- so the remedy is to add a required_status_checks rule to the ruleset that already exists, not to create a ruleset."
+  fi
+  fault 3 "$repo@$base_ref returned an EMPTY rule list, so Gate A has nothing to evaluate. An empty list does NOT by itself establish an ungoverned ref, so do not act on it by adding a ruleset before confirming which cause it is. A ruleset the token cannot SEE is not one of the causes: this endpoint returns organization-sourced rules in full even to a wholly unauthenticated caller, and a caller that cannot read the repository is refused 401/403/404 rather than handed an empty list -- that refusal is already fatal above. The two causes that do produce this shape are indistinguishable from the response alone: (1) the ref exists and no ruleset targets it -- remedy: add a ruleset carrying a required_status_checks rule; (2) nothing matches the path requested, repos/$repo/rules/branches/$base_ref_path, because the ref was deleted, renamed, or encoded wrongly -- this endpoint answers 200 with an empty list for a nonexistent branch exactly as it does for an ungoverned one -- remedy: fix the ref, do NOT add a ruleset. Check that the ref exists under that exact path before choosing."
+fi
 
 # A required context is matched by EXACT name — the form branch protection
 # itself uses — and, when the ruleset binds it to an app, by that app's id.
