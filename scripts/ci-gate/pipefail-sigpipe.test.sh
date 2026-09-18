@@ -251,8 +251,7 @@ join_continuations() {
 #     gates, measured from its own offset map:
 #     `complete-authorization.test.sh` 129-387, `actions-ci-groups.test.sh`
 #     85-321, `changelog-contract-resolution.test.sh` 44-174,
-#     `node-release-publish.test.sh` 68-173, `repo-hygiene.sh` 178-250, and
-#     this file 157-189.
+#     `node-release-publish.test.sh` 68-173, and `repo-hygiene.sh` 178-250.
 #
 #     An offender inside such a span is still found: its text is in the record
 #     and still matches, before and after any neighbour is fixed. Two things
@@ -302,18 +301,35 @@ scan_file() {
                 entries = split(map, entry, ";")
                 line = 0
                 begins = 0
+                # -1 means the resolved line is the last one in this record,
+                # so the report runs to the end of the body, not to a successor.
+                ends = -1
                 for (i = 1; i <= entries; i++) {
                   split(entry[i], field, "@")
                   if (field[2] + 0 <= offset + 0) {
                     line = field[1]
                     begins = field[2]
+                    ends = -1
+                  } else if (ends < 0) {
+                    ends = field[2]
                   }
                 }
-                print line "@" begins
+                print line "@" begins "@" ends
               }
             '
           )"
-          printf '%s:%s:%s\n' "$1" "${resolved%%@*}" "${body:${resolved#*@}}"
+          begins="${resolved#*@}"
+          ends="${begins#*@}"
+          begins="${begins%%@*}"
+          # Report the resolved line alone. The record may be a whole joined
+          # statement, and printing all of it buries the one line the number
+          # names under the rest of its continuation.
+          if [ "$ends" -gt "$begins" ]; then
+            offending="${body:begins:ends-begins}"
+          else
+            offending="${body:begins}"
+          fi
+          printf '%s:%s:%s\n' "$1" "${resolved%%@*}" "${offending% }"
         done
   )
 }

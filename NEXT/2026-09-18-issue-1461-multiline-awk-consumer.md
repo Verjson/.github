@@ -48,3 +48,18 @@ generator — `complete-authorization.test.sh` buffers 129-387 and
 `actions-ci-groups.test.sh:201` was previously reported at `:85`, 116 lines away
 from itself. The offset map that fixes that is emitted by the joiner and read
 only for records `grep` has already kept.
+
+A second review round, scoped to the offset map this fix added, attacked the map under
+multi-byte input, at both record ends, and with a missing offset, and found no path that
+drops a site: both degradations fall back to the record's first line. A sweep of all 159
+tracked scripts with the exclusion arm removed put the widened bridge's cost at exactly
+one new site and zero sites lost, so the widening is a pure superset of what the scan saw
+before.
+
+Two reporting defects closed with it. The self-referential span in the comment block was
+dropped rather than corrected: a hand-maintained line range inside the file it describes
+rots on the next comment edit above it, including the edit that fixes it, and the five
+external spans make the point without a number that moves. And the report now prints only
+the line its number names — the resolver already walks the offset map, so it carries the
+successor offset and slices the record — where before it printed the whole joined record
+and buried the offending line under thousands of characters of its continuation.
