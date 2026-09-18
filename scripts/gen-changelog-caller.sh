@@ -2305,11 +2305,34 @@ generated_set_note() {
 
 # The remedy in every finding is composed from $mode, a literal in THIS file,
 # and $CONTRACT_REF, this file's own constant. Nothing in it is derived from the
-# member being reported on.
+# member being reported on: $declared is used only after grep -qxE has matched it
+# EXACTLY against $accepted, an alternation that is itself a literal here, so the
+# value substituted is one of this file's own constants and not adopter text.
+#
+# A remedy carrying `>` is a command a human pastes, so it must be RUNNABLE. An
+# alternation is not: `{a|b|c}` is not brace expansion in bash -- `|` is the pipe
+# operator, so `... {a|b|c} ... > .github/workflows/release.yml` parses as a
+# three-stage pipeline whose every stage fails while the `>` redirect still
+# truncates the target to zero bytes. Where several modes write one path the
+# remedy therefore either names the ONE mode the member itself declares, or --
+# when no mode has been established -- states the choice as prose and carries no
+# `>` at all. A remedy that deletes a workflow on ~95 repositories is worse than
+# no remedy, which is the same reason the modes are all named in the first place.
+generated_set_remedy() { # generated_set_remedy <one-mode|alternation> <rel> <flags> <note>
+  case "$1" in
+    *[\|{}]*)
+      printf '%s' "Regenerate the whole set at one commit: run scripts/gen-changelog-caller.sh at $CONTRACT_REF${3:+ with $3}, writing $2 with the one mode this repository adopted, out of $(printf '%s' "$1" | tr -d '{}' | sed 's/|/, /g').$4"
+      ;;
+    *)
+      printf '%s' "Regenerate the whole set at one commit, starting with: scripts/gen-changelog-caller.sh $1 $CONTRACT_REF${3:+ $3} > $2$4"
+      ;;
+  esac
+}
+
 generated_set_check() { # generated_set_check <relative-path> <required|optional> <pin-pattern> <remedy-mode> <accepted-modes|''> [generator-flags] [remedy-note]
   local rel="$1" required="$2" pattern="$3" mode="$4" accepted="$5" flags="${6:-}" note="${7:-}"
   local abs="$root/$rel" claims claim count remedy modes mode_count declared
-  remedy="Regenerate the whole set at one commit, starting with: scripts/gen-changelog-caller.sh $mode $CONTRACT_REF${flags:+ $flags} > $rel$note"
+  remedy="$(generated_set_remedy "$mode" "$rel" "$flags" "$note")"
   if [ ! -e "$abs" ]; then
     if [ "$required" = required ]; then
       generated_set_note "$rel is absent, so nothing establishes that member at $CONTRACT_REF. $remedy"
@@ -2335,6 +2358,11 @@ generated_set_check() { # generated_set_check <relative-path> <required|optional
       generated_set_note "$rel declares generator mode '$declared', which does not write this path, so its pin claims nothing about this member. $remedy"
       return 0
     fi
+    # $declared matched $accepted exactly, so it is one of this file's own mode
+    # literals. Every arm below can therefore print the runnable single-mode
+    # command instead of the alternation, naming the mode this repository
+    # actually adopted rather than making the reader choose.
+    remedy="$(generated_set_remedy "$declared" "$rel" "$flags" "$note")"
   fi
   if ! claims="$(sed -nE "s|$pattern|\1|p" "$abs" 2>/dev/null)"; then
     generated_set_note "$rel could not be scanned for a pin declaration, so it cannot be compared with $CONTRACT_REF. $remedy"
@@ -2372,10 +2400,20 @@ generated_set_check .github/workflows/changelog-contract.yml  required "$generat
 generated_set_check scripts/render-next.sh                    required "$generated_set_assign_pin" renderer ''
 # This suite is itself a member of the set it checks, so its pin claim is read
 # out of the file the comparison value was assigned from and the "still at" arm
-# cannot fire for it. It stays enumerated for the multiplicity arm, which can:
+# cannot fire for it. It stays enumerated because SOMETHING has to fire for it:
 # repinning the suite by adding a second CONTRACT_REF line rather than
 # regenerating leaves a file that is half-old and half-new, which is precisely
-# the partial regeneration this check exists to catch.
+# the partial regeneration this check exists to catch, and dropping the member
+# from the enumeration loses that entirely.
+#
+# What fires is a narrower claim than it looks. The multiplicity arm below is
+# not load-bearing for DETECTION here: with two CONTRACT_REF lines the extracted
+# claim is a two-line string, so the trailing mismatch arm reports the member in
+# any case. The multiplicity arm decides only which MESSAGE the reader gets --
+# "declares 2 contract pins", naming the actual fault, rather than a mismatch
+# against a value that is itself one of the two. The covering suite therefore
+# asserts that wording, because an assertion on the member alone stays green
+# with the arm deleted.
 generated_set_check scripts/changelog-contract.test.sh        required "$generated_set_assign_pin" contract-test ''
 # Optional members: a repository that never adopted Renovate attribution, a
 # release caller, a release proposer or the ADR index legitimately does not

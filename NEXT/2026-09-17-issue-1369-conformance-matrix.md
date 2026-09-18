@@ -159,14 +159,33 @@ attribution, a release proposer or the ADR index is not failed for the absent
 file. Once present, it is held to the same pin as everything else.
 
 That is a limitation as much as a feature, and it is stated rather than left to
-be inferred: **a deleted optional member is undetectable here.** The emitted
-suite holds no hub-controlled record of which optional members an adopter
-selected — `--autonomy` and the release flags are consumed by `release-propose`
-and `release-node` and never reach `contract-test` — so "never adopted" and
-"deleted during a partial regeneration" are literally the same observation, and
-the second one passes. Closing it would require the selected modes to be
-recorded at generation time, which is a contract-shape change beyond this
-requirement. Requirements 1 and 4 of #1369 remain follow-up work.
+be inferred: **this check cannot tell a deleted optional member from one that
+was never adopted, so the deletion passes.** An earlier draft of this paragraph
+gave a reason that is false, and it is corrected here rather than quietly
+dropped: it claimed the emitted suite holds *no* hub-controlled record of what
+the adopter selected, because "`--autonomy` and the release flags are consumed
+by `release-propose` and `release-node` and never reach `contract-test`". Only
+the `--autonomy` half is true (`gen-changelog-caller.sh:239`).
+`gen-changelog-caller.sh:179` explicitly accepts `--release-asset` for
+`contract-test`, and the emitted suite bakes in fourteen hub-controlled values
+— eleven `EXPECTED_RELEASE_*` parameters and three digests. Measured on this
+branch: generated plainly, `EXPECTED_RELEASE_ASSETS_JSON` is `'[]'`; generated
+with `--release-asset dist/x.tgz` it is `'["dist/x.tgz"]'`, and that line is the
+*only* difference between the two emitted suites. A non-default value there is
+therefore already a hub-controlled record that a release caller was selected,
+and for that subset a deleted `release.yml` **is** distinguishable from "never
+adopted".
+
+What is actually missing is narrower than "record the selected modes at
+generation time", and the gap is a use, not a record: every release assertion in
+the emitted suite sits behind `if [ -f "$release_workflow" ]`, so the recorded
+selection is never read as a *presence* requirement. Closing it in general is
+still a contract-shape change, because the record only covers what a flag
+varies. The ADR members carry no such signal at all: `ADR_INDEX_SHA256` and
+`ADR_INDEX_TEST_SHA256` came out byte-identical across every flag combination
+`contract-test` accepts, being the digest at the pinned ref whether or not the
+adopter ever wired `adr-index: true`. Requirements 1 and 4 of #1369 remain
+follow-up work.
 
 Requirement 5 also surfaced a fail-open in `required-checks-audit.sh`, found
 because the larger generated contract test tripped it. `base64 --decode` exits 0

@@ -1948,11 +1948,19 @@ run_adopter "$legacy_release" \
 # release.yml. ~21 repositories carry this shape and they do not all want
 # release-node: telling every one of them to run it would publish npm packages
 # from repositories that publish GitHub Release assets, or nothing at all.
-{ grep -qF 'gen-changelog-caller.sh {release-node|release-artifact|release-snapshot}' "$tmproot/run.out" \
+#
+# Nothing here declares a mode, so this is the case that CANNOT emit a pasteable
+# command: the three modes are named as prose and the finding carries no `>`.
+# An alternation inside a command ending `> .github/workflows/release.yml` would
+# hand these ~21 repositories a line that deletes the very file it is meant to
+# regenerate, so the absence of the redirect is asserted, not just its wording.
+legacy_release_finding="$(grep -F '.github/workflows/release.yml' "$tmproot/run.out" | head -1)"
+{ grep -qF 'out of release-node, release-artifact, release-snapshot' <<<"$legacy_release_finding" \
   && grep -qF 'release-artifact publishes GitHub Release assets' "$tmproot/run.out" \
-  && grep -qF 'release-snapshot publishes nothing from the release workflow' "$tmproot/run.out"; } \
-  && pass "the legacy release shape is rejected with every command that could fix it" \
-  || fail "the legacy release rejection names no remedy, or names only one mode: $(tail -2 "$tmproot/run.out")"
+  && grep -qF 'release-snapshot publishes nothing from the release workflow' "$tmproot/run.out" \
+  && ! grep -qF '>' <<<"$legacy_release_finding"; } \
+  && pass "the legacy release shape is rejected naming every mode that could fix it, with no pasteable redirect" \
+  || fail "the legacy release rejection names no remedy, names only one mode, or carries a truncating redirect: ${legacy_release_finding:-$(tail -2 "$tmproot/run.out")}"
 
 # The counterpart. docs/changelog/README.md tells adopters to write exactly this
 # comment next to a correct wiring, so a guard matching the raw line would break
@@ -2847,21 +2855,117 @@ done <<<"$enumerated_members"
   && pass "every enumerated set member is a path some generator mode writes" \
   || fail "the set enumerates members no generator mode writes:$unwritable_members"
 
-# The remedy printed for `.github/workflows/changelog.yml` has to name every
-# mode that writes it. Adopters run all three: `generated-artifacts-with-adr-index`
+# The remedy printed for `.github/workflows/changelog.yml` must not send the
+# reader to the wrong mode. Adopters run all three: `generated-artifacts-with-adr-index`
 # additionally wires `adr-index: true` and the pinned scripts/gen-adr-index.sh,
 # so a human who follows a remedy hardcoded to `generated-artifacts` silently
 # drops that wiring and the validate_adr_generator path with it. A wrong remedy
 # on ~95 repositories is worse than no remedy.
+#
+# Where the member still declares a readable mode header, that IS the mode the
+# repository adopted, so the remedy names it and stays a runnable command --
+# better than making the reader choose, and, per the paste-safety section
+# above, the only form in which a `>` may be emitted at all.
 changelog_remedy="$tmproot/adopter-changelog-remedy"
 build_adopter "$changelog_remedy" yes generated-artifacts-with-adr-index
 stale_pin "$changelog_remedy" .github/workflows/changelog.yml
 run_adopter "$changelog_remedy"
 changelog_finding="$(grep -F '.github/workflows/changelog.yml is still at' "$tmproot/run.out")"
-{ grep -qF 'gen-changelog-caller.sh {generated-artifacts|generated-artifacts-with-adr-index|workflow}' <<<"$changelog_finding" \
+{ grep -qF "gen-changelog-caller.sh generated-artifacts-with-adr-index $sha > .github/workflows/changelog.yml" <<<"$changelog_finding" \
   && grep -qF 'adr-index: true' <<<"$changelog_finding"; } \
-  && pass "the changelog caller remedy names every mode that writes it, not just one" \
-  || fail "the changelog caller remedy names one mode and would drop adr-index wiring: ${changelog_finding:-<no changelog.yml finding>}"
+  && pass "the changelog caller remedy names the mode this adopter declares, runnably" \
+  || fail "the changelog caller remedy does not name the adopted mode as a runnable command: ${changelog_finding:-<no changelog.yml finding>}"
+# The same adopter regenerated with the plainer caller must be sent to THAT
+# mode, not to the one the assertion above happens to name.
+plain_remedy="$tmproot/adopter-changelog-remedy-plain"
+build_adopter "$plain_remedy" yes generated-artifacts
+stale_pin "$plain_remedy" .github/workflows/changelog.yml
+run_adopter "$plain_remedy"
+plain_finding="$(grep -F '.github/workflows/changelog.yml is still at' "$tmproot/run.out")"
+grep -qF "gen-changelog-caller.sh generated-artifacts $sha > .github/workflows/changelog.yml" <<<"$plain_finding" \
+  && pass "the remedy follows the mode the member declares rather than a fixed one" \
+  || fail "the remedy did not follow the declared mode: ${plain_finding:-<no changelog.yml finding>}"
+# And where NO mode has been established -- the member is absent, unreadable or
+# carries no parsable header -- every mode that writes the path is still named,
+# because that information is what keeps a reader off the wrong one. It is
+# named as prose, since a command that cannot state one mode cannot carry a `>`.
+unknown_remedy="$tmproot/adopter-changelog-remedy-unknown"
+build_adopter "$unknown_remedy" yes generated-artifacts-with-adr-index
+rm -f "$unknown_remedy/.github/workflows/changelog.yml"
+run_adopter "$unknown_remedy"
+unknown_finding="$(grep -F '.github/workflows/changelog.yml is absent' "$tmproot/run.out")"
+{ grep -qF 'out of generated-artifacts, generated-artifacts-with-adr-index, workflow' <<<"$unknown_finding" \
+  && grep -qF 'adr-index: true' <<<"$unknown_finding" \
+  && ! grep -qF '>' <<<"$unknown_finding"; } \
+  && pass "an unidentified member's remedy names every mode as prose and emits no redirect" \
+  || fail "the unidentified-member remedy lost the mode list or still carries a redirect: ${unknown_finding:-<no changelog.yml finding>}"
+
+# --------------------------------------------------------------------------
+# Every remedy carrying `>` is safe to paste (#1369)
+# --------------------------------------------------------------------------
+#
+# A remedy is a command a human pastes, and `{a|b|c}` is NOT brace expansion in
+# bash -- `|` is the pipe operator. `gen ... {a|b|c} ... > .github/workflows/release.yml`
+# therefore parses as a three-stage pipeline whose every stage fails while the
+# `>` redirect still truncates the target to zero bytes: the adopter who follows
+# the remedy DELETES a workflow and lands in this suite's own "emptied to zero
+# bytes" state, on ~95 repositories and on the required member changelog.yml as
+# well. The mode-naming assertion above cannot see this, because it checks what
+# the remedy SAYS; runnability is the property it stopped checking, which is how
+# the hazard reached a strengthened assertion unnoticed. Asserted over EVERY
+# emitted finding rather than the two members known to be multi-mode, so it
+# cannot recur for a member nobody thought about.
+paste_safety="$tmproot/adopter-remedy-paste-safety"
+build_adopter "$paste_safety" yes generated-artifacts-with-adr-index
+# Emptying a member drives the arm that fires whatever pin form it declares, so
+# one run collects a finding -- and therefore a remedy -- for every member at
+# once. The suite's own copy is excluded because the adopter has to run it.
+paste_safety_members=''
+while read -r member; do
+  [ -n "$member" ] || continue
+  [ "$member" = scripts/changelog-contract.test.sh ] && continue
+  [ -f "$paste_safety/$member" ] || continue
+  : >"$paste_safety/$member"
+  paste_safety_members="$paste_safety_members $member"
+done <<<"$enumerated_members"
+run_adopter "$paste_safety"
+paste_safety_unreported=''
+for member in $paste_safety_members; do
+  grep -qF "$member" "$tmproot/run.out" || paste_safety_unreported="$paste_safety_unreported $member"
+done
+[ -z "$paste_safety_unreported" ] \
+  && pass "every set member emits a remedy this scan can inspect" \
+  || fail "no remedy was emitted for:$paste_safety_unreported; the paste-safety scan below is vacuous for them"
+# `|` on the same line as `>` is the exact shape that truncates the target. A
+# remedy that cannot name one concrete mode must phrase the choice as prose and
+# emit no `>` at all.
+unsafe_remedies="$(grep -n '>' "$tmproot/run.out" | grep '|' || true)"
+[ -z "$unsafe_remedies" ] \
+  && pass "no emitted remedy pipes into a redirect that would truncate the member" \
+  || fail "an emitted remedy would zero-truncate the file it tells the adopter to regenerate: $(tr '\n' ' ' <<<"$unsafe_remedies" | tail -c 400)"
+
+# ...and the runnable form still actually runs. Pasted verbatim, into a canary
+# that must survive with generated content rather than the empty file the
+# pipeline form leaves behind.
+paste_exec="$tmproot/adopter-remedy-paste-exec"
+build_adopter "$paste_exec"
+stale_pin "$paste_exec" .github/workflows/release.yml
+run_adopter "$paste_exec"
+release_remedy="$(sed -nE 's|^.*\.github/workflows/release\.yml is still at .*starting with: (scripts/gen-changelog-caller\.sh [^>]*> \.github/workflows/release\.yml).*$|\1|p' "$tmproot/run.out" | head -1)"
+if [ -z "$release_remedy" ]; then
+  pass "the release caller remedy states no pasteable command, so it cannot truncate the member"
+else
+  canary="$tmproot/remedy-canary"
+  rm -rf "$canary"
+  mkdir -p "$canary/scripts" "$canary/.github/workflows"
+  cp "$gen" "$canary/scripts/gen-changelog-caller.sh"
+  printf 'the adopter workflow this remedy must not destroy\n' >"$canary/.github/workflows/release.yml"
+  ( cd "$canary" && eval "$release_remedy" ) >"$tmproot/remedy-paste.out" 2>&1 || true
+  { [ -s "$canary/.github/workflows/release.yml" ] \
+    && grep -qF "$sha" "$canary/.github/workflows/release.yml"; } \
+    && pass "the release caller remedy, pasted verbatim, regenerates the member instead of emptying it" \
+    || fail "pasting the release caller remedy left $(wc -c <"$canary/.github/workflows/release.yml" | tr -d ' ') bytes: $(tr '\n' ' ' <"$tmproot/remedy-paste.out" | tail -c 300)"
+fi
 
 # The header states which MODE produced the file, and that is part of the claim.
 # A `changelog.yml` carrying a `pr-gate` header at the correct pin is not the
@@ -2920,8 +3024,15 @@ fi
 # exercised as its own case rather than assumed to fall out of the happy path.
 malformed_seq=0
 expect_unestablished_pin() {
-  # expect_unestablished_pin <label> <member-path> <mutator-fn>
-  local label="$1" member="$2" mutator="$3" dir
+  # expect_unestablished_pin <label> <member-path> <mutator-fn> [required-phrase]
+  #
+  # <required-phrase>, where given, pins the WORDING the arm under test emits.
+  # Several arms report the same member against the same commit, so the generic
+  # assertions below cannot tell which one fired: deleting the multiplicity arm
+  # entirely leaves this section green, because the trailing pin-mismatch arm
+  # picks the member up and reports it anyway. An arm that only changes the
+  # message needs the message asserted or it is not covered at all.
+  local label="$1" member="$2" mutator="$3" phrase="${4:-}" dir
   malformed_seq=$((malformed_seq + 1))
   dir="$tmproot/set-malformed-$malformed_seq"
   build_adopter "$dir"
@@ -2936,6 +3047,11 @@ expect_unestablished_pin() {
     && grep -qF "$sha" "$tmproot/run.out"; } \
     && pass "$label is reported against the pinned commit, not skipped" \
     || fail "$label reddened for some other reason: $(tr '\n' ' ' <"$tmproot/run.out" | tail -c 400)"
+  if [ -n "$phrase" ]; then
+    grep -qF "$phrase" "$tmproot/run.out" \
+      && pass "$label is reported in the wording only its own arm emits" \
+      || fail "$label was reported by some other arm; \"$phrase\" is absent: $(tr '\n' ' ' <"$tmproot/run.out" | tail -c 400)"
+  fi
   # chmod 000 would otherwise defeat this file's own cleanup.
   chmod -R u+rwX "$dir" 2>/dev/null || true
 }
@@ -2949,6 +3065,14 @@ make_unreadable() {
   [ ! -r "$1" ] || fail "make_unreadable left $1 readable; the unreadable-member case would assert nothing"
 }
 empty_member() { : >"$1"; }
+replace_member_with_directory() {
+  # `! -f` has no other case: make_unreadable exercises only `! -r`, and its
+  # chmod is inert for uid 0, which is what a CI container usually runs as. A
+  # directory is not a regular file for root either, so this half of the guard
+  # is covered everywhere rather than only on a non-root developer machine.
+  rm -f "$1"
+  mkdir -p "$1"
+}
 mangle_pin_line() {
   # The pin declaration survives as prose but stops being a parsable claim.
   sed -i -E \
@@ -2970,9 +3094,12 @@ if [ "$(id -u)" -eq 0 ]; then
 else
   expect_unestablished_pin "a required member that cannot be read" scripts/render-next.sh make_unreadable
 fi
+expect_unestablished_pin "a required member replaced by a directory" scripts/render-next.sh \
+  replace_member_with_directory "is present but not a readable regular file"
 expect_unestablished_pin "a required member emptied to zero bytes" scripts/render-next.sh empty_member
 expect_unestablished_pin "a pin declaration that no longer parses" scripts/render-next.sh mangle_pin_line
-expect_unestablished_pin "a member declaring two different pins" scripts/render-next.sh duplicate_pin_line
+expect_unestablished_pin "a member declaring two different pins" scripts/render-next.sh \
+  duplicate_pin_line "scripts/render-next.sh declares 2 contract pins"
 expect_unestablished_pin "a caller header stripped of its pin" .github/workflows/changelog-contract.yml mangle_pin_line
 # This suite is a member of the set it checks, so its own pin claim is read out
 # of the file the comparison value was itself assigned from: the "still at"
@@ -2981,7 +3108,9 @@ expect_unestablished_pin "a caller header stripped of its pin" .github/workflows
 # adding a second CONTRACT_REF line instead of regenerating the set leaves a
 # file that is half-old and half-new. The self-referential member stays
 # enumerated because of this arm, so the arm is asserted rather than assumed.
-expect_unestablished_pin "the suite itself declaring two different pins" scripts/changelog-contract.test.sh duplicate_pin_line
+expect_unestablished_pin "the suite itself declaring two different pins" \
+  scripts/changelog-contract.test.sh duplicate_pin_line \
+  "scripts/changelog-contract.test.sh declares 2 contract pins"
 
 # --------------------------------------------------------------------------
 # A member's header is a claim, never an instruction (#1369)
