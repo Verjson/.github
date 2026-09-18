@@ -513,8 +513,11 @@ establishing encoding for a variable assigned more than once. Tracked as #1508.
 Second, and found while attempting to harden the opposite direction, the recognizer accepts
 the encoding only as the entire assignment: appending `|| return 1` to it makes the gate fail
 the very line it exists to bless. The assignment is therefore deliberately left bare. It
-still fails closed, since an empty encoding yields a `compare/...` path that 404s and the
-`[[ =~ ^[0-9]+$ ]]` guard below returns 1.
+still fails closed, since an empty encoding yields a `compare/...` path that 404s, so `gh api`
+exits non-zero and the `|| return 1` on that same line fires; the `[[ =~ ^[0-9]+$ ]]` guard below
+is the second net, reached only when `gh api` exits 0 with a non-numeric body. Guarding the
+clobber does not narrow the ceiling either: an `if [ -z ... ]` arm and the `[ -z ... ] &&` form
+were each measured at exit 0 as well, so no second-assignment form is known to be caught.
 
 Also corrected here: the merge commit's message claimed that a future rebase resolving toward
 this branch's side — reinstating the `|| echo 0` fail-open — would be "caught by nothing".
@@ -523,4 +526,10 @@ scaffolding later. Reinstating the swallow inside the command substitution makes
 `scripts/ci-gate/freshness.test.sh` exit 1 with 3 `FAIL -` assertions (`indeterminate compare
 (error) did not hold`, `compare attempt count is not exactly 3`, `retry did not stop on the
 first answer`), and it is registered at `scripts/actions-ci-groups.tsv:82`, so it runs.
-Coverage is symmetric: both resolution directions are caught.
+
+That correction is bounded to the placement it names. Moving the same swallow *outside* the
+command substitution -- `raw="$(gh api ... 2>/dev/null)" || echo 0` -- leaves `freshness.test.sh`
+at exit 0 with 0 `FAIL -`: it is caught by no test. It is not a live fail-open, because `echo 0`
+writes to stdout rather than to `raw` and the numeric guard on the next line still returns 1, but
+it is covered only at runtime, not by the suite. So coverage is not symmetric; the inside form is
+caught, the outside placement is not.

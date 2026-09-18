@@ -2528,18 +2528,23 @@ done < <(ref_sites)
 # track the value that actually reaches the URL. So a later assignment to the same
 # variable defeats it silently -- inserting `base_ref_path="$base_ref"` between the
 # `@uri` encoding and the `gh api` line in ai-review-merge.yml leaves the ref fully
-# unencoded and this gate still exits 0. (The conditional-arm form of the same clobber
-# IS caught.) That is the same class as the concatenation/relocation drains pinned
-# below, but it is worse in kind: those lower a count, while this one passes a site
-# that is genuinely unencoded. Tracked as Verjson/.github#1508. Do not cite this gate
-# as establishing encoding of a ref whose variable is assigned more than once.
+# unencoded and this gate still exits 0. Guarding the clobber does not change that:
+# an `if [ -z "$base_ref_path" ]; then base_ref_path="$base_ref"; fi` arm and the
+# `[ -z … ] && base_ref_path="$base_ref"` form were each measured at exit 0 too. No
+# second-assignment form is known to be caught -- do not read a narrower exception
+# into this ceiling. That is the same class as the concatenation/relocation drains
+# pinned below, but it is worse in kind: those lower a count, while this one passes a
+# site that is genuinely unencoded. Tracked as Verjson/.github#1508. Do not cite this
+# gate as establishing encoding of a ref whose variable is assigned more than once.
 #
 # Corollary, found while trying to harden the other direction: the recognizer accepts
 # the encoding only as the ENTIRE assignment. Appending a guard to it --
 # `base_ref_path="$(jq … @uri)" || return 1` -- makes this gate FAIL the very line it
 # is meant to bless. So the encoding assignment is deliberately left bare; it still
-# fails closed, because an empty result yields a `compare/…` path that 404s and the
-# `[[ =~ ^[0-9]+$ ]]` below returns 1. Do not "fix" that by widening the recognizer.
+# fails closed, because an empty result yields a `compare/…` path that 404s, so `gh api`
+# exits non-zero and the `|| return 1` on that same line fires. (The `[[ =~ ^[0-9]+$ ]]`
+# below is the second net, reached only when `gh api` exits 0 with a non-numeric body.)
+# Do not "fix" that by widening the recognizer.
 
 # Floors, not targets. They exist so that a recognizer regression -- an anchor dropped, a
 # grep that stops matching -- shows up as "the scan stopped reaching the repository" rather
