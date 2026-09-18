@@ -141,7 +141,15 @@ BEHIND_BY=0 run_case "$H" >/dev/null
 export PRVIEW_FAIL=1
 rc=$(run_case "$H")
 unset PRVIEW_FAIL
-{ [ "$rc" = "rc=0" ] && out_has 'proceed=true'; } && pass "read failure fails open (proceed=true)" || fail "read failure did not fail open ($rc)"
+# Verjson/.github#1496 — an unreadable PR metadata read is indeterminate, not
+# permissive. This used to emit a ::warning:: and proceed=true, skipping the
+# freshness evaluation entirely. That mattered more than it looks: this read
+# sits EARLIER in the step than the compare guard below, so a correlated
+# outage tripped it first and the compare guard was never reached — the guard
+# #1476 added was unreachable on exactly the total-outage path it exists for.
+{ [ "$rc" = "rc=1" ] && out_has 'proceed=false' && ! out_has 'proceed=true'; } \
+  && pass "unreadable PR metadata holds (proceed=false, exit 1)" \
+  || fail "unreadable PR metadata did not hold ($rc)"
 
 # Verjson/.github#1476 — an indeterminate compare answer must never decode to a
 # genuine `behind=0`. Each shape below reached `proceed=true` before this fix:
@@ -163,11 +171,19 @@ COMPARE_MODE=recovers COMPARE_FAILURES=2 BEHIND_BY=0 run_case "$H" >/dev/null
   && pass "transient compare blip recovers on retry, then proceeds" \
   || fail "bounded retry did not recover a transient compare blip"
 
-# ...and the retry genuinely re-asks rather than reusing one answer.
+# ...and the retry is genuinely re-asking AND genuinely bounded. Assert the
+# exact attempt count in both directions: `-gt 1` would be satisfied by an
+# unbounded loop, so it pins only the floor and a raised ceiling slips through.
 COMPARE_MODE=error run_case "$H" >/dev/null
-[ "$(grep -c COMPARE "$tmp/act.log")" -gt 1 ] \
-  && pass "an unanswerable compare is retried before holding" \
-  || fail "compare was not retried before holding"
+[ "$(grep -c COMPARE "$tmp/act.log")" -eq 3 ] \
+  && pass "an unanswerable compare is asked exactly 3 times, then holds" \
+  || fail "compare attempt count is not exactly 3 ($(grep -c COMPARE "$tmp/act.log"))"
+
+# A recovered blip must stop asking the moment it gets an answer.
+COMPARE_MODE=recovers COMPARE_FAILURES=1 BEHIND_BY=0 run_case "$H" >/dev/null
+[ "$(grep -c COMPARE "$tmp/act.log")" -eq 2 ] \
+  && pass "the retry stops as soon as the compare answers" \
+  || fail "retry did not stop on the first answer ($(grep -c COMPARE "$tmp/act.log"))"
 
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."
