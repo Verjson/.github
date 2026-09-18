@@ -29,6 +29,25 @@
 # fault: a `::error::` naming the gate, and a distinct exit code — never a bare
 # "false", and never a zero exit on an unanswered question.
 #
+# PERMISSIONS. Gate A reads `repos/{owner}/{repo}/rules/branches/{base}`, and it
+# is the ONLY source of the required set. A caller whose token cannot read that
+# endpoint therefore cannot evaluate Gate A at all, and this script refuses
+# rather than falling back to the head's own reported checks. The read needs
+# ordinary repository read access and nothing more:
+#
+#   fine-grained token   Repository permissions > Metadata (read)
+#   classic OAuth token  `repo` for a private repository; no scope for a public one
+#   GitHub Actions       permissions.contents: read
+#
+# `administration` is NOT required, and an organization-level ruleset is
+# returned through this repository endpoint without organization read --
+# verified against `repos/Verjson/.github/rules/branches/main`, which returns
+# its org-sourced `required_status_checks` rule to a wholly unauthenticated
+# caller. An authorization refusal (401/403, or the 404 GitHub substitutes when
+# it masks an unauthorized read of a private repository) exits 1 with a message
+# naming the token as the cause and listing the access above; it is never a
+# silent pass and never an undifferentiated API error.
+#
 #   2  usage error
 #   3  Gate A failed (required contexts absent, misattributed, pending, or not passing)
 #   4  Gate B failed (the head was deferred; nothing on it was verified)
@@ -146,8 +165,25 @@ checks="$(jq -n --argjson a "$check_runs" --argjson b "$statuses" '$a + $b')" \
 # request's BASE REF. It is never inferred from the head: that is the same
 # error as trusting an adopter-supplied header, and it lets a head satisfy the
 # gate by reporting nothing at all.
-rules_json="$(gh api --paginate "repos/$repo/rules/branches/$base_ref_path" </dev/null | jq -s 'add // []')" \
-  || fault 1 "failed to read branch rules for $repo@$base_ref; cannot establish the required-check set"
+# `gh api` exits 1 for an authorization refusal and for a transient 5xx alike,
+# so the exit code alone cannot tell an operator whether to retry or to fix a
+# token. Gate A is not merely failed when this read is refused -- it is
+# UNEVALUABLE, which is the fail-open shape this script exists to prevent, so
+# the status is read off stderr and the permission cause is named outright.
+rules_err="$(mktemp)" \
+  || fault 1 "could not allocate a scratch file to capture the ruleset read's diagnostics"
+trap 'rm -f "$rules_err"' EXIT
+rules_json="$(gh api --paginate "repos/$repo/rules/branches/$base_ref_path" </dev/null 2>"$rules_err" | jq -s 'add // []')" || {
+  cat "$rules_err" >&2
+  # Match the LAST status in the stream: `--paginate` may emit several lines,
+  # and the refusal that ended the walk is the one that explains it.
+  rules_status="$(sed -n 's/.*(HTTP \([0-9]\{3\}\)).*/\1/p' "$rules_err" | tail -1)"
+  case "$rules_status" in
+    401 | 403 | 404)
+      fault 1 "Gate A cannot read the ruleset at repos/$repo/rules/branches/$base_ref (HTTP $rules_status): the token presented cannot read it. Gate A's required set comes only from this endpoint and is never inferred from the head, so this refusal is fatal rather than degraded. Grant the caller read access to $repo -- fine-grained token: Repository permissions > Metadata (read); classic OAuth token: 'repo' for a private repository, no scope at all for a public one; inside Actions: permissions.contents: read. The 'administration' scope is NOT required, and an organization-level ruleset is returned through this repository endpoint without organization read. Note that GitHub masks an unauthorized read of a private repository as 404, so do not conclude from a 404 that the repository or base ref is missing until the token has been checked." ;;
+  esac
+  fault 1 "failed to read branch rules for $repo@$base_ref; cannot establish the required-check set"
+}
 
 required="$(jq -c '
   [ .[]?
