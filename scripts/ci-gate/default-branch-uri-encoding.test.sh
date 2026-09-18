@@ -76,7 +76,10 @@
 #         tail shape that means "this raises" without parsing the file. `SHA.fullmatch(x)`
 #         is judged by still being written, not by still failing. Five of the eleven
 #         allowlist entries are in this weaker class, and so is the shell-shaped proof
-#         that is really a pinned assertion STRING inside a `.py` list.
+#         that is really a pinned assertion STRING inside a `.py` list. The one
+#         Python-shaped denylist literal that used to be here, `or True`, was dropped
+#         rather than kept: see `py_guard_is_live` for why a one-entry denylist is worse
+#         than an honest gap.
 #     Even at its strongest this is a COMMAND-level anchor, not reachability analysis: a
 #     guard MOVED into a branch that never runs, one made vacuous by editing the value it
 #     tests rather than the test itself, and a `fault` redefined as a no-op all still
@@ -377,6 +380,12 @@ guard_live_re() { # $1 = ERE whose match is the proof; reads the text on stdin
 # allow-list without parsing the file. A Python guard therefore gets the comment check and
 # NOTHING MORE. This is the weaker of the two anchors, deliberately and visibly so; the
 # header's ceiling says which entries it covers.
+#
+# The denylist this replaced also carried one Python-shaped literal, `or True`. It is NOT
+# kept here. A one-entry denylist catches `or True` and nothing adjacent to it -- `or 1`,
+# `or (lambda: True)()`, a `require` redefined above -- while reading like protection, and
+# that gap is the whole reason the shell side stopped denylisting. Dropping it is a
+# deliberate, named loss of one narrow case in exchange for a claim that is true.
 py_guard_is_live() { # $1 = file, $2 = literal guard text
   local line
   while IFS= read -r line; do

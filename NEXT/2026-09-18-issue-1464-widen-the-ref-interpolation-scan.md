@@ -85,7 +85,10 @@ permanent regression cases against synthetic fixtures.
 Two limits are stated rather than implied away. A Python guard gets the comment check and
 nothing more — every cited Python guard is a sub-expression of an `if … is None:` or a
 `require(…)` call, with no single tail shape meaning "this raises" — so five of the eleven
-allowlist entries are pinned only as "still written". And even at its strongest this is a
+allowlist entries are pinned only as "still written". The one Python-shaped denylist
+literal that used to be there, `or True`, is dropped rather than kept: a one-entry denylist
+reads like protection while catching nothing adjacent to it, which is the same failure the
+shell side is being moved away from. And even at its strongest this is a
 command-level anchor, not reachability analysis: a guard moved into a branch that never
 runs, one made vacuous by editing the value it tests, or a `fault` helper redefined as a
 no-op all still satisfy it.
