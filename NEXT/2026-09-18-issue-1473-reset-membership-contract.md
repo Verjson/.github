@@ -32,23 +32,49 @@ candidate names are unquoted, because `read -r "name"` names a variable exactly 
 `read -r name` does.
 
 That covers `=`, `+=`, indexed and associative element assignment, `declare`, `typeset`,
-`export`, `readonly`, `local`, `for x in`, `select x in`, `coproc`, `getopts`, `let`,
-`printf -v`, `${x:=y}`, single-line and multi-line `case` arms, `read`/`readarray`/`mapfile`
-with per-command option tables so `read -d '' name` and `mapfile -d '' -t name` do not lose
-their variable to an option argument, and arithmetic in full: `((x=1))`, compound operators,
-`((x++))`, comma-separated targets, and a C-style `for ((x=0; x<2; x++))` header. `((n++))`
-is a plausible replacement for the loop's own `n=$((n + 1))` counters, so that is not
-hypothetical. It runs in both directions: a forgotten assignment reddens, and so does a
-dead reset entry.
+`export`, `readonly`, `local`, a nameref *declaration*, `for x in`, the `in`-less `for x`
+that iterates the positional parameters, `select x in`, `coproc`, `getopts`, `let`,
+`printf -v` including `printf -v 'a[0]'`, `${x:=y}`, `case` arms written single-line,
+parenthesized as `(x)`, and nested inside one another, `read`/`readarray`/`mapfile` with
+per-command option tables so `read -d '' name` and `mapfile -d '' -t name` do not lose
+their variable to an option argument, a bare `read`, which assigns `REPLY`, and arithmetic
+in full: `((x=1))`, every compound operator including `**=`, `((x++))`, comma-separated
+targets, and a C-style `for ((x=0; x<2; x++))` header. `((n++))` is a plausible replacement
+for the loop's own `n=$((n + 1))` counters, so that is not hypothetical. It runs in both
+directions: a forgotten assignment reddens, and so does a dead reset entry.
 
 Embedded programs are excised by structure rather than by hoping their lines look
-different from bash, and the command is matched in *word* position — bare, after `!`,
-after a pipe, or inside `$(`/`<(`, with any options between it and its opening quote. An
-earlier attempt keyed on a literal `$(` and so matched exactly one of the three regions in
-the loop; both multi-line `jq -e '` programs at `scripts/privileged-merge-conformance.sh:392`
-and `:453` were handed to the bash tokenizer verbatim. That was a live false negative in
-both directions: jq text could forge a name, and — worse, because green tells you nothing —
-jq text spelling a name the loop no longer assigns kept a dead reset entry green.
+different from bash, and **openers are decided in word position by the same character
+scanner that tracks quoting**, not by a regex over the raw line. The raw-line regex was a
+second-order version of the same mistake this contract exists to catch: it could not tell
+`jq -e '` from the word `jq` inside `echo "needs jq here"`, so any `awk`/`sed`/`jq` word
+followed by an apostrophe anywhere later on the line opened an excision.
+`echo "needs jq here" && swallowme='1'` passed green with `swallowme` never collected, and
+`echo "::error::the jq binary isn't present"` left the region open until the next
+apostrophe anywhere below it, silently discarding nineteen lines of loop body along with
+the assignment written on the following line.
+
+The region now runs from its opening quote to the matching quote **of the same character**,
+and it is spliced from the opening quote rather than from the command word. The audited
+script's dominant embedded idiom is the double-quoted `sed -nE "s/…'(…)'…/p"` at
+`scripts/privileged-merge-conformance.sh:303`, `:383`, `:431`, `:439`, and `:442`; cutting
+that at the single quote *inside* the program dropped the opening `"` and left the
+remainder unbalanced — the same silent swallow, one quoting style over.
+`sed -nE "s/a'b/c/p" /dev/null && swallowme=1` was green before this change.
+
+`gh --jq '…'` is an embedded program too, even though `gh` is the command word. `--jq`
+leads with `-`, so no command-word rule can see it, and a multi-line `--jq` program was
+handed to the bash tokenizer verbatim: a name spelled in its body was collected as loop
+state. That direction **forges**, and forging is what keeps a dead reset entry green. The
+loop calls `--jq` at `scripts/privileged-merge-conformance.sh:214`, `:241`, `:278`, `:331`,
+`:350`, `:355`, and `:360`, so this was live rather than hypothetical. The option now arms
+the next quoted word exactly as an embedded command word does.
+
+A newline inside a quoted string is data, not a command separator, so the scanner collapses
+it. Without that, the inner lines of any multi-line quoted string that is not recognized as
+a program — an `echo '…'` spanning lines, or a `--jq='…'` written as one word — were handed
+to the per-line tokenizer as if they were bash, which is the same forging surface reached
+by a different route. A newline inside `$( … )` is a real separator and is preserved.
 
 The region is spliced out **in place** rather than dropped as whole lines. The regions sit
 inside `"$(…)"`, so emitting the opener's prefix and the closer's remainder as two separate
@@ -58,10 +84,20 @@ dominant idiom. Splicing keeps `workflow_call_block="$(awk EMBEDDED_PROGRAM <<<�
 balanced, so the capture is still collected, the program body is not, and real bash on the
 terminating line is.
 
+The closure guard is no longer a "the region eventually closed" check, which was very
+nearly vacuous: deleting the awk program's closing quote at
+`scripts/privileged-merge-conformance.sh:371` used to exit 0, because a later apostrophe
+closed the region on its behalf. The excised body is now handed to `bash -n`, so an
+excision that cut at the wrong quote, or one that swallowed real commands, is caught by the
+text no longer parsing. That is the invariant the guard is credited for, and it is
+exercised by an injection case rather than asserted.
+
 Continuations are joined before anything else reads the text. The reset statement was
 already continuation-joined; the assignment walk was not, so any name written past a `\`
 wrap was dropped silently. The loop already wraps at `:206-217` and `:241`, and the reset
-list is long enough that a wrapped `read` is a plausible next edit.
+list is long enough that a wrapped `read` is a plausible next edit. Joining an *interior*
+continuation is what bash itself does, so the accompanying `assert not pending` guards only
+the body's final line; a genuinely malformed continuation surfaces through `bash -n`.
 
 The earlier claim that awk "cannot forge a name" because its lines begin with `$0` or a
 bare word was an incidental property of today's program, not a guarantee; it is withdrawn,
@@ -94,32 +130,61 @@ Three smaller findings close alongside it:
   line that starts with one. Prose cannot redden it, and an unrelated `unset` cannot
   satisfy it vacuously.
 
+## The capability table is executed, not described
+
+Every row below is an injection case: a mutated copy of the audited script, fed to the
+collector, required to redden with the stated message rather than merely to redden. There
+are **64** of them, and each mutation must find its anchor, so the corpus cannot rot into
+vacuous passes when the loop moves underneath it. Run against the collector as it stood
+before this change, 14 of the 64 fail — which is the measurement that made the prose in the
+previous version of this fragment worth distrusting.
+
 | Mutation | Assertion that fires |
 | --- | --- |
 | reset list loses `metadata default_branch visibility_type has_secret` | `assigned per repository but never reset: ['default_branch', 'has_secret', 'metadata', 'visibility_type']` |
 | a new loop variable is added and forgotten | `assigned per repository but never reset: ['newly_added_state']` |
 | reset list gains a name the loop never assigns | `reset but never assigned in the loop: ['never_assigned_anywhere']` |
-| reset clears a fleet accumulator | `the reset clears a value the fleet audit must carry: {'consumers'}` |
-| reset returned to the bottom of the loop | `early exits precede the reset:` naming all five |
-| an assignment reachable only through a `case` arm, `[ … ] &&`, `[ … ] ||`, `declare`, `typeset`, `export`, `readonly`, `local`, `for … in`, `((…))`, `let`, `read -a`, `read -d ''`, `readarray -t`, `mapfile -d '' -t`, `printf -v`, or `if ! name="$(…)"` | `assigned per repository but never reset:` naming that variable, one injection per form |
-| a name assigned only inside an embedded `awk` or `jq` program | nothing — all three regions are excised, so program text is not mistaken for loop state |
-| a dead reset entry whose name the `awk` or `jq` program text happens to spell | `reset but never assigned in the loop:` naming it — the excision closes the silent direction too |
-| `\|\| name=1` written past an embedded region's closing quote | `assigned per repository but never reset:` naming it |
-| a name written past a `\` continuation, in a `read` or a `mapfile` | `assigned per repository but never reset:` naming it |
-| an assignment after an unquoted `\|`, inside `{ … }`, or after `command` | `assigned per repository but never reset:` naming it |
-| `((x++))`, `((a=1, x=2))`, or a C-style `for ((x=0; …))` header | `assigned per repository but never reset:` naming it |
-| a quoted candidate name — `read -r "x"`, `printf -v "x"`, `declare "x=1"` | `assigned per repository but never reset:` naming it |
-| `coproc x`, `getopts … x`, `select x in`, `: "${x:=y}"`, single-line `case` | `assigned per repository but never reset:` naming it |
+| reset clears a fleet accumulator | `the reset clears a value the fleet audit must carry` |
+| reset returned to the bottom of the loop | `early exits precede the reset:` |
+| a second top-level `unset` | `expected exactly one per-repository reset, found 2` |
+| fleet-wide state moved into the loop | `fleet-wide state moved into the loop body` |
+| `IFS=,` written as loop state rather than a command prefix | `IFS is assigned as loop state, not a command prefix` |
+| each assignment form in the paragraph above, one injection per form | `assigned per repository but never reset:` naming that variable |
+| `\|\| name=1` written past an embedded region's closing quote | `assigned per repository but never reset: ['past_the_region']` |
+| real bash after a non-opener `jq` word in a string, after an apostrophe in a `jq` diagnostic, or after a double-quoted `sed` program | `assigned per repository but never reset:` naming it — the three silent swallows found in review |
+| an embedded program's closing quote is deleted | `the excised loop body no longer parses as bash` |
+| a multi-line `awk`, `jq`, `sed`, `gh --jq`, or `--jq=` program body, or a multi-line quoted string that is no program at all | nothing — the region is excised, so program text cannot forge a name |
+| a dead reset entry whose name only `awk` or `gh --jq` program text spells | `reset but never assigned in the loop:` naming it — the excision closes the silent direction too |
+| a `<<'EOT'` heredoc body | `assigned per repository but never reset: ['forged_by_heredoc']` — a documented loud miss, pinned so it stays loud |
 
-Where the collector stops is recorded deliberately, because that boundary list is what
-made the review that found these holes possible. It is a pragmatic bash tokenizer, not a
-bash parser: it does not model `eval`, `source`, `declare -n` namerefs, or assignment
-inside a function defined in the loop body — none of which the audited script uses. A
-`<<'EOT'` heredoc body is parsed as bash, so `foo=bar` inside one is collected as a name;
-that fails *loudly* — verified as `assigned per repository but never reset:
-['forged_by_heredoc']` — so it is a nuisance for whoever adds a heredoc rather than a
-correctness hole. Every remaining gap fails toward a miss, not toward a forged pass; the
-two silent directions found in review are both closed and asserted.
+## Where the collector stops
+
+It is a pragmatic bash tokenizer, not a bash parser, and the boundary is recorded
+deliberately, because the boundary list is what made the review that found these holes
+possible.
+
+- **Bash inside a deferred-execution string is not followed.** `eval`, `source`, and
+  `trap 'x=1' EXIT` are misses. The audited script uses none of them.
+- **A write *through* a nameref is not followed.** `declare -n x=y` is collected as an
+  assignment to `x`, which is correct, but a later `x=1` writes `y` and the collector
+  cannot know that. A previous version of this list named `declare -n` and `local -n`
+  themselves as boundaries; that was inaccurate — they were always collected, and an
+  injection case now pins it.
+- **An assignment inside a function defined in the loop body** is not modelled.
+- **An assignment inside an excised program's own `$( … )`** goes with the excision.
+- **A `<<'EOT'` heredoc body is parsed as bash**, so `foo=bar` inside one is collected as a
+  name. That fails *loudly*, and the corpus pins it as
+  `assigned per repository but never reset: ['forged_by_heredoc']`, so it is a nuisance for
+  whoever adds a heredoc rather than a correctness hole.
+
+A previous version of this fragment closed by claiming that "every remaining gap fails
+toward a miss, not toward a forged pass". **That claim was false when it was written.** The
+`gh --jq` program body forged a name — the direction that keeps a dead reset entry green —
+and so did the inner lines of any multi-line quoted string the excision did not recognize.
+The claim is withdrawn rather than narrowed. What replaces it is checkable: the only text
+the collector still hands to the bash tokenizer without reading it as data is a heredoc
+body, which forges **loudly** and is pinned by the corpus; every other boundary above fails
+toward a miss. If a future edit widens that set, the corpus is where it has to be recorded.
 
 `Verjson/.github#1471` would widen the shipped extractor so the 40-hex guard is reachable
 from a real fixture, which would retire the mutated-copy fixture and with it the

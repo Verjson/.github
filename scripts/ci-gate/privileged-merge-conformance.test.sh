@@ -548,8 +548,10 @@ AUDIT_SCRIPT="$widened_audit" \
 # it names every variable the iteration assigns. The second is the one #1448 was made of --
 # a variable added to the loop and forgotten from the reset list -- and a position-only
 # check cannot see it.
-if python3 - "$audit" <<'RESET_CONTRACT'
+collector="$tmp/reset-contract.py"
+cat >"$collector" <<'RESET_CONTRACT'
 import re
+import subprocess
 import sys
 
 source = open(sys.argv[1], encoding="utf-8").read().splitlines()
@@ -574,48 +576,220 @@ for line in body:
     pending = ""
 assert not pending, "the loop body ends inside a line continuation"
 
+# A word is an assignment when it leads with `NAME=`, `NAME[sub]=`, or `NAME+=`. The
+# excision scanner needs this too: a leading assignment is a command *prefix*, so it
+# must not be mistaken for the command word.
+ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(?:\[[^]]*\])?\+?=")
+
 # An embedded awk/sed/jq program is a foreign language that happens to spell assignment the
-# same way bash does. Match the command in word position -- bare, after `!`, after a pipe,
-# or inside `$(`/`<(` -- with any options between it and its opening quote, because the
-# loop calls `jq -e '` bare twice and `$(awk '` only once. Anchoring on `$(` would hand
-# both jq programs to the bash tokenizer verbatim.
-EMBEDDED_CMD = re.compile(r"(?:^|[\s(|&;!])(awk|sed|jq)\b[^'\n]*'")
-code = []
-inside_embedded = False
-carry = ""
-for line in joined:
-    buffered, rest = carry, line
-    carry = ""
-    while True:
-        if inside_embedded:
-            close = rest.find("'")
-            if close < 0:
-                rest = ""
-                break
-            inside_embedded = False
-            rest = rest[close + 1:]
-            continue
-        match = EMBEDDED_CMD.search(rest)
-        if not match:
-            buffered += rest
-            break
-        # Splice the program out in place rather than emitting the opener's prefix and the
-        # closer's remainder as two lines. The region sits inside `"$(...)"`, so cutting it
-        # in two leaves each half with an unbalanced quote -- and the tokenizer would then
-        # swallow `|| name=1` written just past the closing quote, which is the loop's
-        # dominant idiom and a silent false negative.
-        buffered += rest[:match.start(1)] + "EMBEDDED_PROGRAM"
-        after = rest[match.end():]
-        close = after.find("'")
-        if close < 0:
-            inside_embedded = True
-            break
-        rest = after[close + 1:]
-    if inside_embedded:
-        carry = buffered
-    else:
-        code.append(buffered)
-assert not inside_embedded, "an embedded program region was never closed"
+# same way bash does, so it is excised before the assignment walk ever sees it. Openers are
+# decided in *word* position by the same character scanner that tracks quoting, not by a
+# regex over the raw line: a raw-line regex cannot tell `jq -e '` from the word `jq` inside
+# `echo "needs jq here"`, and the latter opened a region that ran to the next apostrophe
+# anywhere later in the body and silently discarded every assignment in between.
+#
+# The region runs from its opening quote to the matching quote *of the same character*.
+# The audited script's dominant embedded idiom is the double-quoted
+# `sed -nE "s/…'(…)'…/p"`, and cutting that at the single quote inside the program leaves
+# the remainder unbalanced -- the same silent-swallow failure, one quoting style over.
+#
+# `gh --jq '…'` is an embedded program too even though `gh` is the command word, so the
+# option arms the next quoted word as well. That direction *forged*: a multi-line `--jq`
+# program was handed to the bash tokenizer, and a name spelled in its body was collected as
+# loop state, which is exactly what keeps a dead reset entry green.
+EMBEDDED_COMMANDS = ("awk", "sed", "jq")
+EMBEDDED_OPTIONS = ("--jq",)
+PLACEHOLDER = "EMBEDDED_PROGRAM"
+
+
+class Excision:
+    """Scan the loop body once, replacing each embedded program with a single word.
+
+    The scanner keeps a context stack rather than a flat quote flag, because the regions it
+    must find sit inside `"$( … )"`: single quotes are literal inside `"…"` but active
+    again inside the `$( … )` nested in it, and only a stack can tell those apart.
+    """
+
+    SEPARATORS = ";|&\n"
+
+    def __init__(self, text):
+        self.text = text
+        self.out = []
+        # Each command context records the word being built, the command word it has seen,
+        # the previous word, and whether an embedded program may still follow.
+        self.stack = [self.new_command_frame()]
+
+    @staticmethod
+    def new_command_frame():
+        return {"kind": "cmd", "word": "", "command": None, "previous": None, "armed": False}
+
+    @property
+    def frame(self):
+        return self.stack[-1]
+
+    def emit(self, chunk):
+        self.out.append(chunk)
+
+    def end_word(self):
+        frame = self.frame
+        if frame["kind"] != "cmd" or not frame["word"]:
+            return
+        word = frame["word"]
+        frame["word"] = ""
+        if frame["command"] is None and not ASSIGN.match(word):
+            frame["command"] = word
+            frame["armed"] = word in EMBEDDED_COMMANDS
+        frame["previous"] = word
+
+    def end_command(self):
+        self.end_word()
+        frame = self.frame
+        if frame["kind"] == "cmd":
+            frame.update(command=None, previous=None, armed=False)
+
+    def opens_embedded(self):
+        """True when the quote about to open begins an embedded program's text."""
+        frame = self.frame
+        if frame["kind"] != "cmd" or frame["word"]:
+            return False
+        if frame["previous"] in EMBEDDED_OPTIONS:
+            return True
+        return bool(frame["armed"] and frame["command"] is not None)
+
+    def skip_region(self, index):
+        """Consume a quoted embedded program whole, newlines included, and return the index
+        just past its closing quote. The region must close on its own quote character; a
+        region that runs off the end of the loop body is reported rather than absorbed."""
+        quote = self.text[index]
+        close = self.text.find(quote, index + 1)
+        assert close >= 0, f"an embedded program region opened with {quote} and never closed"
+        return close + 1
+
+    def run(self):
+        text, index = self.text, 0
+        while index < len(text):
+            char = text[index]
+            pair = text[index:index + 2]
+            frame = self.frame
+            kind = frame["kind"]
+            if kind == "single":
+                # A newline inside a quoted string is data, not a command separator.
+                # Collapsing it keeps the emitted line self-contained, so the per-line
+                # tokenizer below cannot read the inner lines of a multi-line quoted string
+                # as bash and forge a name out of them. A newline inside `$( … )` is a real
+                # separator and is preserved.
+                self.emit(" " if char == "\n" else char)
+                index += 1
+                if char == "'":
+                    self.stack.pop()
+                continue
+            if kind == "double":
+                if char == "\\" and index + 1 < len(text):
+                    self.emit(text[index:index + 2])
+                    index += 2
+                    continue
+                if char == "\n":
+                    self.emit(" ")
+                    index += 1
+                    continue
+                if pair in ("$(", "${"):
+                    self.emit(pair)
+                    self.stack.append(
+                        self.new_command_frame() if pair == "$(" else {"kind": "param", "word": ""}
+                    )
+                    index += 2
+                    continue
+                self.emit(char)
+                index += 1
+                if char == '"':
+                    self.stack.pop()
+                continue
+            if kind == "param":
+                self.emit(char)
+                index += 1
+                if char == "}":
+                    self.stack.pop()
+                continue
+            if kind == "comment":
+                self.emit(char)
+                index += 1
+                if char == "\n":
+                    self.stack.pop()
+                    self.end_command()
+                continue
+            # A command context: this is the only place a word, and therefore a command
+            # word, exists at all.
+            if char == "#" and not frame["word"]:
+                # A `#` starting a word is a comment. It is emitted verbatim so the
+                # comment filter below still sees it, but its text must not be scanned:
+                # an apostrophe in prose would otherwise open a quote.
+                self.end_word()
+                self.stack.append({"kind": "comment", "word": ""})
+                self.emit(char)
+                index += 1
+                continue
+            if char in "'\"":
+                if self.opens_embedded():
+                    self.emit(PLACEHOLDER)
+                    index = self.skip_region(index)
+                    frame["previous"] = PLACEHOLDER
+                    continue
+                frame["word"] += char
+                self.emit(char)
+                self.stack.append({"kind": "single" if char == "'" else "double", "word": ""})
+                index += 1
+                continue
+            if pair in ("$(", "<(", ">("):
+                self.emit(pair)
+                self.stack.append(self.new_command_frame())
+                index += 2
+                continue
+            if pair == "${":
+                frame["word"] += pair
+                self.emit(pair)
+                self.stack.append({"kind": "param", "word": ""})
+                index += 2
+                continue
+            if char == ")" and len(self.stack) > 1:
+                self.end_command()
+                self.stack.pop()
+                self.emit(char)
+                index += 1
+                continue
+            if char in self.SEPARATORS:
+                self.end_command()
+                self.emit(char)
+                index += 1
+                continue
+            if char.isspace():
+                self.end_word()
+                self.emit(char)
+                index += 1
+                continue
+            frame["word"] += char
+            self.emit(char)
+            index += 1
+        self.end_command()
+        assert len(self.stack) == 1 and self.stack[0]["kind"] == "cmd", (
+            "the loop body ends inside an unterminated quote, command substitution, or "
+            "embedded program region"
+        )
+        return "".join(self.out).split("\n")
+
+
+code = Excision("\n".join(joined)).run()
+# Prove the excision preserved the body's bash rather than assuming it: a region cut at the
+# wrong quote, or one that swallowed a real command, leaves text that no longer parses. This
+# is what makes the closure guard above worth its credit -- deleting an embedded program's
+# closing quote in the audited script is caught here, where a "the region eventually closed"
+# check absorbs it into the next apostrophe and reports nothing.
+parse = subprocess.run(
+    ["bash", "-n"],
+    input="while :; do\n" + "\n".join(code) + "\ndone\n",
+    capture_output=True,
+    text=True,
+)
+assert parse.returncode == 0, f"the excised loop body no longer parses as bash: {parse.stderr.strip()}"
 
 # Whole-line comments are prose: neither a `continue` nor an `unset` written in one is
 # control flow. Trailing comments are dropped by the tokenizer below.
@@ -644,7 +818,7 @@ LEADIN = re.compile(r"""^(?:
     | [{}]
     | \[\[?
     | \]\]?
-    | [^()\s|=]+\)                                          # a case arm label
+    | \(?[^()\s|=]+\)                                       # a case arm label, `(x)` too
   )""", re.X)
 
 # Options that consume the following word, per command. Getting this right is what keeps
@@ -658,13 +832,14 @@ ARG_TAKING = {
 NAMES_ITS_ARG = {"read": set("a")}
 DECLARATORS = ("declare", "typeset", "export", "readonly", "local")
 NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(?:\[[^]]*\])?\+?=")
 LET_TARGET = re.compile(r"^[\"']?([A-Za-z_][A-Za-z0-9_]*)\s*(?:\+\+|--|[-+*/%&|^]?=)")
 # `${name:=default}` and `${name=default}` assign wherever they are expanded, including
 # inside double quotes, so they are found on the whole line rather than per word.
 ASSIGN_EXPANSION = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*):?=")
 # Arithmetic assigns through `=`, every compound operator, and pre/post increment.
-ARITH_TARGET = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*(?:\+\+|--|(?:[-+*/%&|^]|<<|>>)?=(?!=))")
+ARITH_TARGET = re.compile(
+    r"([A-Za-z_][A-Za-z0-9_]*)\s*(?:\+\+|--|(?:\*\*|[-+*/%&|^]|<<|>>)?=(?!=))"
+)
 ARITH_PREFIX = re.compile(r"(?:\+\+|--)\s*([A-Za-z_][A-Za-z0-9_]*)")
 
 
@@ -767,11 +942,13 @@ def names_from_command(words):
     if command == "printf":
         for index, word in enumerate(rest):
             if word == "-v" and index + 1 < len(rest):
-                candidate = unquote(rest[index + 1])
+                candidate = unquote(rest[index + 1]).split("[", 1)[0]
                 if NAME.match(candidate):
                     found.add(candidate)
         return found
-    if command in ("for", "select") and len(rest) >= 2 and rest[1] == "in":
+    # `for x in …`, `select x in …`, and the `in`-less `for x` that iterates the positional
+    # parameters all assign x.
+    if command in ("for", "select") and rest and (len(rest) == 1 or rest[1] == "in"):
         candidate = unquote(rest[0])
         return {candidate} if NAME.match(candidate) else set()
     if command == "coproc" and rest:
@@ -817,6 +994,9 @@ def names_from_command(words):
         if NAME.match(candidate):
             found.add(candidate)
         index += 1
+    # `read` with no name of its own assigns REPLY, which is loop state like any other.
+    if command == "read" and not found:
+        found.add("REPLY")
     return found
 
 
@@ -827,13 +1007,19 @@ for line in uncommented:
     for words in segments(line):
         for word in words:
             assigned |= arithmetic_names(word)
-        # `case "$x" in` is three words of scaffolding before the first arm label; on a
-        # single-line `case` the arm and its assignment follow on the same segment.
-        if words and words[0] == "case":
-            while words and words[0] != "in":
+        # `case "$x" in` is scaffolding before the first arm label; on a single-line `case`
+        # the arm and its assignment follow on the same segment, and a `case` nested inside
+        # such an arm puts a second header in front of the assignment. Strip headers and
+        # lead-ins in one loop so nesting cannot leave the assignment behind scaffolding.
+        while words:
+            if words[0] == "case":
+                while words and words[0] != "in":
+                    words = words[1:]
+                continue
+            if LEADIN.match(words[0]):
                 words = words[1:]
-        while words and LEADIN.match(words[0]):
-            words = words[1:]
+                continue
+            break
         # Leading `NAME=value` words are assignments; more than one may stack, and anything
         # after them is the command they prefix.
         while words:
@@ -867,11 +1053,250 @@ assert not forgotten, f"assigned per repository but never reset: {sorted(forgott
 dead = reset - assigned
 assert not dead, f"reset but never assigned in the loop: {sorted(dead)}"
 RESET_CONTRACT
-then
+
+if python3 "$collector" "$audit"; then
   pass "the per-repository reset precedes every early exit and names every variable the iteration assigns"
 else
   fail "the per-repository reset is mispositioned or has drifted from the loop's assignments"
 fi
+
+# A contract that only ever runs against a conforming script proves nothing about what it
+# would catch, and every case below was a silent green at some point in this change's
+# history. So each claimed capability is exercised against a mutated copy of the audited
+# script rather than described in prose, and each mutation must find its anchor, so the
+# corpus cannot rot into vacuous passes when the loop moves underneath it.
+mutator="$tmp/reset-contract-mutate.py"
+cat >"$mutator" <<'MUTATE'
+"""Build a mutated copy of the audited script for one injection case.
+
+Every mutation is required to find its anchor, so a fixture cannot rot into a vacuous pass
+when the audited script moves underneath it -- the whole corpus exists because a check that
+silently stops checking is the failure mode this contract was written for.
+"""
+import sys
+
+source, destination = sys.argv[1], sys.argv[2]
+operations, current = [], []
+for argument in sys.argv[3:]:
+    if argument == "::":
+        operations.append(current)
+        current = []
+        continue
+    current.append(argument)
+operations.append(current)
+
+lines = open(source, encoding="utf-8").read().splitlines()
+RESET_HEAD = "  unset metadata default_branch visibility_type has_secret \\"
+RESET_TAIL = "    historical_retry_workflow retry_workflow_response"
+LOOP_END = 'done <<<"$repositories"'
+
+
+def require(condition, what):
+    if not condition:
+        sys.exit(f"mutation fixture is stale, no unique anchor for: {what}")
+
+
+def anchor_index(anchor):
+    if anchor == "before-done":
+        require(lines.count(LOOP_END) == 1, LOOP_END)
+        return lines.index(LOOP_END)
+    require(lines.count(RESET_TAIL) == 1, RESET_TAIL)
+    return lines.index(RESET_TAIL) + 1
+
+
+for operation in operations:
+    verb, arguments = operation[0], operation[1:]
+    if verb == "insert":
+        at = anchor_index(arguments[0])
+        lines[at:at] = arguments[1:]
+    elif verb == "drop":
+        require(lines.count(arguments[0]) == 1, arguments[0])
+        del lines[lines.index(arguments[0])]
+    elif verb == "sub":
+        old, new = arguments
+        hits = [index for index, line in enumerate(lines) if old in line]
+        require(len(hits) == 1, old)
+        lines[hits[0]] = lines[hits[0]].replace(old, new)
+    elif verb == "move-reset":
+        require(lines.count(RESET_HEAD) == 1 and lines.count(RESET_TAIL) == 1, "the reset block")
+        start, end = lines.index(RESET_HEAD), lines.index(RESET_TAIL)
+        block = lines[start:end + 1]
+        del lines[start:end + 1]
+        require(lines.count(LOOP_END) == 1, LOOP_END)
+        at = lines.index(LOOP_END)
+        lines[at:at] = block
+    else:
+        sys.exit(f"unknown mutation verb: {verb}")
+
+open(destination, "w", encoding="utf-8").write("\n".join(lines) + "\n")
+MUTATE
+mutated="$tmp/mutated-audit.sh"
+injection_cases=0
+
+# reddens <name> <expected substring> <mutation> [:: <mutation>...]
+reddens() {
+  local name="$1" expected="$2" output
+  shift 2
+  injection_cases=$((injection_cases + 1))
+  if ! output="$(python3 "$mutator" "$audit" "$mutated" "$@" 2>&1)"; then
+    fail "injection fixture '$name' could not be built: $output"
+  elif output="$(python3 "$collector" "$mutated" 2>&1)"; then
+    fail "injection '$name' left the reset contract green"
+  elif grep -qF "$expected" <<<"$output"; then
+    pass "injection reddens: $name"
+  else
+    fail "injection '$name' reddened for the wrong reason: $(tail -1 <<<"$output")"
+  fi
+}
+
+# absorbed <name> <mutation> [:: <mutation>...] -- text the collector must NOT read as bash
+absorbed() {
+  local name="$1" output
+  shift
+  injection_cases=$((injection_cases + 1))
+  if ! output="$(python3 "$mutator" "$audit" "$mutated" "$@" 2>&1)"; then
+    fail "injection fixture '$name' could not be built: $output"
+  elif output="$(python3 "$collector" "$mutated" 2>&1)"; then
+    pass "injection is excised, not read as loop state: $name"
+  else
+    fail "injection '$name' leaked into the assignment walk: $(tail -1 <<<"$output")"
+  fi
+}
+
+# Membership drift in both directions -- the bug class #1448 was made of.
+reddens "the reset forgets the names it opens with" \
+  "assigned per repository but never reset: ['default_branch', 'has_secret', 'metadata', 'visibility_type']" \
+  sub '  unset metadata default_branch visibility_type has_secret \' '  unset \'
+reddens "a new loop variable is added and forgotten" \
+  "assigned per repository but never reset: ['newly_added_state']" \
+  insert before-done '  newly_added_state=1'
+reddens "the reset names something the loop never assigns" \
+  "reset but never assigned in the loop: ['never_assigned_anywhere']" \
+  sub '  unset metadata' '  unset never_assigned_anywhere metadata'
+reddens "the reset clears a fleet accumulator" \
+  "the reset clears a value the fleet audit must carry" \
+  sub '  unset metadata' '  unset consumers metadata'
+reddens "the reset returns to the bottom of the loop" \
+  'early exits precede the reset:' move-reset
+reddens "a second top-level unset makes the reset ambiguous" \
+  'expected exactly one per-repository reset, found 2' \
+  insert before-done '  unset some_other_thing'
+reddens "fleet-wide state moves into the loop body" \
+  'fleet-wide state moved into the loop body' \
+  insert before-done '  visibility=x'
+reddens "IFS becomes loop state instead of a command prefix" \
+  'IFS is assigned as loop state, not a command prefix' \
+  insert before-done '  IFS=,'
+
+# Every assignment form the collector claims to see, one injection per form.
+form() {
+  local name="$1" variable="$2"
+  shift 2
+  reddens "$name" "assigned per repository but never reset: ['$variable']" \
+    insert before-done "$@"
+}
+
+form 'a bare assignment' form_bare '  form_bare=1'
+form 'an appending assignment' form_append '  form_append+=1'
+form 'an indexed element assignment' form_indexed '  form_indexed[0]=1'
+reddens 'a stacked command prefix' \
+  "assigned per repository but never reset: ['form_prefix', 'form_second']" \
+  insert before-done '  form_prefix=1 form_second=2 true'
+form 'a case arm' form_case_arm '  case "$relation" in ahead) form_case_arm=1 ;; esac'
+form 'a parenthesized case arm' form_case_paren \
+  '  case "$relation" in (ahead) form_case_paren=1 ;; esac'
+form 'a nested single-line case' form_case_nested \
+  '  case a in a) case b in b) form_case_nested=1 ;; esac ;; esac'
+form 'a short-circuit after a test' form_and '  [ -n "$repository" ] && form_and=1'
+form 'the failure arm of a test' form_or '  [ -z "$repository" ] || form_or=1'
+form 'a negated command' form_negated '  ! form_negated=1'
+form 'an assignment after an unquoted pipe' form_pipe '  true | form_pipe=1'
+form 'an assignment inside a brace group' form_brace '  { form_brace=1; }'
+form 'an assignment behind the command builtin' form_builtin \
+  '  command true && form_builtin=1'
+form 'declare' form_declare '  declare form_declare=1'
+form 'typeset' form_typeset '  typeset form_typeset=1'
+form 'export' form_export '  export form_export=1'
+form 'readonly' form_readonly '  readonly form_readonly=1'
+form 'local' form_local '  local form_local=1'
+form 'a quoted declare target' form_declare_quoted '  declare "form_declare_quoted=1"'
+form 'a nameref declaration' form_nameref '  declare -n form_nameref=repository'
+form 'for … in' form_for '  for form_for in a; do :; done'
+form 'for over the positional parameters' form_for_positional \
+  '  for form_for_positional; do :; done'
+form 'select' form_select '  select form_select in a; do break; done </dev/null'
+form 'coproc' form_coproc '  coproc form_coproc { true; }' '  wait'
+form 'getopts' form_getopts '  getopts ab form_getopts || :'
+form 'let' form_let '  let form_let=1 || :'
+form 'arithmetic assignment' form_arith '  (( form_arith = 1 ))'
+form 'arithmetic increment' form_increment '  (( form_increment++ )) || :'
+form 'an arithmetic exponent assignment' form_power '  (( form_power **= 2 ))'
+reddens 'comma-separated arithmetic targets' \
+  "assigned per repository but never reset: ['form_comma', 'form_comma_second']" \
+  insert before-done '  (( form_comma = 1, form_comma_second = 2 ))'
+form 'a C-style for header' form_cstyle \
+  '  for (( form_cstyle = 0; form_cstyle < 2; form_cstyle++ )); do :; done'
+form 'read -a' form_read_array '  read -a form_read_array <<<"x"'
+form "read -d ''" form_read_delim "  read -d '' form_read_delim <<<\"x\" || :"
+form 'a quoted read target' form_read_quoted '  read -r "form_read_quoted" <<<"x"'
+form 'bare read, which assigns REPLY' REPLY '  read -r <<<"x"'
+form 'readarray -t' form_readarray '  readarray -t form_readarray <<<"x"'
+form "mapfile -d '' -t" form_mapfile "  mapfile -d '' -t form_mapfile <<<\"x\""
+form 'printf -v' form_printf "  printf -v form_printf '%s' x"
+form 'printf -v into an array element' form_printf_element \
+  "  printf -v 'form_printf_element[0]' '%s' x"
+form 'an assigning parameter expansion' form_expansion '  : "${form_expansion:=x}"'
+form 'a command substitution bound by if !' form_if_assign \
+  '  if ! form_if_assign="$(true)"; then :; fi'
+form 'a name written past a backslash continuation' form_continued \
+  '  read -r default_branch \' '    form_continued <<<"x"'
+
+# Embedded programs: the two directions that read as conformance while proving nothing.
+# Each of these was a reproducible silent green before this change.
+reddens 'real bash after a jq word inside a string' \
+  "assigned per repository but never reset: ['swallowed_by_word']" \
+  insert before-done '  echo "needs jq here" && swallowed_by_word='"'"'1'"'"''
+reddens 'real bash after an apostrophe in a jq diagnostic' \
+  "assigned per repository but never reset: ['swallowed_by_apostrophe']" \
+  insert before-done '  echo "::error::the jq binary isn'"'"'t present"' \
+  '  swallowed_by_apostrophe=1' '  echo '"'"'unrelated'"'"''
+reddens 'real bash after a double-quoted sed program' \
+  "assigned per repository but never reset: ['swallowed_by_double_quote']" \
+  insert before-done '  sed -nE "s/a'"'"'b/c/p" /dev/null && swallowed_by_double_quote=1' \
+  '  echo '"'"'unrelated'"'"''
+reddens 'real bash past an embedded region closing quote' \
+  "assigned per repository but never reset: ['past_the_region']" \
+  insert before-done "  jq -e '.x' <<<'{}' >/dev/null || past_the_region=1"
+reddens 'an embedded program whose closing quote is deleted' \
+  'no longer parses as bash' \
+  drop '      '"'"' <<<"$historical_workflow")"'
+absorbed 'a multi-line awk program body' \
+  insert before-done "  awk '" '    { forged_by_awk=1 }' "  ' </dev/null"
+absorbed 'a multi-line jq program body' \
+  insert before-done "  jq -n '" '    forged_by_jq=1' "  ' >/dev/null || :"
+absorbed 'a multi-line gh --jq program body' \
+  insert before-done "  gh api x --jq '" '    forged_by_option=1' "  ' >/dev/null || :"
+absorbed 'a multi-line double-quoted sed program body' \
+  insert before-done '  sed -nE "' '    s/forged_by_sed=1//p' '  " /dev/null || :'
+absorbed 'a multi-line quoted string that is not a program at all' \
+  insert before-done "  echo 'first line" '    forged_by_quoted_string=1' "    last line'"
+absorbed 'a multi-line --jq=program written as one word' \
+  insert before-done "  gh api x --jq='" '    forged_by_inline_option=1' "  ' >/dev/null || :"
+reddens 'a dead reset entry spelled only in awk program text' \
+  "reset but never assigned in the loop: ['forged_by_awk']" \
+  sub '  unset metadata' '  unset forged_by_awk metadata' \
+  :: insert before-done "  awk '" '    { forged_by_awk=1 }' "  ' </dev/null"
+reddens 'a dead reset entry spelled only in gh --jq program text' \
+  "reset but never assigned in the loop: ['forged_by_option']" \
+  sub '  unset metadata' '  unset forged_by_option metadata' \
+  :: insert before-done "  gh api x --jq '" '    forged_by_option=1' "  ' >/dev/null || :"
+# A heredoc body is parsed as bash, so it forges a name. That is a documented boundary and
+# it fails loudly -- a nuisance for whoever adds a heredoc, never a silent pass.
+reddens 'a heredoc body, which is a documented loud miss' \
+  "assigned per repository but never reset: ['forged_by_heredoc']" \
+  insert before-done "  cat <<'EOT' >/dev/null" 'forged_by_heredoc=1' 'EOT'
+
+pass "the reset contract was exercised against $injection_cases injected mutations"
 
 GH_TOKEN='' run_audit \
   && fail "missing audit credential reported green" \
