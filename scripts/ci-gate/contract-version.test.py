@@ -624,6 +624,158 @@ class ScanTotality(unittest.TestCase):
         self.assertEqual(self.verify(root), [])
 
 
+class UsesShapeCoverage(unittest.TestCase):
+    """Which `uses:` *shapes* the line scan recognizes, as opposed to which
+    *files* it reads. ADR 0191 sec.3's totality claim is about the file set; a
+    shape the recognizer cannot see is the same clean PASS on a real skew, and
+    nothing above measures it (Verjson/.github#1433)."""
+
+    repo = ScanTotality.repo
+    verify = ScanTotality.verify
+
+    def test_a_quoted_uses_key_is_a_contract_reference(self):
+        # `"uses": x` is legal YAML and Actions accepts it. The pattern looked
+        # for the literal `uses:`, which a quoted key never contains -- so a
+        # skewed pin written this way was no finding at all.
+        root = self.repo()
+        (root / ".github" / "workflows" / "quoted-key.yml").write_text(
+            'jobs:\n  ci:\n    "uses": Verjson/.github/.github/workflows/node-ci.yml@'
+            + "b" * 40 + "\n")
+        track(root)
+        self.assertEqual([f.kind for f in self.verify(root)], ["PIN_MISMATCH"])
+
+    def test_a_uses_value_on_the_following_line_is_a_gap_not_a_silence(self):
+        # Legal YAML puts a scalar on the line after its key. A line-based scan
+        # cannot read it, and reading it as "this file has no reference" is the
+        # clean PASS on a real skew that the whole check exists to refuse. The
+        # honest report is the same shape as UNSCANNED: a named gap.
+        root = self.repo()
+        (root / ".github" / "workflows" / "folded.yml").write_text(
+            "jobs:\n  ci:\n    uses:\n      Verjson/.github/.github/workflows/"
+            "node-ci.yml@" + "b" * 40 + "\n")
+        track(root)
+        findings = self.verify(root)
+        self.assertEqual([f.kind for f in findings], ["UNRESOLVED_REFERENCE"])
+        self.assertIn("folded.yml", findings[0].detail)
+
+    def test_a_hub_uses_line_with_no_readable_pin_is_a_gap_not_a_silence(self):
+        # The line names the hub and is a `uses:` key, but no `path@ref` can be
+        # read off it -- here because an expression expands into the path. The
+        # scan knows it is looking at a contract reference and knows it cannot
+        # read it, which is exactly the state UNSCANNED exists to report.
+        root = self.repo()
+        (root / ".github" / "workflows" / "templated.yml").write_text(
+            "jobs:\n  ci:\n    uses: Verjson/.github/.github/workflows/"
+            "${{ matrix.flavor }}.yml@" + "b" * 40 + "\n")
+        track(root)
+        findings = self.verify(root)
+        self.assertEqual([f.kind for f in findings], ["UNRESOLVED_REFERENCE"])
+        self.assertIn("templated.yml", findings[0].detail)
+
+    def test_a_uses_block_scalar_is_a_gap_not_a_silence(self):
+        root = self.repo()
+        (root / ".github" / "workflows" / "block.yml").write_text(
+            "jobs:\n  ci:\n    uses: >-\n      Verjson/.github/.github/workflows/"
+            "node-ci.yml@" + "b" * 40 + "\n")
+        track(root)
+        findings = self.verify(root)
+        self.assertEqual([f.kind for f in findings], ["UNRESOLVED_REFERENCE"])
+        self.assertIn("block.yml", findings[0].detail)
+
+    def test_a_uses_alias_is_a_gap_not_a_silence(self):
+        # The one shape no line scan can ever resolve: the reference is an
+        # anchor defined elsewhere, so the literal never appears beside the key.
+        root = self.repo()
+        (root / ".github" / "workflows" / "alias.yml").write_text(
+            "x: &hub Verjson/.github/.github/workflows/node-ci.yml@" + "b" * 40
+            + "\njobs:\n  ci:\n    uses: *hub\n")
+        track(root)
+        findings = self.verify(root)
+        self.assertEqual([f.kind for f in findings], ["UNRESOLVED_REFERENCE"])
+        self.assertIn("alias.yml", findings[0].detail)
+
+    def test_whitespace_before_the_uses_colon_is_a_contract_reference(self):
+        # `uses : x` is legal YAML; the old pattern required `uses:` exactly.
+        root = self.repo()
+        (root / ".github" / "workflows" / "spaced.yml").write_text(
+            "jobs:\n  ci:\n    uses : Verjson/.github/.github/workflows/node-ci.yml@"
+            + "b" * 40 + "\n")
+        track(root)
+        self.assertEqual([f.kind for f in self.verify(root)], ["PIN_MISMATCH"])
+
+    def test_a_crlf_pin_is_a_contract_reference(self):
+        # Five files in the measured fleet carry CRLF and a `uses:` key. The
+        # trailing `\r` must not end up inside the captured ref, or every one of
+        # them reports a mismatch against a SHA that differs by one byte.
+        root = self.repo()
+        (root / ".github" / "workflows" / "crlf.yml").write_bytes(
+            ("jobs:\r\n  ci:\r\n    uses: Verjson/.github/.github/workflows/"
+             "node-ci.yml@" + "b" * 40 + "\r\n").encode("utf-8"))
+        track(root)
+        findings = self.verify(root)
+        self.assertEqual([f.kind for f in findings], ["PIN_MISMATCH"])
+        self.assertIn("b" * 40, findings[0].detail)
+
+    def test_an_offline_uses_value_is_quiet_when_the_file_never_names_the_hub(self):
+        # The noise counterweight. A YAML anchor and a continuation line are
+        # both file-scoped, so a file with no `Verjson/.github` in it cannot
+        # hold a hub reference the scan missed -- and the fleet's ~1500
+        # third-party `uses:` keys must not each become a finding.
+        root = self.repo()
+        (root / ".github" / "workflows" / "third-party.yml").write_text(
+            "x: &pin actions/checkout@" + "c" * 40
+            + "\njobs:\n  ci:\n    steps:\n      - uses: *pin\n"
+            "      - uses:\n          actions/setup-node@" + "d" * 40 + "\n")
+        track(root)
+        self.assertEqual(self.verify(root), [])
+
+    def test_prose_ending_a_sentence_with_uses_is_not_an_unresolved_reference(self):
+        # Sampled, not invented: Markdown in this organization really does end a
+        # line with `uses:` inside a file that names the hub. An unanchored key
+        # pattern reports every one of them.
+        root = self.repo()
+        (root / "NEXT.md").write_text(
+            "A consumer installing the Verjson/.github gate does it with `uses:`\n"
+            "and nothing else.\n")
+        track(root)
+        self.assertEqual(self.verify(root), [])
+
+    def test_a_key_merely_ending_in_uses_is_not_a_uses_key(self):
+        # Also sampled: `statuses: read # ... (Verjson/.github ADR 0023)` is a
+        # real line in three adopter workflows, and `statuses:` contains
+        # `uses:`. Anchoring the key is what keeps it quiet.
+        root = self.repo()
+        (root / ".github" / "workflows" / "perms.yml").write_text(
+            "permissions:\n  statuses: read # eligibility reads renovate "
+            "(Verjson/.github ADR 0023)\n")
+        track(root)
+        self.assertEqual(self.verify(root), [])
+
+    def test_a_capitalized_uses_in_prose_is_not_a_uses_key(self):
+        # Actions requires the key to be lowercase -- `Uses:` is a workflow parse
+        # error, never a reference -- so case-insensitivity on the key side can
+        # only manufacture gaps and can never catch a pin. An ordinary English
+        # list item in a file that happens to name the hub is a permanent red
+        # check an adopter clears only by rewriting prose, which is precisely the
+        # muting hazard ADR 0185 refuses.
+        root = self.repo()
+        (root / "README.md").write_text(
+            "The Verjson/.github contract:\n\n- Uses:\n  - the release caller\n")
+        track(root)
+        self.assertEqual(self.verify(root), [])
+
+    def test_a_source_string_opening_with_a_uses_literal_is_not_a_uses_key(self):
+        # The third sampled shape, and the reason the key's quotes have to
+        # balance: this repository's own test source opens lines with the
+        # literal `"uses: Verjson/.github/...@" + sha`. A key pattern that
+        # accepts a lone opening quote reports the scanner's own fixtures.
+        root = self.repo()
+        (root / "fixture.py").write_text(
+            '    "uses: Verjson/.github/.github/workflows/node-ci.yml@" + sha\n')
+        track(root)
+        self.assertEqual(self.verify(root), [])
+
+
 class ReleaseDocument(unittest.TestCase):
     def load(self, payload):
         handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
