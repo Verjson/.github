@@ -138,19 +138,20 @@ wearing an allow-list's clothes. Mutating the real guard at `node-ci.yml:437`, t
 | `\|\| { cat <<EOF` / `exit 1` / `EOF` / `}` | printed by a here-document, never run |
 | `\|\| exit 256` | wraps to a 0 wait status |
 | `\|\| return 256` | wraps to a 0 wait status |
-| `\|\| continue` / `\|\| break` with no enclosing loop | bash warns; execution carries on |
+| `\|\| continue` / `\|\| break` | never fatal to the command; the guard's protection is not reached |
 
 So the anchor now reasons about command position rather than substring presence. It joins
 continuations — a trailing `\`, a trailing `&&`/`||`/`|`, and a multi-line `|| { … }` branch
 are one command, with the branch closed by brace **depth** so a closer carrying a tail
 (`} >&2`) cannot buffer the rest of the file into one line. It then blanks quoted spans,
 `#` comments, `${…}`, `$(…)` and `(…)` subshells, and requires what follows the final
-`&&`/`||` to be one of: `exit N`/`return N` for N in **1–255**; `fail`/`fault`/`die`/`abort
-…`; `continue`/`break` **inside a loop**, established by a lexical `do`/`done` count that
-must hold together or else report zero everywhere; a `{ … }` whose body is **flat** (no
-nested group, no redirection operator) and one of whose top-level statements is **exactly**
-one of those actions; or an empty tail, which under `set -euo pipefail` means the guard's own
-status is the command's. Every form in the table above, the six pre-existing swallows, the
+`&&`/`||` to be one of: `exit N`/`return N` for N in **1–255**, zero-padding allowed;
+`fail`/`fault`/`die`/`abort …`; a `{ … }` whose body is **flat** (no nested group, no
+**here-document**) and one of whose top-level statements is **exactly** one of those actions;
+or an empty tail, which under `set -euo pipefail` means the guard's own status is the
+command's. A guard may also be spent as the **negated condition** of an `if`/`elif` whose
+protected use sits in the sibling `else` arm, where the proof is structural rather than a
+tail: the arm the guard opens is the failing one and cannot fall through to the `else`. Every form in the table above, the six pre-existing swallows, the
 continuation-line `|| true`, and the accepted shapes are permanent regression cases in
 `scripts/ci-gate/default-branch-uri-encoding.test.sh`, and the six new ones were each
 verified by mutating `node-ci.yml:437` in a real worktree and observing exit 1.
@@ -163,17 +164,35 @@ coverage:
 
 - `exit 300` does leave the guard (status 44) but is rejected; the 1–255 bound is easier to
   state and to trust than "any N that is not a multiple of 256".
-- A nested command group, or a redirection operator, in a brace body is not flattened.
+- A nested command group, or a **here-document**, in a brace body is not flattened. A plain
+  redirection (`>&2`, `>/dev/null`, `2>&1`, `< <(…)`) is flattened and still reads FATAL, and
+  must keep doing so: 123 `|| { … }` guard bodies across 22 of this repository's 206 tracked
+  non-test shell and YAML files carry a `>&2`, and every one of them would read disarmed under
+  the stricter rule earlier revisions of this ADR described (`scripts/gen-adr-index.sh:106`
+  and `.github/workflows/node-release.yml:318` are two). The code never implemented that
+  stricter rule; the prose did, and this is the correction.
 - An action reached only through a `&&`/`||` chain inside the body is not unconditionally
   reached. This anchor does not evaluate conditions: it cannot tell `{ false && exit 1; }`
   from `{ [ -n "$x" ] && exit 1; }`, and reads both as disarmed.
 - The structural pass is a lexical scan, not a shell parser. It models quotes, backticks,
   backslashes, `${…}`, `$(…)` and word-position `#` — not here-documents, `case` patterns,
   or quoting nested inside `$(…)`. Where it is unsure it blanks, which reads as not fatal.
-- The `do`/`done` count is lexical too, and `do` must additionally be loop-shaped: the prose
-  at `node-ci.yml:345` ("…not masked secrets; do not put credentials") otherwise raised the
-  loop depth for that entire file, which is how the out-of-loop `|| continue` bypass was
-  found. An unbalanced or negative count reports depth 0 everywhere.
+- `continue`/`break` are never accepted, in or out of a loop, so a guard that genuinely
+  protects a URL by skipping its iteration reads as disarmed. They were accepted, behind a
+  lexical `do`/`done` loop-depth count, and that count is now **deleted**. Two reasons. It was
+  never trustworthy: `do` had to be loop-shaped because the prose at `node-ci.yml:345` ("…not
+  masked secrets; do not put credentials") raised the loop depth for that whole file, and a
+  bare `do` — in prose, or inside a here-document body, which the structural pass does not
+  model — still did, because `slice` mode waived the balance requirement that `whole` mode
+  enforced. That was a fail-open in the mode the privileged-merge-authorization path uses. And
+  it was no longer load-bearing: main's #1466 rewrote `privileged-merge-conformance.sh:314`,
+  its one real consumer, into an `elif`, and forcing the count to report depth 0 everywhere on
+  the merged tree failed nothing but the fixtures that tested the count itself. Roughly 60
+  lines whose only consumer was its own test, carrying a fail-open, in exchange for a
+  fail-closed gap no current site occupies.
+- A **positive** `if <guard>; then <use>` is not accepted, nor a negated branch with no
+  `else`, nor one whose only `else` belongs to a nested `if`. Only the negated-branch-with-
+  `else` shape is proved; the rest fall through to the use for all this anchor can tell.
 
 *Fail-open* — these satisfy the pin while the guard no longer guards, and are the honest
 ceiling of a command-level anchor:

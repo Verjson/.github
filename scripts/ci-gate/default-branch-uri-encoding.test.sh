@@ -388,61 +388,13 @@ function brace_delta(st,   i, n, c, d) {
   for (i = 1; i <= n; i++) { c = substr(st, i, 1); if (c == "{") d++; else if (c == "}") d-- }
   return d
 }
-# `do` and `done` are reserved words only in COMMAND position, so split the structural
-# form on its separators and look at the first word of each statement. `echo do`,
-# `do_thing`, and a `do)` case pattern are all correctly not loop keywords.
-#
-# Command position is NOT enough on its own, because these files are YAML and English
-# prose obeys the same lexical rules: node-ci.yml:345 reads "... not masked secrets; do
-# not put credentials", whose second statement begins with the word `do`. That one line
-# raised the loop depth for the whole file and made an out-of-loop `|| continue` at
-# node-ci.yml:437 read as fatal -- a fail-OPEN found by mutating the real guard. So `do`
-# also has to be loop-SHAPED: either the statement is a bare `do`, or the same logical
-# line opens a `for`/`while`/`until` in command position. The prose above is neither.
-# The depths are held back and flushed at END, because a loop count that does not hold
-# together is not trustworthy anywhere in the input: one stray `do` this lexer mis-reads
-# would silently license `continue`/`break` for every line after it. When it does not hold
-# together every depth is reported as 0, so `continue`/`break` read as disarmed throughout
-# -- fail-closed. `whole` requires the count to BALANCE, since a complete file closes every
-# loop it opens. A `slice` is cut mid-file by construction (the conformance loop at
-# privileged-merge-conformance.sh:200 is still open at the :319 use), so it requires only
-# that the count never went NEGATIVE: a slice may leave loops open, never close more than
-# it opened. An unterminated brace branch only drops its own buffer; the lines already
-# emitted before it keep their depths, because a slice routinely ends on a `|| {` opener
-# (privileged-merge-conformance.sh:319 is exactly that line).
-function emit(d, text) { pend_d[++pend_n] = d; pend_t[pend_n] = text }
-function flush(trustworthy,   i) {
-  for (i = 1; i <= pend_n; i++) print ((trustworthy && pend_d[i] > 0) ? pend_d[i] + 0 : 0) "\t" pend_t[i]
-}
-function loop_opener(st,   parts, i, n, w) {
-  gsub(/&&|\|\|/, ";", st); gsub(/[|&]/, ";", st)
-  n = split(st, parts, ";")
-  for (i = 1; i <= n; i++) {
-    w = parts[i]; sub(/^[[:space:]]+/, "", w); sub(/[[:space:]].*$/, "", w)
-    if (w == "for" || w == "while" || w == "until") return 1
-  }
-  return 0
-}
-function loop_delta(st,   parts, i, n, w, d, opens) {
-  d = 0; opens = loop_opener(st)
-  gsub(/&&|\|\|/, ";", st); gsub(/[|&]/, ";", st)
-  n = split(st, parts, ";")
-  for (i = 1; i <= n; i++) {
-    w = parts[i]; sub(/^[[:space:]]+/, "", w); sub(/[[:space:]]+$/, "", w)
-    if (w == "do") d++
-    else { sub(/[[:space:]].*$/, "", w); if (w == "do" && opens) d++; else if (w == "done") d-- }
-  }
-  return d
-}
 '
 
 shell_structure() { # $1 = shell text -> the same text with data spans blanked
   awk "$SHELL_STRUCTURE_AWK"'{ print shell_structure($0) }' <<<"$1"
 }
 
-# Emits "<loop depth>\t<logical line>" per command. The depth is the enclosing loop
-# nesting at the START of that command, which is what decides whether `continue`/`break`
-# leave a guard. A brace branch is closed by BRACE DEPTH, not by a bare `}` line: a
+# Emits one logical line per command. A brace branch is closed by BRACE DEPTH, not by a bare `}` line: a
 # closer carrying a tail (`} >&2`, `} || true`) used to leave the state machine open and
 # buffer the whole remainder of the file into a single line, and a nested `}` used to
 # close the body early -- both fail-closed, but both turn an unrelated edit above a guard
@@ -462,33 +414,20 @@ logical_lines() { # $1 = whole|slice; reads text on stdin, emits one logical lin
       if (prevst ~ /(\\|&&|\|\||\||&|;|\{|\()[[:space:]]*$/) buf = buf " " line
       else buf = buf "; " line
       prevst = st
-      pending += loop_delta(st)
       bdepth += brace_delta(st)
-      if (bdepth <= 0) {
-        emit(depth, buf); buf = ""; brace = 0
-        depth += pending; pending = 0; if (depth < 0) went_negative = 1
-      }
+      if (bdepth <= 0) { print buf; buf = ""; brace = 0 }
       next
     }
     # A YAML block-scalar introducer (`run: |`) ends in "|" without continuing a command.
-    st ~ /:[[:space:]]*\|[-+0-9]*$/ {
-      emit(depth, buf line); buf = ""
-      depth += pending + loop_delta(st); pending = 0; if (depth < 0) went_negative = 1
-      next
-    }
+    st ~ /:[[:space:]]*\|[-+0-9]*$/ { print buf line; buf = ""; next }
     st ~ /(\|\||&&)[[:space:]]*\{$/ {
-      buf = buf line; prevst = st; brace = 1; bdepth = brace_delta(st)
-      pending += loop_delta(st); next
+      buf = buf line; prevst = st; brace = 1; bdepth = brace_delta(st); next
     }
-    st ~ /\\$/ { sub(/\\$/, "", line); buf = buf line; pending += loop_delta(st); next }
-    st ~ /(&&|\|\|)$/ || st ~ /(^|[^|])\|$/ { buf = buf line " "; pending += loop_delta(st); next }
-    {
-      emit(depth, buf line); buf = ""
-      depth += pending + loop_delta(st); pending = 0; if (depth < 0) went_negative = 1
-    }
+    st ~ /\\$/ { sub(/\\$/, "", line); buf = buf line; next }
+    st ~ /(&&|\|\|)$/ || st ~ /(^|[^|])\|$/ { buf = buf line " "; next }
+    { print buf line; buf = "" }
     END {
-      if (buf != "" && !brace) emit(depth, buf)
-      flush(!went_negative && (mode == "slice" || depth == 0))
+      if (buf != "" && !brace) print buf
       if (brace) {
         if (mode != "slice") {
           print "logical_lines: unterminated `|| {` branch; the rest of the input was not judged" > "/dev/stderr"
@@ -524,16 +463,14 @@ logical_lines() { # $1 = whole|slice; reads text on stdin, emits one logical lin
 # and is a swallow; `exit 300` wraps to 44 and does leave the guard, but is rejected here
 # too. That is deliberate: nothing in this repository writes it, and the bound is easier
 # to state and to trust than "any N that is not a multiple of 256".
-GUARD_FATAL_STATUS='([1-9][0-9]?|1[0-9][0-9]|2[0-4][0-9]|25[0-5])'
+GUARD_FATAL_STATUS='0*([1-9][0-9]?|1[0-9][0-9]|2[0-4][0-9]|25[0-5])'
 GUARD_FATAL_ACTION="(exit|return)[[:space:]]+${GUARD_FATAL_STATUS}"
-GUARD_LOOP_ACTION='(continue|break)'
-GUARD_FATAL_HELPER='(fail|fault|die|abort)[[:space:]][^|&]*'
+GUARD_FATAL_HELPER_NAME='(fail|fault|die|abort)'
+GUARD_FATAL_HELPER="${GUARD_FATAL_HELPER_NAME}[[:space:]][^|&]*"
 
-guard_action_leads() { # $1 = structural text, $2 = loop depth -- does it BEGIN fatally?
+guard_action_leads() { # $1 = structural text -- does it BEGIN fatally?
   [[ "$1" =~ ^[[:space:]]*${GUARD_FATAL_ACTION}([^A-Za-z0-9_]|$) ]] && return 0
-  [[ "$1" =~ ^[[:space:]]*${GUARD_FATAL_HELPER} ]] && return 0
-  [ "${2:-0}" -gt 0 ] || return 1
-  [[ "$1" =~ ^[[:space:]]*${GUARD_LOOP_ACTION}([^A-Za-z0-9_]|$) ]]
+  [[ "$1" =~ ^[[:space:]]*${GUARD_FATAL_HELPER} ]]
 }
 
 # The brace branch. A body counts only if it is FLAT -- no nested command group -- and one
@@ -541,8 +478,8 @@ guard_action_leads() { # $1 = structural text, $2 = loop depth -- does it BEGIN 
 # `false && exit 1`: a statement reached only through a chain is not unconditionally
 # reached, and this anchor does not evaluate conditions. A subshell and a quoted literal
 # are already blanked by `shell_structure` before the split.
-brace_body_is_fatal() { # $1 = structural text starting just after the opening `{`, $2 = depth
-  local body="$1" depth="${2:-0}" out="" part c i n=${#1} d=1
+brace_body_is_fatal() { # $1 = structural text starting just after the opening `{`
+  local body="$1" out="" part c i n=${#1} d=1
   for ((i = 0; i < n; i++)); do
     c="${body:i:1}"
     if [ "$c" = '{' ]; then d=$((d + 1))
@@ -560,12 +497,14 @@ brace_body_is_fatal() { # $1 = structural text starting just after the opening `
   for part in $out; do
     part="${part#"${part%%[![:space:]]*}"}"; part="${part%"${part##*[![:space:]]}"}"
     [[ "$part" =~ ^${GUARD_FATAL_ACTION}$ ]] && return 0
-    [ "$depth" -gt 0 ] && [[ "$part" =~ ^${GUARD_LOOP_ACTION}$ ]] && return 0
+    # The helper's arguments are blanked by `shell_structure` and trimmed off the statement,
+    # so match the NAME here rather than the `<name> <args>` form the whole-branch path sees.
+    [[ "$part" =~ ^${GUARD_FATAL_HELPER_NAME}([[:space:]]|$) ]] && return 0
   done
   return 1
 }
 
-guard_tail_is_fatal() { # $1 = the text following the pinned guard, $2 = its loop depth
+guard_tail_is_fatal() { # $1 = the text following the pinned guard
   # Nothing follows: the command's own non-zero status IS the command's status, and every
   # block this test reads runs under `set -euo pipefail`.
   [[ "$1" =~ ^[[:space:]]*\;?[[:space:]]*$ ]] && return 0
@@ -580,8 +519,8 @@ guard_tail_is_fatal() { # $1 = the text following the pinned guard, $2 = its loo
   branch="${BASH_REMATCH[2]}"
   branch="${branch#"${branch%%[![:space:]]*}"}"
   case "$branch" in
-    '{'*) brace_body_is_fatal "${branch#\{}" "${2:-0}" ;;
-    *) guard_action_leads "$branch" "${2:-0}" ;;
+    '{'*) brace_body_is_fatal "${branch#\{}" ;;
+    *) guard_action_leads "$branch" ;;
   esac
 }
 
@@ -631,22 +570,21 @@ negated_branch_dominates() { # $1 = index of the guard's record in GUARD_RECORDS
         fi) [ "$d" -eq 0 ] && return 1; d=$((d - 1)) ;;
         else | elif) [ "$d" -eq 0 ] && return 0 ;;
       esac
-    done < <(branch_events "$(shell_structure "${GUARD_RECORDS[i]#*$'\t'}")")
+    done < <(branch_events "$(shell_structure "${GUARD_RECORDS[i]}")")
   done
   return 1
 }
 
 guard_live_literal() { # $1 = literal proof text, $2 = whole|slice; reads the text on stdin
   local -a GUARD_RECORDS=()
-  local record line depth i
+  local line i
   mapfile -t GUARD_RECORDS < <(logical_lines "${2:-whole}")
   for ((i = 0; i < ${#GUARD_RECORDS[@]}; i++)); do
-    record="${GUARD_RECORDS[i]}"
-    depth="${record%%$'\t'*}"; line="${record#*$'\t'}"
+    line="${GUARD_RECORDS[i]}"
     case "$line" in *"$1"*) ;; *) continue ;; esac
     # Anything opening a comment ahead of the pinned text disarms the whole line.
     case "${line%%"$1"*}" in *'#'*) continue ;; esac
-    guard_tail_is_fatal "${line#*"$1"}" "$depth" && return 0
+    guard_tail_is_fatal "${line#*"$1"}" && return 0
     guard_opens_negated_branch "${line%%"$1"*}" "${line#*"$1"}" || continue
     negated_branch_dominates "$i" && return 0
   done
@@ -655,15 +593,14 @@ guard_live_literal() { # $1 = literal proof text, $2 = whole|slice; reads the te
 
 guard_live_re() { # $1 = ERE whose match is the proof, $2 = whole|slice; reads the text on stdin
   local -a GUARD_RECORDS=()
-  local record line match depth i
+  local line match i
   mapfile -t GUARD_RECORDS < <(logical_lines "${2:-whole}")
   for ((i = 0; i < ${#GUARD_RECORDS[@]}; i++)); do
-    record="${GUARD_RECORDS[i]}"
-    depth="${record%%$'\t'*}"; line="${record#*$'\t'}"
+    line="${GUARD_RECORDS[i]}"
     [[ "$line" =~ $1 ]] || continue
     match="${BASH_REMATCH[0]}"
     case "${line%%"$match"*}" in *'#'*) continue ;; esac
-    guard_tail_is_fatal "${line#*"$match"}" "$depth" && return 0
+    guard_tail_is_fatal "${line#*"$match"}" && return 0
     guard_opens_negated_branch "${line%%"$match"*}" "${line#*"$match"}" || continue
     negated_branch_dominates "$i" && return 0
   done
@@ -837,18 +774,6 @@ guard_tail_case live 'a `|| return 2` inside a function' \
   "$HEX_GUARD"' || return 2'
 guard_tail_case live 'a guard nested in a larger group, fatal branch first' \
   '[ -z "$head_sha" ] || { '"$HEX_GUARD"' || return 2; ref_query="?ref=$head_sha"; }'
-# `continue`/`break` leave the guard only inside a loop, so the loop is part of the
-# fixture. privileged-merge-conformance.sh:314 is exactly this shape, inside the `while`
-# at :200: the `continue` skips the URL construction below it.
-guard_tail_case live 'a `|| { …; continue; }` that skips the iteration' \
-  'while IFS= read -r repository; do' \
-  '  '"$HEX_GUARD"' || { echo "::error::bad pin"; failures=$((failures + 1)); continue; }' \
-  '  gh api "repos/$repository/commits/$head_sha"' \
-  'done < <(printf "")'
-guard_tail_case live 'a `|| break` inside a for loop' \
-  'for repository in a b; do' \
-  '  '"$HEX_GUARD"' || break' \
-  'done'
 guard_tail_case live 'a `|| fault …` named terminating helper' \
   "$HEX_GUARD"' || fault 1 "could not resolve a head SHA"'
 guard_tail_case live 'a multi-line `|| {` failure branch' \
@@ -915,14 +840,35 @@ guard_tail_case dead 'an `exit 1` that leaves a subshell and nothing else' \
   "$HEX_GUARD"' || { ( exit 1 ); }'
 guard_tail_case dead 'an `exit 1` that is unreachable behind a false `&&`' \
   "$HEX_GUARD"' || { false && exit 1; }'
+# Two fail-closed false negatives fixed in the same pass (#1464 re-review round 4): a
+# zero-padded status, which bash reports unpadded, and a named terminating helper reached as
+# a statement of a brace body rather than as the whole branch.
+guard_tail_case live 'an `|| exit 01`, which bash exits 1 from' \
+  "$HEX_GUARD"' || exit 01'
+guard_tail_case live 'a named terminating helper inside a `|| { … }` body' \
+  "$HEX_GUARD"' || { echo "::error::bad pin"; fail "head sha is not a 40-hex object name"; }'
+guard_tail_case dead 'an `|| exit 0256`, which still wraps to a 0 wait status' \
+  "$HEX_GUARD"' || exit 0256'
 guard_tail_case dead 'an `|| exit 256`, which wraps to a 0 wait status' \
   "$HEX_GUARD"' || exit 256'
 guard_tail_case dead 'an `|| return 256`, which wraps to a 0 wait status' \
   "$HEX_GUARD"' || return 256'
-guard_tail_case dead 'an `|| continue` with no enclosing loop, which bash only warns about' \
-  "$HEX_GUARD"' || continue'
-guard_tail_case dead 'an `|| break` with no enclosing loop, which bash only warns about' \
-  "$HEX_GUARD"' || break'
+# `continue`/`break` are not on the allow-list at all, in or out of a loop. They were, and
+# the loop-depth lexer that made them safe outside one was ~60 lines whose only remaining
+# consumer was its own fixture: main's #1466 rewrote `privileged-merge-conformance.sh:314`,
+# the one real site, into an `elif`. Forcing that lexer to report depth 0 everywhere on the
+# merged tree failed nothing but those fixtures. Deleting it also deletes the fail-open it
+# carried in `slice` mode, where a lone `do` -- in prose, or in a here-document body --
+# licensed `continue`/`break` for everything after it in the slice (#1464 re-review round 4).
+guard_tail_case dead 'an `|| continue`, whose enclosing loop this anchor does not model' \
+  'while IFS= read -r repository; do' \
+  '  '"$HEX_GUARD"' || { echo "::error::bad pin"; continue; }' \
+  '  gh api "repos/$repository/commits/$head_sha"' \
+  'done < <(printf "")'
+guard_tail_case dead 'an `|| break`, for the same reason' \
+  'for repository in a b; do' \
+  '  '"$HEX_GUARD"' || break' \
+  'done'
 guard_tail_case dead 'an `exit 1` that is only ever printed by a here-document' \
   "$HEX_GUARD"' || {' \
   '  cat <<EOF' \

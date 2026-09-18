@@ -96,12 +96,8 @@ The allow-list now reasons about command position. Quoted spans, `#` comments, `
 `$(…)` and `(…)` subshells are blanked first; a `|| { … }` branch is closed by brace depth,
 so a closer carrying a tail (`} >&2`) no longer buffers the rest of the file into one
 logical line and a nested `}` no longer closes the body early; `exit`/`return` statuses are
-bounded to 1–255; `continue`/`break` are honored only inside a loop, established by a
-lexical `do`/`done` count over statements in command position that must hold together or
-else report zero everywhere; and a brace body counts only when it is flat and one of its
-top-level statements is *exactly* a fatal action. Finding the loop rule also required
-noticing that `node-ci.yml:345`'s prose — "…not masked secrets; do not put credentials" —
-was raising the loop depth for that entire file. Each of the seven forms is now a permanent
+bounded to 1–255, zero-padding allowed; and a brace body counts only when it is flat and
+one of its top-level statements is *exactly* a fatal action. Each of the seven forms is now a permanent
 regression case and each was verified by mutating the real `node-ci.yml` guard and observing
 a non-zero exit. Two fail-closed false positives are fixed in the same pass: a `}` closer
 carrying a tail, and a trailing `\` inside a comment, which joined the comment to the next
@@ -109,8 +105,13 @@ line and read a live guard as commented out.
 
 The stated ceiling is now split by direction, because the previous version listed only three
 fail-open classes and named none of the ones above. Fail-closed: `exit 300` is rejected
-though it is fatal; a nested group or a redirection operator in a brace body is not
-flattened; an action reached only through a `&&`/`||` chain is not treated as
+though it is fatal; a nested group or a *here-document* in a brace body is not flattened,
+while a plain redirection (`>&2`, `>/dev/null`, `2>&1`) is flattened and still reads fatal —
+it has to, because 123 `|| { … }` guard bodies across 22 of this repository's 206 tracked
+non-test shell and YAML files carry a `>&2`, and the stricter rule this note used to claim
+would report every one of them disarmed; `continue`/`break` are never accepted, in or out of
+a loop; a positive `if <guard>; then <use>` is not accepted, nor a negated branch with no
+`else`; an action reached only through a `&&`/`||` chain is not treated as
 unconditionally reached, because this anchor does not evaluate conditions; the structural
 pass is lexical and models neither here-documents, `case` patterns, nor quoting nested
 inside `$(…)`. Fail-open, and therefore the real ceiling: a guard moved into a branch that
@@ -132,6 +133,18 @@ reaches the rest of the file, and so is a negated branch with no `else`, or one 
 `else` belongs to a nested `if`. All five shapes are pinned as regression cases, and the
 acceptance was verified by mutating the real guard at `:327` to `elif false; then` and by
 replacing its `else` with `fi`, each observed to exit non-zero.
+
+The lexical `do`/`done` loop-depth count that let `continue`/`break` leave a guard is
+deleted, along with `continue`/`break` support itself — roughly 60 lines. It carried a
+fail-open of its own: `slice` mode, the mode the privileged-merge-authorization path uses,
+waived the balance requirement `whole` mode enforced, so a statement that is exactly `do` —
+in prose, or inside a here-document body the structural pass does not model — licensed
+`continue`/`break` for everything after it in the slice. It was also no longer load-bearing:
+main's #1466 rewrote `privileged-merge-conformance.sh:314`, its one real consumer, into an
+`elif`, and forcing the count to report depth 0 everywhere on the merged tree failed nothing
+but the fixtures that tested the count itself. A named fail-closed gap replaces it: a guard
+that protects a URL by skipping its loop iteration now reads as disarmed, and no current
+site is in that shape.
 
 A Python guard gets the comment check and nothing more. Every cited Python guard is a
 sub-expression of an `if … is None:` or a `require(…)` call, with no single tail shape
