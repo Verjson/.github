@@ -735,20 +735,6 @@ class UsesShapeCoverage(unittest.TestCase):
         # this scan can read -- but never a reference whose ref is compared.
         self.assertEqual([f.kind for f in self.verify(root)], ["UNRESOLVED_REFERENCE"])
 
-    def test_an_expression_ref_does_not_swallow_a_later_sha_on_the_line(self):
-        # The expression branch is lazy and line-bounded. A greedy or
-        # cross-value one would absorb the rest of a comment line, hiding the
-        # generated header claim that follows it behind the `uses:` span.
-        root = self.repo()
-        (root / ".github" / "workflows" / "commented-expr.yml").write_text(
-            "#    uses: Verjson/.github/.github/workflows/x.yml@${{ env.REF }} "
-            "pinned at Verjson/.github " + "b" * 40 + "\n")
-        track(root)
-        details = sorted(f.detail for f in self.verify(root))
-        self.assertEqual([f.kind for f in self.verify(root)],
-                         ["UNPINNED_REFERENCE", "PIN_MISMATCH"])
-        self.assertTrue(any("header names " + "b" * 40 in d for d in details), details)
-
     def test_whitespace_before_the_uses_colon_is_a_contract_reference(self):
         # `uses : x` is legal YAML; the old pattern required `uses:` exactly.
         root = self.repo()
@@ -757,6 +743,101 @@ class UsesShapeCoverage(unittest.TestCase):
             + "b" * 40 + "\n")
         track(root)
         self.assertEqual([f.kind for f in self.verify(root)], ["PIN_MISMATCH"])
+
+    def test_a_key_merely_ending_in_uses_is_not_a_reference(self):
+        # The cost of making the path segment optional: `uses` is a substring of
+        # `statuses`, and `USES_RE` is unanchored, so the pathless form can be
+        # read out of a key that is not `uses:` at all. Scoping the case flag off
+        # the key alone does not stop this one -- `statuses` is lowercase -- so
+        # the lookbehind is what rejects it (Verjson/.github#1472).
+        root = self.repo()
+        (root / ".github" / "workflows" / "statuses.yml").write_text(
+            "jobs:\n  ci:\n    statuses: Verjson/.github@" + "b" * 40 + "\n")
+        track(root)
+        self.assertEqual([f.kind for f in self.verify(root)], [])
+
+    def test_a_capitalised_prose_list_item_is_not_a_reference(self):
+        # The invariant `USES_KEY_RE` is documented to protect: Actions requires
+        # a lowercase key, so `- Uses:` in English prose is never a reference.
+        # The gap half honours that by being case-sensitive; before this fix the
+        # pin half did not, so a Markdown list item in a file naming the hub
+        # produced a PIN_MISMATCH -- strictly worse than the false *gap* the
+        # documented rationale exists to prevent (Verjson/.github#1472).
+        root = self.repo()
+        (root / "README.md").write_text(
+            "- Uses: Verjson/.github@" + "b" * 40 + " for its CI.\n")
+        track(root)
+        self.assertEqual([f.kind for f in self.verify(root)], [])
+
+    def test_lowercase_prose_reads_alike_in_both_uses_shapes(self):
+        # The residual this fix does not close, pinned rather than left silent.
+        # A lowercase `uses:` mid-sentence is indistinguishable from a key
+        # without anchoring `USES_RE` to the line start, and anchoring it drops
+        # the commented-out pin the header pass depends on -- measured at 181
+        # references lost across the 97-repo fleet. So prose is still read, in
+        # *both* shapes: the pathless form this PR adds is no worse than the
+        # path form the scan has always read, which is what #1472's criterion 5
+        # asks for. If a later change anchors the key, both halves move together.
+        root = self.repo()
+        (root / "PROSE.md").write_text(
+            "The repo uses: Verjson/.github@" + "b" * 40 + " today.\n"
+            "The repo uses: Verjson/.github/.github/workflows/x.yml@"
+            + "c" * 40 + " today.\n")
+        track(root)
+        self.assertEqual([f.kind for f in self.verify(root)],
+                         ["PIN_MISMATCH", "PIN_MISMATCH"])
+
+    def test_an_expression_ref_stops_at_its_own_closing_braces(self):
+        # Discriminates lazy from greedy, which the first version of this test
+        # did not: its fixture carried one `}}`, so both spans were identical
+        # and a `.*?` -> `.*` mutant survived the whole suite. Two expressions
+        # with a header SHA between them is the shape that tells them apart --
+        # lazy stops at the first `}}` and leaves the SHA outside the `uses:`
+        # span, greedy runs to the last `}}` and swallows the header claim.
+        root = self.repo()
+        (root / ".github" / "workflows" / "two-exprs.yml").write_text(
+            "#    uses: Verjson/.github/.github/workflows/x.yml@${{ env.A }} "
+            "pinned at Verjson/.github " + "b" * 40 + " ${{ env.B }}\n")
+        track(root)
+        findings = self.verify(root)
+        self.assertEqual([f.kind for f in findings],
+                         ["UNPINNED_REFERENCE", "PIN_MISMATCH"])
+        self.assertIn("'${{ env.A }}'", findings[0].detail)
+        self.assertIn("header names " + "b" * 40, findings[1].detail)
+
+    def test_an_overlong_expression_is_not_absorbed_whole(self):
+        # The bound that keeps the scan linear, asserted as behaviour because a
+        # timing assertion would be flaky. An unbounded `.*?` re-scans the line
+        # tail from every `$`, so a line dense with unterminated `${{` costs
+        # O(n^2): measured 53ms at 1600 openers, 833ms at 6400, 13.1s at 25600,
+        # and over 120s at 102400, against a 1 MiB `MAX_SCAN_BYTES` and a scan
+        # that reads every tracked file. The bounded class is linear on the same
+        # inputs (3.1ms / 12.7ms / 39ms / 188ms). The price is this fixture: an
+        # expression longer than the bound is no longer read as one unit and
+        # falls back to the plain class, quoting `${{` again. No fleet line is
+        # anywhere near 200 characters of expression (Verjson/.github#1472).
+        root = self.repo()
+        (root / ".github" / "workflows" / "overlong.yml").write_text(
+            "jobs:\n  ci:\n    uses: Verjson/.github/.github/workflows/x.yml@"
+            "${{ env." + "A" * 250 + " }}\n")
+        track(root)
+        findings = self.verify(root)
+        self.assertEqual([f.kind for f in findings], ["UNPINNED_REFERENCE"])
+        self.assertIn("'${{'", findings[0].detail)
+
+    def test_a_sha_inside_an_expression_is_not_a_second_claim(self):
+        # An intended consequence of reading the expression whole, stated rather
+        # than left to be discovered. A 40-hex run *inside* `${{ ... }}` now
+        # falls within the `uses:` span, so the header pass skips it and the
+        # line is one reference rather than a templated ref plus a phantom pin
+        # claim. The base pattern stopped at `${{` and counted both.
+        root = self.repo()
+        (root / ".github" / "workflows" / "hex-in-expr.yml").write_text(
+            "#    uses: Verjson/.github/.github/workflows/x.yml@"
+            "${{ env.X_" + "b" * 40 + " }}\n")
+        track(root)
+        findings = self.verify(root)
+        self.assertEqual([f.kind for f in findings], ["UNPINNED_REFERENCE"])
 
     def test_a_crlf_pin_is_a_contract_reference(self):
         # Five files in the measured fleet carry CRLF and a `uses:` key. The

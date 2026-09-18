@@ -187,12 +187,37 @@ DECLARATION_KEY = "contract_version"
 # UNPINNED_REFERENCE -- the verdict was never in question -- but `[^\s"']+` alone
 # stops at the expression's first space and quotes the offending ref back as
 # `${{`, which is not a thing anyone wrote. The expression branch is lazy to its
-# own `}}` and `.` never crosses a line, so it cannot run past the value into the
-# rest of the line; the alternation is trailing and unanchored, so it settles
-# without backtracking.
+# own `}}`, and its class excludes `}` so it cannot run past the value into the
+# rest of the line. The `\n` in that class is belt-and-braces and deliberately
+# unasserted: `references()` scans `splitlines()` output, so no line it is given
+# contains a newline and no test can distinguish removing it. It is kept because
+# the class should read as line-bounded wherever else the pattern is reused.
+# The `{0,200}` bound is what keeps the scan linear, and it is load-bearing
+# rather than tidy. An unbounded `.*?` re-scans the line tail for a `}}` from
+# every `$` position, so a line dense with *unterminated* `${{` costs O(n^2):
+# measured 53ms at 1600 openers, 833ms at 6400, 13.1s at 25600, and over 120s at
+# 102400, against a `MAX_SCAN_BYTES` of 1 MiB and a scan that reads every tracked
+# file -- one minified or templated line would stall a fleet sweep for minutes.
+# Atomic grouping does not help, because the failing scan is itself O(n) per
+# start. The bound costs only that an expression longer than it falls back to the
+# plain class; the longest in the measured fleet is far shorter.
+# The key is matched case-*sensitively*, scoped with `(?-i:...)` so the trailing
+# `re.IGNORECASE` still case-folds the hub name that GitHub itself case-folds.
+# Without that scoping the flag also covered the key literal, and the pathless
+# form then read `- Uses:` in an English list item as a pin -- inventing a
+# PIN_MISMATCH, which is strictly worse than the false *gap* the rationale on
+# `USES_KEY_RE` below exists to prevent. The lookbehind rejects the other half of
+# the same hazard, a longer key that merely ends in `uses` such as `statuses:`.
+# Both are needed: `statuses` is already lowercase, and `Uses` is already
+# preceded by a space. The key is deliberately *not* anchored to the line start
+# the way `USES_KEY_RE` is: `USES_RE` must keep reading a commented-out pin, both
+# because the header pass excludes its span to stop counting one line twice, and
+# because anchoring drops 181 references the scan reads across the measured
+# fleet. The residual is a lowercase `uses:` mid-sentence, which stays readable
+# in the pathless form exactly as it always has been in the path form.
 USES_RE = re.compile(
-    r"(?:uses|\"uses\"|'uses')\s*:\s*[\"']?Verjson/\.github"
-    r"(?:/(?P<path>[^@\s\"']+))?@(?P<ref>(?:\$\{\{.*?\}\}|[^\s\"'])+)",
+    r"(?<![\w-])(?-i:(?:uses|\"uses\"|'uses'))\s*:\s*[\"']?Verjson/\.github"
+    r"(?:/(?P<path>[^@\s\"']+))?@(?P<ref>(?:\$\{\{[^}\n]{0,200}\}\}|[^\s\"'])+)",
     re.IGNORECASE)
 # The trailing boundary keeps a hex run longer than 40 characters from being
 # truncated into a contract SHA: without it, `[0-9a-f]{40}` matches the first 40
