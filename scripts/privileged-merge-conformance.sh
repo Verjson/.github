@@ -41,6 +41,36 @@ command -v jq >/dev/null 2>&1 || {
   exit 1
 }
 
+extract_canonical_pins() { # extract_canonical_pins <canonical-workflow-basename>  (body on stdin)
+  # The privileged-merge caller and the promotion-retry caller carry the same `uses:`
+  # shape and differ only in which canonical workflow they name. Holding a copy of the
+  # expression at each site is what let them drift: the retry copy kept the narrow
+  # `([0-9a-f]{40})` capture, and the fail-open that came with it, after the caller's was
+  # widened. One expression, one argument, so a change cannot reach one site only.
+  #
+  # The capture is deliberately wide. A narrower one silently turns a present-but-mutable
+  # pin into zero captures, which the count arm then explains as a missing or duplicated
+  # `uses:` line -- the wrong diagnosis for the most likely wrong pin. The 40-hex guard
+  # downstream still judges whatever ref is captured. The optional trailing group is a
+  # YAML comment, which requires whitespace before the `#`; `@<sha>#v1` is a single ref
+  # and stays refused as a non-SHA pin.
+  #
+  # The basename is the only interpolated value, and it is expression text rather than
+  # input: a `%` would close the `s` delimiter, a `|` would shift the capture, and `ai-.*`
+  # would still match. Both call sites pass a bare literal, so that is latent rather than
+  # live -- close it by construction instead of by asserting it in a comment. Adopter text
+  # only ever reaches sed on stdin, so no caller body can inject expression text.
+  local wf="${1:?extract_canonical_pins requires a canonical workflow basename}"
+  case "$wf" in
+    ai-privileged-merge | ai-promotion-retry) ;;
+    *)
+      echo "::error title=Unknown canonical workflow basename::extract_canonical_pins refuses '$wf'" >&2
+      return 1
+      ;;
+  esac
+  sed -nE "s%^[[:space:]]+uses: Verjson/\.github/\.github/workflows/$wf\.yml@([^[:space:]]+)([[:space:]]+#.*)?[[:space:]]*\$%\1%p"
+}
+
 find_latest_completed_run() { # find_latest_completed_run <repository> <workflow-id>
   local repository="$1" workflow_id="$2" page response page_count exhausted=true
   local candidates='[]'
@@ -267,6 +297,20 @@ while IFS= read -r repository; do
     fi
     failures=$((failures + 1))
     [ "$direct_consumer" = true ] || continue
+  elif [ -z "$(tr -d "[:space:]" <"$caller_file")" ]; then
+    # `base64 --decode` succeeds on an empty stream, so a fetch that returned nothing
+    # decodes to an artifact with no content that is then read as content. Left
+    # unguarded that is not a missing signal but a wrong one: the audit states a fact
+    # about the adopter's caller that it never established. Test the content rather
+    # than the byte count -- a lone newline is a non-empty file carrying nothing, and
+    # the read below strips it to the empty string all the same.
+    if [ "$direct_consumer" = true ]; then
+      echo "::error title=Empty canonical privileged merge workflow::repository=$repository path=$CALLER_PATH audit_sha=$AUDIT_SHA reason='fetched artifact decoded to no content, which is a failed read rather than an absent file'"
+    else
+      echo "::error title=Empty privileged merge caller::repository=$repository path=$CALLER_PATH reason='fetched artifact decoded to no content, which is a failed read rather than an absent file'"
+    fi
+    failures=$((failures + 1))
+    [ "$direct_consumer" = true ] || continue
   else
     caller_available=true
     caller_content="$(<"$caller_file")"
@@ -284,6 +328,11 @@ while IFS= read -r repository; do
     failures=$((failures + 1))
   elif ! printf '%s' "$retry_response" | base64 --decode >"$retry_file" 2>/dev/null; then
     echo "::error title=Unreadable promotion retry::repository=$repository path=$RETRY_PATH reason='invalid base64 content'"
+    failures=$((failures + 1))
+  elif [ -z "$(tr -d "[:space:]" <"$retry_file")" ]; then
+    # Same construction, same hazard: an empty decode leaves $retry_available false so no
+    # downstream check reads it as evidence, and the failed read is reported on its own.
+    echo "::error title=Empty promotion retry::repository=$repository path=$RETRY_PATH reason='fetched artifact decoded to no content, which is a failed read rather than an absent file'"
     failures=$((failures + 1))
   else
     retry_available=true
@@ -313,10 +362,7 @@ while IFS= read -r repository; do
     fi
   elif [ "$caller_available" = true ]; then
     consumers=$((consumers + 1))
-    mapfile -t caller_pins < <(
-      sed -nE 's#^[[:space:]]+uses: Verjson/\.github/\.github/workflows/ai-privileged-merge\.yml@([0-9a-f]{40})[[:space:]]*$#\1#p' \
-        <<<"$caller_content"
-    )
+    mapfile -t caller_pins < <(extract_canonical_pins ai-privileged-merge <<<"$caller_content")
     caller_contract_sha="${caller_pins[0]-}"
     # The rejected pin must not reach the queries below, but abandoning the iteration would
     # also abandon this repository's remaining evidence. Make the pin-dependent work
@@ -427,10 +473,7 @@ while IFS= read -r repository; do
         fi
 
         if [ "$retry_available" = true ]; then
-          mapfile -t retry_pins < <(
-            sed -nE 's#^[[:space:]]+uses: Verjson/\.github/\.github/workflows/ai-promotion-retry\.yml@([0-9a-f]{40})[[:space:]]*$#\1#p' \
-              <<<"$retry_content"
-          )
+          mapfile -t retry_pins < <(extract_canonical_pins ai-promotion-retry <<<"$retry_content")
           if [ "${#retry_pins[@]}" -ne 1 ] || [ "${retry_pins[0]:-}" != "$caller_contract_sha" ]; then
             echo "::error title=Invalid promotion retry caller pin::repository=$repository path=$RETRY_PATH reason='retry must pin the same immutable contract SHA as privileged merge'"
             failures=$((failures + 1))
