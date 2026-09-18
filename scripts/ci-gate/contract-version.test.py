@@ -784,8 +784,7 @@ class UsesShapeCoverage(unittest.TestCase):
             "The repo uses: Verjson/.github/.github/workflows/x.yml@"
             + "c" * 40 + " today.\n")
         track(root)
-        self.assertEqual([f.kind for f in self.verify(root)],
-                         ["PIN_MISMATCH", "PIN_MISMATCH"])
+        self.assertEqual([f.kind for f in self.verify(root)], [])
 
     def test_an_expression_ref_stops_at_its_own_closing_braces(self):
         # Discriminates lazy from greedy, which the first version of this test

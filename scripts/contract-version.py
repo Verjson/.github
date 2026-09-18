@@ -206,17 +206,47 @@ DECLARATION_KEY = "contract_version"
 # Without that scoping the flag also covered the key literal, and the pathless
 # form then read `- Uses:` in an English list item as a pin -- inventing a
 # PIN_MISMATCH, which is strictly worse than the false *gap* the rationale on
-# `USES_KEY_RE` below exists to prevent. The lookbehind rejects the other half of
-# the same hazard, a longer key that merely ends in `uses` such as `statuses:`.
-# Both are needed: `statuses` is already lowercase, and `Uses` is already
-# preceded by a space. The key is deliberately *not* anchored to the line start
-# the way `USES_KEY_RE` is: `USES_RE` must keep reading a commented-out pin, both
-# because the header pass excludes its span to stop counting one line twice, and
-# because anchoring drops 181 references the scan reads across the measured
-# fleet. The residual is a lowercase `uses:` mid-sentence, which stays readable
-# in the pathless form exactly as it always has been in the path form.
+# `USES_KEY_RE` below exists to prevent.
+# The key is anchored to a *delimiter* rather than to the line start. A pin this
+# scan must read is written in one of four positions: at the start of its line,
+# directly after a quote or backtick that opens it as a string or inline-code
+# value, after the `#` of a commented-out pin, or after a literal `\n` escape
+# inside a source-string fixture such as `f"jobs:\n  ci:\n    uses: ..."`. That
+# alternation is what separates a key from prose, because English never puts one
+# of those characters immediately before `uses:` mid-sentence.
+# Anchoring to the line start instead -- `^\s*(?:-\s+)?` -- is far too blunt, and
+# the earlier rationale for rejecting it was wrong about why. It drops 181
+# references across the measured fleet, but classifying those 181 lines gives 108
+# `.sh` grep-assertion and fixture literals, 43 `.py`/`.ts`/`.js`/`.mjs` fixture
+# string literals, 21 `.md` prose and ADR diff fragments, and only 9 comment
+# lines -- of which 8 are the usage-example headers in this repository's own
+# reusable workflows and 1 is a prose comment in this file. So the cost is
+# overwhelmingly test scaffolding, not pins; and the span-exclusion double-count
+# the header pass guards against does not arise in any of them, because all 9
+# comment drops carry a non-SHA ref (`@main`, `@v2.2.0`, `@<placeholder>`) that
+# `HEADER_RE` never matches. The real objection to line anchoring is simply that
+# it cannot read a value written inside a string, which is most of what the fleet
+# has.
+# The delimiter form drops 5 references against the unanchored form on the same
+# 95-repository corpus and adds none: four `+    uses: ...@main` diff fragments
+# quoted inside frozen ADR records, and one `jobs.<job>.uses: ...@<placeholder>`
+# documentation template. None is a live pin, so dropping them is a gain. Adding
+# `+` to the delimiter class would recover the four and was rejected: `+` is a
+# diff marker, not a string or comment opener, and Markdown also accepts `+` as a
+# list bullet, which would reopen the `- Uses:`-shaped prose hazard on the one
+# side the case-sensitivity scoping does not cover.
+# Delimiter anchoring is what closes the residual the pathless form would
+# otherwise have inherited: a lowercase `uses:` mid-sentence is now rejected in
+# *both* shapes, pathless and path, so the new form is strictly better than the
+# one the scan has always had rather than merely no worse. It also subsumes the
+# lookbehind that previously rejected a longer key ending in `uses`, such as
+# `statuses:`: the character immediately before the key is now always the line
+# start, a delimiter, or whitespace, and never a word character, so a lookbehind
+# asserting exactly that could not fail and was removed rather than left as an
+# assertion no test can kill.
 USES_RE = re.compile(
-    r"(?<![\w-])(?-i:(?:uses|\"uses\"|'uses'))\s*:\s*[\"']?Verjson/\.github"
+    r"(?:^|[\"'`#]|\\n)[ \t]*(?:-[ \t]+)?"
+    r"(?-i:(?:uses|\"uses\"|'uses'))\s*:\s*[\"']?Verjson/\.github"
     r"(?:/(?P<path>[^@\s\"']+))?@(?P<ref>(?:\$\{\{[^}\n]{0,200}\}\}|[^\s\"'])+)",
     re.IGNORECASE)
 # The trailing boundary keeps a hex run longer than 40 characters from being
