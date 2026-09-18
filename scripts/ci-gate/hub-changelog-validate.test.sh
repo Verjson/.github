@@ -75,6 +75,42 @@ else
   fail "the gate exited $status for a fragment missing impact; output: $output"
 fi
 
+# (b) The shape actions-ci actually runs in. `actions-ci.yml` checks out with
+# `fetch-depth: 1`, so the PR ref is the only history present and
+# `refs/remotes/origin/main` does not exist at all. A gate that resolved its base
+# only from a local ref would be unable to run in the one place it must, which is
+# how this whole class of gap is introduced. The base is named by
+# `GITHUB_BASE_REF`, exactly as the generated consumer caller names it from the
+# pull-request event, and the gate fetches it.
+shallow_origin="$tmp/shallow-origin"
+new_fixture "$shallow_origin"
+write_fragment "$shallow_origin" 2026-09-18-issue-1002-no-impact.md 1002 "Shallow no impact"
+commit_branch "$shallow_origin"
+branch_sha="$(git -C "$shallow_origin" rev-parse HEAD)"
+
+shallow="$tmp/shallow"
+mkdir -p "$shallow"
+git -C "$shallow" init -q -b main
+git -C "$shallow" config user.name test
+git -C "$shallow" config user.email test@example.com
+git -C "$shallow" remote add origin "$shallow_origin"
+git -C "$shallow" fetch -q --depth 1 origin "$branch_sha"
+git -C "$shallow" checkout -q --detach "$branch_sha"
+
+if git -C "$shallow" rev-parse --verify -q origin/main >/dev/null; then
+  fail "the shallow fixture already resolves origin/main; it no longer reproduces actions-ci"
+else
+  pass "the shallow fixture reproduces the fetch-depth 1 checkout actions-ci performs"
+fi
+
+status=0
+output="$(cd "$shallow" && GITHUB_BASE_REF=main bash "$gate" . 2>&1)" || status=$?
+if [ "$status" -ne 0 ] && printf '%s\n' "$output" | grep 'impact is required' >/dev/null; then
+  pass "the gate resolves its base under a fetch-depth 1 checkout and still reddens"
+else
+  fail "the gate exited $status in the shallow checkout; output: $output"
+fi
+
 if [ "$fails" -ne 0 ]; then
   printf '%d test(s) failed.\n' "$fails" >&2
   exit 1
