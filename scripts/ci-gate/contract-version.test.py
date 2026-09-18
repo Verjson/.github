@@ -707,6 +707,25 @@ class UsesShapeCoverage(unittest.TestCase):
         self.assertEqual([f.kind for f in findings], ["PIN_MISMATCH"])
         self.assertIn("root-action.yml", findings[0].detail)
 
+    def test_a_flow_style_step_pin_is_a_reference_not_a_gap(self):
+        # Verjson/.github#1482. `steps: [{uses: ...@<sha>}]` parses to exactly
+        # the block-style structure, so the pin is present, immutable and
+        # readable. Unifying the two recognizers let the ref class run through
+        # the closing `}` and `]`, which made this line a gap on one sweep and
+        # a clean file on the other -- the muting direction again. Two entries,
+        # because with one the class that stops at the structure and the class
+        # that runs past it differ only in a ref's content, not in the number
+        # of findings.
+        root = self.repo()
+        (root / ".github" / "workflows" / "flow.yml").write_text(
+            "jobs:\n  ci:\n    steps: [{uses: Verjson/.github/.github/workflows/"
+            "node-ci.yml@" + "b" * 40 + "}, {uses: Verjson/.github/.github/"
+            "workflows/changelog.yml@" + "c" * 40 + "}]\n")
+        track(root)
+        findings = self.verify(root)
+        self.assertEqual([f.kind for f in findings],
+                         ["PIN_MISMATCH", "PIN_MISMATCH"])
+
     def test_an_unpinned_expression_ref_is_quoted_whole(self):
         # The verdict was already right; the detail string was not. `[^\s"']+`
         # stops at the first space, so the reader was told the offending ref is
@@ -861,6 +880,32 @@ class UsesShapeCoverage(unittest.TestCase):
                 + "b" * 40 + "`")
         self.assertEqual([m.group("ref") for m in cv.USES_RE.finditer(line)],
                          ["a" * 40, "b" * 40])
+
+    def test_two_adjacent_backtick_refs_are_two_references_when_unpinned(self):
+        # The test above pins the #1483 backtick exclusion with 40-hex refs, and
+        # #1482's flow-style fix quietly took that job over: the ref now matches
+        # a 40-hex run as a whole alternative and stops after 40 characters, so
+        # the backtick never gets the chance to be absorbed and re-admitting it
+        # reddens nothing. Measured -- with both fixes in, flipping the backtick
+        # back into the class left every test green. The exclusion is still the
+        # only thing doing the work for a ref that is *not* a SHA, which is
+        # where #1483 is now load-bearing, so that is what this pins. Admitting
+        # the backtick yields one match whose ref is `v1``uses:`.
+        line = ("`uses: Verjson/.github/.github/workflows/node-ci.yml@v1"
+                "``uses: Verjson/.github/.github/workflows/changelog.yml@v2`")
+        self.assertEqual([m.group("ref") for m in cv.USES_RE.finditer(line)],
+                         ["v1", "v2"])
+
+    def test_two_adjacent_escaped_newline_refs_are_two_references(self):
+        # The same argument for the backslash, which the ref class excludes as
+        # the closing half of the `\n` the key anchor already reads as an
+        # opener. A source-string fixture writes several workflow lines into one
+        # Python line; without the exclusion the first ref runs through the
+        # escape and swallows the next key, so two references read as one.
+        line = (r'text = "uses: Verjson/.github/.github/workflows/node-ci.yml@v1'
+                r'\nuses: Verjson/.github/.github/workflows/changelog.yml@v2\n"')
+        self.assertEqual([m.group("ref") for m in cv.USES_RE.finditer(line)],
+                         ["v1", "v2"])
 
     def test_the_ref_class_still_admits_a_full_semver_build_ref(self):
         # The other side of the same boundary. Excluding one character from a

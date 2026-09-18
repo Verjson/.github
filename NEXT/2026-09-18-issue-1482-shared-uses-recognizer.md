@@ -57,10 +57,15 @@ unchanged. Two of them gained an assertion rather than losing one: a `@v1` ref a
 report them — while remaining absent from `pins()`. The 64-hex boundary is now `SHA_RE`'s
 anchoring instead of a `(?![0-9a-f])` lookahead inside the pattern.
 
-`scripts/ci-gate/fleet-contract-inventory.test.py` went from 42 tests to 47, all green;
-`scripts/ci-gate/contract-version.test.py` holds at 81 green across the move.
-`scripts/actions-ci-group.sh platform` passed 85 commands, exit 0, with no
-`::error::group=` line.
+`scripts/ci-gate/fleet-contract-inventory.test.py` went from 42 tests to 47 at this step
+and to 52 with the flow-style fix below, all green; `scripts/ci-gate/contract-version.test.py`
+held at 81 green across the move and stands at 86. All three CI-equivalent groups pass:
+`platform` 85 commands and 1607 TAP `ok`, `merge-gate` 59 commands and 737 `ok`, and
+`changelog-release` 62 commands and 666 `ok` — each exit 0, with no `not ok` and no
+`::error::group=` line. The `ok` counts are TAP from the shell gates; the Python suites
+these changes touch report `Ran N tests` instead and contribute none of them, which is why
+adding Python tests to `platform` leaves 1607 unchanged — `aa9d386`, this branch's merge
+base, measures 1607 as well.
 
 ## A backtick-delimited pin is now read as a SHA (#1483)
 
@@ -94,18 +99,86 @@ carrying `.`, `-` and `+` — `@v2.2.0-rc.1+build` — must still survive whole,
 that over-narrows the class by one more character reddens.
 
 Measured on this repository's own tracked corpus rather than on the fleet: 1388 tracked
-files carry 124 `uses:` references, and 124 both before and after — the fix changes what a
-ref *is*, not how many there are. **12** of them ended in an absorbed backtick before the
-change, in `NEXT/` fragments, two ADRs, `docs/reusable-workflow-versioning.md`, and the
-scan's own sources and tests; 3 of those 12 are prose this branch itself adds. The number
-of references that read as a 40-hex SHA is **18** before and **18** after, so no verdict on
-this corpus changes today: every one of the 12 carries `main`, `v1`, `v2.2.0`, or a
-`<sha>`/`<40-hex>` placeholder. The defect stays latent until a doc or a consumer fixture
-quotes a real contract SHA in inline code, which is what it was filed as.
+files carry 134 `uses:` references under the previous pattern. **12** of them ended in an
+absorbed backtick before the backtick fix, in `NEXT/` fragments, two ADRs,
+`docs/reusable-workflow-versioning.md`, and the scan's own sources and tests; 3 of those 12
+are prose this branch itself adds. Every one of the 12 carries `main`, `v1`, `v2.2.0`, or a
+`<sha>`/`<40-hex>` placeholder, so #1483 stays latent on this corpus exactly as filed — it
+bites when a doc or a consumer fixture first quotes a real contract SHA in inline code.
 
-That is a measurement of one repository, not of the 95-repository fleet #1483 scopes.
-`references()` reads every tracked file, so an end-to-end corpus re-measurement means
-fetching whole trees rather than the `.github/workflows` listing the inventory sweep needs,
-and that was not run here.
+That is a measurement of one repository. The live fleet was swept separately, over the
+`.github/workflows` listing the inventory actually reads: **96** repositories, 0
+unreachable, **337** pinned references under the previous pattern and **337** under the
+shipped one, `gained=[]` and `lost=[]`. #1482's body and this fragment previously said
+95; 96 is what `gh repo list Verjson --no-archived` returns today, and the count is a
+live figure rather than a fixed one. A whole-corpus re-measurement of the fleet — every
+tracked file, as `references()` reads them, rather than the workflow listing — was still
+not run, because it means fetching whole trees for 96 repositories.
 
-`scripts/ci-gate/contract-version.test.py` went from 81 tests to 83, all green.
+On this repository's own tracked corpus at the tree this fragment ships with, the previous
+pattern reads 134 references and the shipped one 138. The four the previous pattern cannot
+see are the flow-style fixtures and prose this branch itself adds — the shapes being fixed,
+appearing in the fix's own sources. The count that carries a verdict is the 40-hex one: 18
+before and **21** after. Those three are pre-existing source-string fixtures in
+`scripts/cli_projects_package_surface_test.py` and `scripts/required-checks-audit.test.sh`
+whose pins the previous pattern read as 41 characters, ending in `\` and `n`. They are the
+first instances of #1483's muting that carry a real 40-hex value rather than a placeholder,
+and they were invisible until this fix.
+
+## The unification narrowed the inventory's accept set, and that is fixed here (#1482)
+
+Giving both sweeps one recognizer moved the inventory onto a ref class it had never used,
+and that class is wider than the pattern it replaced in a way that *loses* pins. The
+pattern the inventory carried before required exactly 40 hex and closed on
+`(?![0-9a-f])`; the shared one read any ref out of a class that ran straight through the
+YAML flow indicators. So a step written in flow style —
+
+    steps: [{uses: Verjson/.github/.github/workflows/node-ci.yml@<40-hex>}]
+
+— which is ordinary YAML that parses to exactly the block-style structure, and lives in
+the `.github/workflows/*.yml` that is the whole of what the inventory reads, yielded the
+ref `<sha>}]`. `SHA_RE` rejects that, so `pins()` returned nothing where the replaced
+pattern returned one pin. Measured before the fix: **1** against **0**. That is the muting
+direction — a repository carrying a pin looks clean — which is the failure this module's
+own docstring says it exists to prevent, reached this time by unifying two recognizers
+rather than by letting them drift.
+
+Two independent causes sat on the one line, and both are fixed. The delimiter class did
+not admit `{`, so a key opening a flow mapping was not a key at all; it now admits `{`,
+`[` and `,`, which is where YAML begins a key rather than where it ends a value. And the
+ref class did not stop at `}`, so the ref overran; the ref now matches a 40-hex run as a
+whole alternative closing on `(?![\w./+-])`, which is the replaced pattern's boundary
+restored and widened. Widened, because `(?![0-9a-f])` alone would report a tag named
+`<40-hex>-rc1` as a pin at its first 40 characters — inventing a PIN_MISMATCH, which is
+the direction strictly worse than muting. A 40-hex run is a whole ref exactly when the
+next character cannot continue a refname, which covers `}`, `]` and `,` without naming
+any of them.
+
+The general class still admits `{`, `}`, `,` and `]`, and that is measured rather than
+assumed: excluding them drops 25 of this repository's references outright and truncates
+8 more to `$`, because the corpus writes refs as `@${ref}` and `@{PIN}` substitutions in
+generator and fixture sources. A *non*-SHA ref in flow style is therefore still quoted
+back with its trailing `}]` attached. That is the noisy direction, not the muting one —
+an unpinned ref is reported unpinned either way — and it is left named rather than closed
+by enumerating punctuation the corpus proves is load-bearing elsewhere.
+
+The ref class also excludes a backslash now, the closing half of the `\n` the delimiter
+class already reads as an opener. On this corpus that alone corrected 30 refs that came
+back with a trailing `\` and `n`, **3** of which were 40-hex pins read as 41 characters —
+the same muting as the backtick, reached by a different character.
+
+This is latent, not active. The live fleet sweep measures `gained=[] lost=[]`: no adopter
+writes a step in flow style today, which is what makes it cheap to close now and expensive
+to discover later.
+
+`scripts/ci-gate/contract-version.test.py` went from 81 tests to 86 and
+`scripts/ci-gate/fleet-contract-inventory.test.py` from 42 to 52, all green.
+
+One further finding came out of mutation-testing the result: the 40-hex alternative
+*subsumes* #1483's backtick exclusion for pinned refs, because the ref now stops after 40
+characters and never reaches the closing backtick. Re-admitting the backtick left every
+test green. The exclusion is still the only thing doing the work for a ref that is not a
+SHA, so `UsesShapeCoverage.test_two_adjacent_backtick_refs_are_two_references_when_unpinned`
+pins it there, on `@v1`/`@v2` written adjacently so the two spellings differ in the number
+of matches rather than in one ref's content. The same argument and the same shape pin the
+backslash.

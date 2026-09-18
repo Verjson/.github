@@ -61,6 +61,38 @@ import re
 # must still survive whole, and two backtick pins written adjacently must be two
 # matches rather than one, which is the assertion a single-instance fixture
 # cannot make.
+# The class excludes a backslash too, which is the closing half of the `\n` the
+# delimiter class already reads as an opener. A source-string fixture
+# `f"jobs:\n  ci:\n    uses: Verjson/.github/x.yml@{sha}\n"` ends its value where
+# it ends its line, and until this it did not: the ref came back with the two
+# characters `\` and `n` on the end. That cost 25 of this repository's own 123
+# references a corrupted ref and 3 of them their pin outright -- a 40-hex SHA
+# read as 41 characters is the same muting as the backtick above, reached by a
+# different character. `\` is also what `git check-ref-format` forbids in a
+# refname, so nothing legitimate is lost.
+# The ref admits a 40-hex SHA as an alternative *before* that general class, and
+# that alternative alone is what makes a pin readable in flow-style YAML.
+# `steps: [{uses: Verjson/.github/x.yml@<40-hex>}]` is ordinary YAML, parses to
+# exactly the block-style structure, and lives in the `.github/workflows/*.yml`
+# that is the whole of what the inventory reads; the general class runs straight
+# through the `}` and `]`, yields `<sha>}]`, fails `SHA_RE`, and the pin is
+# invisible to `pins()` -- muting, and muting the single pattern this module
+# replaced did not do, because it required exactly 40 hex and closed on
+# `(?![0-9a-f])`. That boundary is restored and widened to `(?![\w./+-])`: a
+# 40-hex run is a whole ref when the next character cannot continue a refname,
+# which covers `}`, `]`, `,` and anything else structural without naming them.
+# Widening it past `(?![0-9a-f])` is the part that is not merely restoration --
+# it keeps a tag named `<40-hex>-rc1` or `<40-hex>.1` falling through to the
+# general class rather than being reported as a pin at its first 40 characters,
+# which is the inventing direction and worse than the muting one.
+# The general class still admits `{`, `}`, `,` and `]`, and deliberately: this
+# corpus writes refs as `@{PIN}` and `@${ref}` substitutions in generator and
+# fixture sources, and excluding those characters drops 19 of the 123 references
+# entirely and truncates 7 more to `$`. So a *non*-SHA ref in flow style is
+# still quoted back with its closing `}]` attached. That is the noisy direction,
+# not the muting one -- the verdict on an unpinned ref is unpinned either way --
+# and it is left rather than fixed by enumerating punctuation the corpus proves
+# is load-bearing elsewhere.
 # The ref admits a whole `${{ ... }}` expression as one unit. Such a ref is still
 # UNPINNED_REFERENCE -- the verdict was never in question -- but `[^\s"']+` alone
 # stops at the expression's first space and quotes the offending ref back as
@@ -84,7 +116,8 @@ import re
 # Without that scoping the flag also covered the key literal, and the pathless
 # form then read `- Uses:` in an English list item as a pin -- inventing a
 # PIN_MISMATCH, which is strictly worse than the false *gap* the rationale on
-# `USES_KEY_RE` below exists to prevent.
+# `USES_KEY_RE` -- which lives in `scripts/contract-version.py`, not here, and
+# stayed there because only that sweep reports gaps -- exists to prevent.
 # The key is anchored to a *delimiter* rather than to the line start. A pin this
 # scan must read is written in one of four positions: at the start of its line,
 # after a quote or backtick that opens it as a string or inline-code value,
@@ -141,10 +174,21 @@ import re
 # variant. The lookbehind goes because nothing in the fleet distinguishes the
 # two and an assertion no test can kill is worse than none, not because it could
 # not fail.
+# The class admits the YAML flow indicators `{`, `[` and `,` for the same reason
+# the ref alternative above closes on them: they are where a key begins rather
+# than where a value ends. `{` opens a flow mapping and `,` separates its
+# entries, so `steps: [{uses: A@<sha>}, {uses: B@<sha>}]` puts a `uses:` key
+# after each of them; `[` opens a flow sequence whose entry may be a single pair
+# with no braces at all -- `steps: [ uses: A@<sha> ]` -- which YAML parses to the
+# same structure as the block form. Without them such a pin is dropped whole,
+# muted by its position on the line rather than by anything about its content.
+# No adopter in the measured fleet writes a step this way today, so this gains
+# nothing now and costs nothing: the fleet sweep measures gained=[] lost=[].
 USES_RE = re.compile(
-    r"(?:^|[\"'`#]|\\n)[ \t]*(?:-[ \t]+)?"
+    r"(?:^|[\"'`#{\[,]|\\n)[ \t]*(?:-[ \t]+)?"
     r"(?-i:(?:uses|\"uses\"|'uses'))\s*:\s*[\"']?Verjson/\.github"
-    r"(?:/(?P<path>[^@\s\"']+))?@(?P<ref>(?:\$\{\{[^}\n]{0,200}\}\}|[^\s\"'`])+)",
+    r"(?:/(?P<path>[^@\s\"']+))?@"
+    r"(?P<ref>[0-9a-f]{40}(?![\w./+-])|(?:\$\{\{[^}\n]{0,200}\}\}|[^\s\"'`\\])+)",
     re.IGNORECASE)
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -165,6 +209,21 @@ def references(text: str):
     value are on one line; two lines that only look adjacent are not a
     reference. The line-bounded classes inside `USES_RE` then mean what they
     say, and the two sweeps cannot disagree about the extent of a match.
+
+    That leaves one asymmetry, and it is deliberate rather than overlooked. A
+    `uses:` key whose value is a plain scalar on the *next* line is legal YAML
+    that Actions accepts. This yields nothing for it, so the inventory contributes
+    no row, while `contract-version` still reports it through `USES_KEY_RE` as a
+    key with "no path@ref this scan can read". The rationale survives the
+    flow-style widening above unchanged, because that widening is about where a
+    value ends *within* a line and this is about a value that is not on the line
+    at all: admitting it here means letting `\s*` span a newline again, which is
+    what let a bare `uses:` adopt an unrelated following line's reference. The
+    residual is therefore real and bounded -- an adopter writing the split form
+    is named by the per-repository sweep and is silently absent from the fleet
+    row set, never reported as a repository with no such reference -- and it is
+    named here rather than closed, because closing it needs a YAML parse rather
+    than a wider pattern.
     """
     for line in text.splitlines():
         for match in USES_RE.finditer(line):
