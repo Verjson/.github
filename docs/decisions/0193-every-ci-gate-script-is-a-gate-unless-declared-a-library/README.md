@@ -61,8 +61,10 @@ Consequences of the classification:
   where Actions runs it, or declare it a library with a reason. Neither happens by
   accident, and nothing is exempt by virtue of what it is called.
 - A declaration that goes stale — the path stops being tracked, or becomes registered
-  after all — reddens the same check, so the exception list cannot quietly rot into a
-  suppression list.
+  after all — reddens the same check. That bounds decay, not misuse: whether a file is
+  genuinely a library is not a computable property here, so declaring a real gate in the
+  exception list passes silently. What prevents that is review of a diff to this list,
+  which is why the list lives in the gate file rather than in a data file nobody reads.
 - The candidate set is enumerated with `git ls-files`, not a filesystem walk: the index is
   what Actions checks out, so an untracked scratch file is correctly not a gate and a
   tracked one cannot hide from a glob.
@@ -75,11 +77,14 @@ Consequences of the classification:
 ## Residual, accepted deliberately
 
 This proves a gate is **named on** an Actions execution path, not that the path
-**executes**. A script named only by a workflow whose triggers never fire, or reached only
-through an `if:` that is never true, still counts as reachable here. Workflow reachability
-is a different invariant with a different shape — it belongs to ADR 0184's line of work
-(a gate asserting that verification executed), not to a static inventory check — and
-conflating them would make this check both weaker and harder to reason about.
+**executes**. A script named only by a workflow whose triggers never fire, or reached
+only through an `if:` that is never true, still counts as reachable here. So does one
+named only by a `sparse-checkout:` entry or an `env:` value while its actual invocation
+is deleted: the match is against the whole workflow text, and both shapes exist in this
+tree today. Workflow reachability is a different invariant with a different shape — it
+belongs to ADR 0184's line of work (a gate asserting that verification executed), not to
+a static inventory check — and conflating them would make this check both weaker and
+harder to reason about.
 
 Files under `scripts/ci-gate/` that are neither `*.sh` nor `*.py` (JSON and YAML fixtures,
 allowlists) are out of scope: they are data read by a gate, not something Actions could

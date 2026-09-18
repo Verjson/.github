@@ -35,3 +35,20 @@ The rule proves a gate is *named* on an Actions execution path, not that the pat
 executes: a script named only by a workflow whose triggers never fire still counts as
 reachable. That residual, and the rejected alternatives, are recorded in
 [ADR 0193](docs/decisions/0193-every-ci-gate-script-is-a-gate-unless-declared-a-library/README.md).
+
+Follow-up from the independent review, after the above merged. Three corrections, no
+behavior change:
+
+- The claim that the declaration list "cannot quietly rot into a suppression list" was
+  stronger than the code. The review proved it by adding a real, executable, unregistered
+  gate script *and* declaring it a library — the suite passed silently. The staleness
+  assertions bound decay, not misuse: whether a file is genuinely a library is not a
+  computable property, so a real gate parked in that list passes. The control for that is
+  review of a diff to the list, which is why the list lives in the gate file rather than
+  in a data file. ADR 0193 and the gate's own comment now say that instead.
+- The stated residual named never-firing triggers and always-false `if:`, but not the
+  shape that actually exists in this tree: a script named only by a `sparse-checkout:`
+  entry or an `env:` value while its invocation is deleted still reads as reachable,
+  because the match is against the whole workflow text.
+- A tracked workflow missing from the worktree raised a bare traceback instead of the
+  stated failure its sibling helper raises. It now exits naming the path and the cause.
