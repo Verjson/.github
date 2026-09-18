@@ -20,15 +20,26 @@ not constrain the resulting head. `container_deployment_review_producer.py` acce
 `--deployment-commit`, and read a pull request's `head.sha`, into a `commits/` path
 segment without constraining either to a 40-hex object name.
 
-Sixteen further sites that the scan cannot prove at the point of use are now named in an
-explicit `REF_SITE_ALLOWLIST` with a reason each, in two classes: a 40-hex object name
-whose constraint lives in another step, function, or caller; and a ref name carrying a
-stated non-encoding guard. A stale entry fails the test, so the list cannot rot into a
-silent hole. `scripts/assert-mergeable-head.sh` is allowlisted with an unresolved
-conflict recorded at the entry: it encodes a `rules/branches/` segment in the query form
-while three other sites use the path form for the same endpoint. `branches/` and
-`commits/` were measured against the live API to accept both forms; `rules/branches/`
-could not be settled because no Verjson ruleset targets a slash-bearing ref.
+Two more sites are fixed rather than excused: the `eligibility` job in `node-ci.yml`,
+`node-ci-protected.yml`, and the co-located `ci-eligibility` composite action now
+constrain `HEAD_SHA` to a 40-hex object name before it reaches a `commits/<sha>/status`
+path. `node-ci-protected.yml` took a caller-supplied `inputs.head-sha` there, and the
+only assert on that value lived in a job declaring `needs: eligibility`, so it ran
+strictly later and could not vouch for the use.
+
+Fourteen further sites that the scan cannot prove at the point of use are named in an
+explicit `REF_SITE_ALLOWLIST`, eleven entries with a reason each, in three classes: a
+40-hex object name whose constraint lives in another step, function, or caller; an object
+name supplied by GitHub that no repository-local guard constrains; and a ref name carrying
+a stated non-encoding guard. An entry that cites a guard now pins that guard's literal
+text, so deleting the cited check reddens this gate instead of leaving the entry vouching
+for a value nothing constrains. A stale entry fails too, so the list cannot rot into a
+silent hole. `scripts/assert-mergeable-head.sh` is allowlisted with an unresolved conflict
+recorded at the entry: it encodes a `rules/branches/` segment in the query form, and
+`scripts/ci-gate/verify-arm-receipt.sh` interpolates that segment with no encoding at all,
+while four other sites use the path form for the same endpoint. `branches/` and `commits/`
+were measured against the live API to accept both forms; `rules/branches/` could not be
+settled because no Verjson ruleset targets a slash-bearing ref.
 
 The scan also rejects a file that re-binds `quote` at module scope, which would otherwise
 be judged by the stdlib encoder it does not call. A new section 0 measures each anchor
@@ -36,3 +47,15 @@ shape against synthetic fixtures, and the file header now states the remaining c
 Python string concatenation and `%`-formatting are a deliberate, stated non-goal, as are
 Python embedded in workflow YAML, shell positional parameters, and interpolations split
 across source lines.
+
+The recognized-site count is pinned, not merely printed: moving an interpolation out of a
+recognized shape — concatenation instead of an f-string brace, a `compare/` prefix hoisted
+into a variable — lowered coverage while every remaining site still passed.
+
+ADR 0194 records the merge-authorization consequence: the unencoded base ref failed OPEN,
+because a misresolved compare request was swallowed to `behind=0`, skipping the branch
+update and merging on a review performed against a stale base.
+
+The boundary validation added to `scripts/container_deployment_review_producer.py` moves
+the container-deployment contract digest, so adopters must regenerate at a new contract
+SHA.

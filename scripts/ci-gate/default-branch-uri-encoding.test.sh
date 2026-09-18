@@ -50,7 +50,11 @@
 #     name; the proof for a positional is at the call site, not at the use.
 #   * An interpolation split across source lines, and any ref-bearing path segment not in
 #     REF_PATH_SEGMENT.
-#   * The sites in REF_SITE_ALLOWLIST -- exempted by hand, each with its reason.
+#   * The sites in REF_SITE_ALLOWLIST -- exempted by hand, each with its reason, and
+#     each citing guard pinned by its literal text so the exemption cannot outlive it.
+# The recognized-site count is pinned in RECOGNIZED_REF_SITES for the same reason the
+# allowlist is explicit: moving an interpolation out of a recognized shape is a way to
+# lose coverage without losing a green run.
 # Do not read a green run here as "every ref interpolation in this repository is encoded
 # correctly". Read it as "every shape this scan recognizes is".
 set -euo pipefail
@@ -403,67 +407,89 @@ assert_encoder() { # $1 = label, $2 = jq program, $3 = query|path, $4 = jq --arg
 # A site whose proof this scan cannot see at the point of use is named here, once, with the
 # reason it is safe anyway. This is a record, not an escape hatch: an entry is keyed by file
 # and interpolated subject, every entry must match at least one live site (a stale one fails
-# below), and a NEW site that is not listed still fails. Widening the recognizer so entries
-# can be retired is tracked in #1464.
+# below), and a NEW site that is not listed still fails.
 #
-# Two reason classes appear here, and nothing else should be added without one:
-#   sha  — the value is a 40-hex object name, but its constraint is established in another
-#          step, another function, or at the caller, outside this scan's block slice.
-#   ref  — the value is a ref name carrying a stated non-encoding guard at its source.
+# An entry is four tab-separated fields:
+#
+#     file <TAB> subject <TAB> guard-file <TAB> guard-text
+#
+# and the last two are the part that keeps the record honest. An entry that says "another
+# step already constrains this" is a claim about code somewhere else, and that code can be
+# edited away while this gate keeps printing PASS -- deleting the 40-hex assert from
+# gate-rearm.yml, or the `SHA.fullmatch` from container_deployment_transport.py, used to
+# leave this test green. So an entry that cites a guard PINS it: the literal guard text is
+# grepped for below, in the idiom scripts/gen-container-deployment.sh uses for its own
+# pinned contract text, and removing the guard reddens THIS gate.
+#
+# Three reason classes appear here, and nothing else should be added without one:
+#   sha-guarded  -- the value is a 40-hex object name whose constraint is established in
+#                   another step, another function, or at the caller, outside this scan's
+#                   block slice. Cites and pins that constraint.
+#   sha-supplied -- the value is an object name supplied by GitHub itself, so there is no
+#                   repository-local guard to pin; inventing one would be ceremony. Only a
+#                   value that never passes through adopter text belongs here.
+#   ref          -- the value is a ref name carrying a stated non-encoding guard at its
+#                   source.
 # --------------------------------------------------------------------------------------
 REF_SITE_ALLOWLIST=(
-  # sha: `.headRefOid` from `gh pr view`; GitHub answers a 40-hex OID or the `// ""`
-  # default, and this step is not the one that restates the constraint.
-  $'.github/workflows/ai-review-merge.yml\thead_sha'
-  # sha: same value; gate-rearm.yml:168 asserts `^[0-9a-f]{40}$` on it in the job that
-  # resolves it, which is a different step from the read at :347.
-  $'.github/workflows/gate-rearm.yml\thead_sha'
-  # sha: `${{ github.event.pull_request.head.sha || github.sha }}` — a GitHub-supplied
-  # object name, never adopter text.
-  $'.github/workflows/node-ci.yml\tHEAD_SHA'
-  # sha: `${{ inputs.head-sha }}`, admitted and re-checked against
-  # `ADMITTED_HEAD_SHA` elsewhere in the same protected workflow.
-  $'.github/workflows/node-ci-protected.yml\tHEAD_SHA'
-  # sha: `git rev-parse HEAD` in the checkout this step just made; git answers a 40-hex
-  # object name or fails, and the step runs under `set -euo pipefail`.
-  $'.github/workflows/repo-hygiene.yml\tresolved'
-  # sha: validated at :89 via `validate_workflow_identity`, whose `re.fullmatch` on the
+  # sha-supplied: `.headRefOid` from `gh pr view` on the PR this run is gating -- GitHub
+  # answers a 40-hex OID or the `// ""` default, and no adopter text reaches it. Nothing
+  # repository-local constrains it, so there is nothing to pin: it is here for the same
+  # reason node-ci's `github.sha` would be, not because a check lives elsewhere.
+  $'.github/workflows/ai-review-merge.yml\thead_sha\t\t'
+  # sha-guarded: same value, but gate-rearm asserts the pattern itself, in the job that
+  # resolves it -- a different step from the read this scan is looking at.
+  $'.github/workflows/gate-rearm.yml\thead_sha\t.github/workflows/gate-rearm.yml\t[[ "$head_sha" =~ ^[0-9a-f]{40}$ ]]'
+  # sha-guarded: `git rev-parse HEAD` in the checkout this step just made; git answers a
+  # 40-hex object name or fails, and the step runs under `set -euo pipefail`.
+  $'.github/workflows/repo-hygiene.yml\tresolved\t.github/workflows/repo-hygiene.yml\tresolved="$(git -C .repo-hygiene rev-parse HEAD)"'
+  # sha-guarded: validated via `validate_workflow_identity`, whose `re.fullmatch` on the
   # 40-hex pattern lives in that function rather than in `build_receipt`'s own block.
-  $'scripts/container_deployment_review_producer.py\targs.producer_commit'
-  # sha: `SHA.fullmatch(target['sha'])` on the line above, spelled through `.get()` at the
-  # use. Same value, different expression, so the literal match cannot join them up.
-  $'scripts/container_deployment_transport.py\ttarget.get('"'"'sha'"'"')'
-  # sha: `require(... SHA.fullmatch(probe['workflowCommit']) ...)` in the probe validator,
-  # a different function from the transport call.
-  $'scripts/container_deployment_transport.py\tprobe['"'"'workflowCommit'"'"']'
-  # sha: `hub_tree`'s own parameter. Its two callers pass the literal "main" and a value
-  # this module already resolved as an object name; the constraint is at the caller.
-  $'scripts/fleet-contract-inventory.py\tref'
-  # sha: `head_sha = require_sha(planned["head_sha"], …)` earlier in the same module;
-  # `require_sha` is the 40-hex boundary check, but it is a call, not an inline pattern.
-  $'scripts/renovate-changelog.py\thead_sha'
-  # ref: guarded at verify-arm-receipt.sh:59-60 with `^[A-Za-z0-9._/-]+$` plus explicit
-  # rejection of a leading "/", of "..", and of "//" — a traversal guard rather than an
-  # encoding, which is the one other shape this test accepts by hand.
-  $'scripts/ci-gate/verify-arm-receipt.sh\tarm_base_branch'
-  # ref: DELIBERATE and UNRESOLVED. assert-mergeable-head.sh:148 encodes with `@uri` and
-  # then gsubs %2F back to "/", i.e. the QUERY form, into a `rules/branches/` PATH segment,
-  # because its comment states the literal separator is what addresses the ruleset. Three
-  # other sites in this repository (gate_coverage_audit.py:216, required-checks-audit.sh,
-  # required-checks-rollout.sh) use the path form for the same endpoint. `branches/` and
-  # `commits/` were measured to accept BOTH forms against the live API while widening this
-  # scan; `rules/branches/` could not be settled here because no Verjson ruleset targets a
-  # slash-bearing ref to compare against. Do not "fix" either side on a guess: settling it
-  # is tracked in #1464. `base_ref` also appears here in fault prose that quotes the URL.
-  $'scripts/assert-mergeable-head.sh\tbase_ref_path'
-  $'scripts/assert-mergeable-head.sh\tbase_ref'
+  $'scripts/container_deployment_review_producer.py\targs.producer_commit\tscripts/container_deployment_review_producer.py\tre.fullmatch(r"[0-9a-f]{40}", contract_ref) is None'
+  # sha-guarded: `SHA.fullmatch(target['sha'])` on the line above, spelled through
+  # `.get()` at the use. Same value, different expression, so the literal match cannot
+  # join them up.
+  $'scripts/container_deployment_transport.py\ttarget.get(\'sha\')\tscripts/container_deployment_transport.py\tSHA.fullmatch(target[\'sha\'])'
+  # sha-guarded: the same pattern inside the probe validator, a different function from
+  # the transport call.
+  $'scripts/container_deployment_transport.py\tprobe[\'workflowCommit\']\tscripts/container_deployment_transport.py\tSHA.fullmatch(probe[\'workflowCommit\'])'
+  # sha-guarded: `hub_tree`'s own parameter. Its two callers pass the literal "main" and a
+  # value USES_RE extracted under a 40-hex pattern, so the constraint is at the caller.
+  $'scripts/fleet-contract-inventory.py\tref\tscripts/fleet-contract-inventory.py\t(?P<sha>[0-9a-f]{40})'
+  # sha-guarded: `require_sha` is the 40-hex boundary check for this value, but it is a
+  # call rather than an inline pattern, so the scan cannot read it as one.
+  $'scripts/renovate-changelog.py\thead_sha\tscripts/renovate-changelog.py\trequire_sha(planned["head_sha"], "plan.head_sha")'
+  # ref: guarded at verify-arm-receipt.sh:59-60 with a charset pattern plus explicit
+  # rejection of a leading "/", of "..", and of "//" -- a traversal guard rather than an
+  # encoding, which is the one other shape this test accepts by hand. Note that this site
+  # interpolates the branch into a `rules/branches/` path with NO encoding at all, which
+  # puts it on the literal-slash side of the disagreement recorded below.
+  $'scripts/ci-gate/verify-arm-receipt.sh\tarm_base_branch\tscripts/ci-gate/verify-arm-receipt.sh\t[[ "$arm_base_branch" =~ ^[A-Za-z0-9._/-]+$ ]]'
+  # ref: DELIBERATE and UNRESOLVED. assert-mergeable-head.sh encodes with `@uri` and then
+  # gsubs %2F back to "/", i.e. the QUERY form, into a `rules/branches/` PATH segment,
+  # because its comment states the literal separator is what addresses the ruleset.
+  #
+  # This repository does not agree with itself about that endpoint. FOUR sites build the
+  # path form -- gate_coverage_audit.py:210, required-checks-audit.sh:233,
+  # required-checks-rollout.sh:233, and scripts/privileged-merge-conformance.sh:92 -- while
+  # TWO keep the slash literal: assert-mergeable-head.sh:215 (query form into a path) and
+  # scripts/ci-gate/verify-arm-receipt.sh:62 (no encoding at all, above).
+  #
+  # `branches/` and `commits/` were measured to accept BOTH forms against the live API
+  # while widening this scan; `rules/branches/` could not be settled here because no
+  # Verjson ruleset targets a slash-bearing ref to compare against, and the endpoint
+  # returned zero rules for both forms. Do not "fix" either side on a guess: settling it
+  # is tracked in #1470. `base_ref` also appears here in fault prose that quotes the URL.
+  $'scripts/assert-mergeable-head.sh\tbase_ref_path\t\t'
+  $'scripts/assert-mergeable-head.sh\tbase_ref\t\t'
 )
 
 allowlisted_hits=()
 ref_site_allowlisted() { # $1 = file, $2 = subject
-  local entry
+  local entry entry_file entry_subject
   for entry in "${REF_SITE_ALLOWLIST[@]}"; do
-    [ "$entry" = "$1"$'\t'"$2" ] || continue
+    IFS=$'\t' read -r entry_file entry_subject _ _ <<<"$entry"
+    [ "$entry_file" = "$1" ] && [ "$entry_subject" = "$2" ] || continue
     allowlisted_hits+=("$entry")
     return 0
   done
@@ -522,7 +548,15 @@ done < <(ref_sites)
 # grep that stops matching -- shows up as "the scan stopped reaching the repository" rather
 # than as a quieter green run. Raise them when the recognizer widens; never lower one to
 # accommodate a scan that found less.
-[ "$sites" -ge 70 ] || fail "the ref-interpolation scan found only $sites sites; it is not reaching the repository"
+# Pinned, not slack: a refactor that moves an interpolation OUT of a recognized shape
+# -- string concatenation instead of an f-string brace, a `compare/` prefix hoisted
+# into its own variable -- lowers this count while every remaining site still
+# passes, so a loose floor lets coverage drain away under a green run. Raise it
+# deliberately, the way the allowlist is edited; never lower it to accommodate a
+# scan that found less.
+RECOGNIZED_REF_SITES=77
+[ "$sites" -ge "$RECOGNIZED_REF_SITES" ] \
+  || fail "the ref-interpolation scan recognized $sites sites, below the pinned $RECOGNIZED_REF_SITES; a ref interpolation moved out of a shape this scan can see"
 [ "$encoders" -ge 16 ] || fail "only $encoders encoder expressions were exercised; the semantics check is not reaching the fixed sites"
 [ "$py_sites" -ge 18 ] || fail "the ref-interpolation scan found only $py_sites Python sites; it is not reaching the Python callers"
 [ "$py_encoders" -ge 6 ] || fail "only $py_encoders Python encoder calls were exercised; the semantics check is not reaching them"
@@ -531,12 +565,24 @@ done < <(ref_sites)
 # moved, been renamed, or been fixed, and would quietly cover a future site that happens to
 # reuse the name. Every entry must have been consulted by a live site.
 for entry in "${REF_SITE_ALLOWLIST[@]}"; do
+  # Redirected, not pipe-fed: `grep -q` exits on its first match and would SIGPIPE a
+  # still-writing producer (#1430, #1445).
   grep -qxF "$entry" < <(printf '%s\n' "${allowlisted_hits[@]:-}") \
     || fail "stale ref-site allowlist entry, no site matched it: ${entry//$'\t'/ }"
+
+  # An entry that cites a guard pins its literal text, so deleting the guard reddens HERE
+  # instead of quietly turning the entry into a vouch for a value nothing constrains.
+  IFS=$'\t' read -r entry_file entry_subject guard_file guard_text <<<"$entry"
+  [ -n "$guard_file" ] || continue
+  label="ref-site allowlist entry $entry_file \$$entry_subject"
+  [ -f "$root/$guard_file" ] \
+    || fail "$label cites a guard file that is missing: $guard_file"
+  grep -qF -- "$guard_text" "$root/$guard_file" \
+    || fail "$label cites a guard that is gone from $guard_file: $guard_text"
 done
 
 echo "PASS: $sites ref interpolations ($py_sites of them Python) across ${#scanned[@]} workflows"
 echo "      and non-test scripts are percent-encoded or 40-hex-constrained, and all $encoders jq"
 echo "      and $py_encoders Python encoder expressions keep '/' literal in a query value and"
 echo "      encode it as %2F in a path segment"
-echo "      ${#REF_SITE_ALLOWLIST[@]} sites are allowlisted with a stated reason instead"
+echo "      ${#allowlisted_hits[@]} sites are covered by ${#REF_SITE_ALLOWLIST[@]} allowlist entries with a stated reason instead"

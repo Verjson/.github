@@ -12,6 +12,7 @@ Reverse-chronological index of org-level decisions.
 <!-- prettier-ignore -->
 | # | Date | Decision |
 |---|------|----------|
+| [0194](0194-a-ref-scan-anchored-on-two-shapes-reads-green-over-the-shapes-it-cannot-see/README.md) | 2026-09-18 | A ref-encoding scan anchored on two shapes reads green over every shape it cannot see |
 | [0193](0193-every-ci-gate-script-is-a-gate-unless-declared-a-library/README.md) | 2026-09-18 | Every `scripts/ci-gate/` script is a gate unless it is declared a library |
 | [0192](0192-encode-adopter-ref-names-before-they-reach-a-url/README.md) | 2026-09-18 | Encode every adopter-controlled ref name before it reaches a `gh api` URL |
 | [0191](0191-contract-releases-are-the-unit-of-adoption/README.md) | 2026-09-17 | A contract version is a release, declared once and read back from disk |

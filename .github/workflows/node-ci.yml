@@ -424,6 +424,13 @@ jobs:
           # condition that sets should-run=false. Adding a second defer reason
           # here turns that message into a lie, so generalize it in the same
           # change — it is the only explanation a deferred head ever gets.
+          # The head SHA reaches a `commits/<sha>` PATH segment on the next line, so constrain
+          # it HERE. node-ci-protected takes this value from a caller input, and the only other
+          # assert on it lives in a job declaring `needs: eligibility`, which therefore runs
+          # strictly later and cannot vouch for this use. The three copies of this script are
+          # byte-identical by contract, so the guard is in all of them (Verjson/.github#1464).
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "::error::head-sha is not a 40-hex object name"; exit 1; }
           pending=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/status" \
             --jq '[.statuses[]? | select(.context == "renovate/stability-days" and .state == "pending")] | length' 2>/dev/null || echo 0)
           if [ "${pending:-0}" -gt 0 ]; then

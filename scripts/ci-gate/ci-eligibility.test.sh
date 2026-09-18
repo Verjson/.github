@@ -77,13 +77,16 @@ STUB
 chmod +x "$stub_bin/gh"
 
 # run_case <event-name> <gh-count> <gh-fail> — returns "should-run=<v> called=<0|1>".
+# A 40-hex object name, not a short placeholder: the script constrains HEAD_SHA before
+# it reaches a `commits/<sha>` path segment (Verjson/.github#1464).
+FIXTURE_HEAD_SHA="0123456789abcdef0123456789abcdef01234567"
 run_case() {
   local out called
   out="$tmp/out"; called="$tmp/called"
   : >"$out"; rm -f "$called"
   PATH="$stub_bin:$PATH" \
   GITHUB_OUTPUT="$out" GITHUB_EVENT_NAME="$1" \
-  GITHUB_REPOSITORY="Verjson/example" HEAD_SHA="deadbeef" GH_TOKEN="x" \
+  GITHUB_REPOSITORY="Verjson/example" HEAD_SHA="$FIXTURE_HEAD_SHA" GH_TOKEN="x" \
   STUB_GH_COUNT="$2" STUB_GH_FAIL="$3" STUB_GH_CALLED="$called" \
     bash -eo pipefail "$script" >/dev/null 2>&1
   local v; v="$(grep -oE 'should-run=(true|false)' "$out" | tail -1)"
