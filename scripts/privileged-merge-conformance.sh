@@ -267,11 +267,13 @@ while IFS= read -r repository; do
     fi
     failures=$((failures + 1))
     [ "$direct_consumer" = true ] || continue
-  elif [ ! -s "$caller_file" ]; then
+  elif [ -z "$(tr -d "[:space:]" <"$caller_file")" ]; then
     # `base64 --decode` succeeds on an empty stream, so a fetch that returned nothing
-    # decodes to an empty artifact that reads as content. Left unguarded that is not a
-    # missing signal but a wrong one: the audit states a fact about the adopter's caller
-    # that it never established. Name the failed read instead, distinctly from absence.
+    # decodes to an artifact with no content that is then read as content. Left
+    # unguarded that is not a missing signal but a wrong one: the audit states a fact
+    # about the adopter's caller that it never established. Test the content rather
+    # than the byte count -- a lone newline is a non-empty file carrying nothing, and
+    # the read below strips it to the empty string all the same.
     if [ "$direct_consumer" = true ]; then
       echo "::error title=Empty canonical privileged merge workflow::repository=$repository path=$CALLER_PATH audit_sha=$AUDIT_SHA reason='fetched artifact decoded to no content, which is a failed read rather than an absent file'"
     else
@@ -297,7 +299,7 @@ while IFS= read -r repository; do
   elif ! printf '%s' "$retry_response" | base64 --decode >"$retry_file" 2>/dev/null; then
     echo "::error title=Unreadable promotion retry::repository=$repository path=$RETRY_PATH reason='invalid base64 content'"
     failures=$((failures + 1))
-  elif [ ! -s "$retry_file" ]; then
+  elif [ -z "$(tr -d "[:space:]" <"$retry_file")" ]; then
     # Same construction, same hazard: an empty decode leaves $retry_available false so no
     # downstream check reads it as evidence, and the failed read is reported on its own.
     echo "::error title=Empty promotion retry::repository=$repository path=$RETRY_PATH reason='fetched artifact decoded to no content, which is a failed read rather than an absent file'"
@@ -336,7 +338,7 @@ while IFS= read -r repository; do
     # wrong diagnosis for the most likely wrong pin. The verdict is refusal either way;
     # only the explanation was wrong.
     mapfile -t caller_pins < <(
-      sed -nE 's#^[[:space:]]+uses: Verjson/\.github/\.github/workflows/ai-privileged-merge\.yml@([^[:space:]]+)[[:space:]]*$#\1#p' \
+      sed -nE 's%^[[:space:]]+uses: Verjson/\.github/\.github/workflows/ai-privileged-merge\.yml@([^[:space:]]+)([[:space:]]+#.*)?[[:space:]]*$%\1%p' \
         <<<"$caller_content"
     )
     caller_contract_sha="${caller_pins[0]-}"
@@ -450,7 +452,10 @@ while IFS= read -r repository; do
 
         if [ "$retry_available" = true ]; then
           mapfile -t retry_pins < <(
-            sed -nE 's#^[[:space:]]+uses: Verjson/\.github/\.github/workflows/ai-promotion-retry\.yml@([0-9a-f]{40})[[:space:]]*$#\1#p' \
+            # Mirrors the caller extractor above, and for the same reason: a narrow
+            # capture let a conformant pin alongside a mutable one read as a single
+            # matching pin and be accepted. Widened, the count arm below sees both.
+            sed -nE 's%^[[:space:]]+uses: Verjson/\.github/\.github/workflows/ai-promotion-retry\.yml@([^[:space:]]+)([[:space:]]+#.*)?[[:space:]]*$%\1%p' \
               <<<"$retry_content"
           )
           if [ "${#retry_pins[@]}" -ne 1 ] || [ "${retry_pins[0]:-}" != "$caller_contract_sha" ]; then

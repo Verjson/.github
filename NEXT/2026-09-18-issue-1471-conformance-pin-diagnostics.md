@@ -16,13 +16,33 @@ The extractor now captures whatever ref the line carries, so that guard is reach
 through the shipped script and the pin-count arm keeps its own meaning: zero canonical
 `uses:` lines, or two of them.
 
-**This changes explanations, never verdicts.** A pin that refused before still refuses.
-Both extractors were run over the same twelve caller shapes — the conforming SHA, an
-uppercase SHA, a 41-character SHA, a short SHA, `main`, a tag, a branch path, a `refs/`
-ref, an all-zero 40-digit ref, a duplicated canonical line, and a line pointing at another
-repository — and the accept/refuse verdict was identical in all twelve, with zero flips.
-The one case that accepts is the well-formed 40-hex pin, which the old capture already
-matched exactly, so no widened capture can newly satisfy the guard.
+**This is strictly stricter, not verdict-neutral.** Both extractors were read out of git
+— the old one from `origin/main`, the new one from the working file, so neither figure can
+drift from the shipped code — and run over 37 caller shapes covering conforming, mutable,
+malformed, shell-metacharacter, other-repository, and multi-`uses:` bodies. 25 shapes
+changed verdict: 18 refuse under both and only gain the accurate diagnostic, 4 move from
+accept to refuse, and 3 move from refuse to accept.
+
+The 4 newly-refused shapes are the point. A body carrying a conforming 40-hex pin *and* a
+second canonical `uses:` line — `@main`, a tag, or a second SHA with a trailing comment —
+matched exactly one capture under the old extractor and was accepted. The second line was
+invisible to the audit. Those bodies now yield two captures and refuse on pin count. This
+closes a fail-open in the pin arm; it is not covered elsewhere, because the canonical
+content comparison that might have caught it is skipped by the conditional no-ops that
+precede it.
+
+The 3 newly-accepted shapes are a deliberate loosening decided here: a pin followed by a
+YAML comment — `@<sha> # v1.2.3`, the same separated by a tab, and a bare `#` — extracted
+zero captures under both the old and the unrefined new extractor and was refused as a
+pin-count problem. YAML treats a `#` preceded by whitespace as a comment, so those lines
+are conforming pins and are now read as such. The boundary is pinned in both directions:
+`@<sha>#v1.2.3`, with no separating space, is not a comment under YAML and still refuses
+as a non-SHA pin. A comment after a *mutable* ref gains only the accurate diagnostic and
+still refuses.
+
+The same narrow capture, and the same fail-open, were present in the promotion-retry pin
+extractor. It is widened to mirror the caller exactly rather than being left as a second
+instance of the fixed defect.
 
 No consumer matched on either message: searching the repository for
 `expected exactly one immutable canonical workflow pin`, `pin is not a 40-hex`, and
@@ -50,7 +70,10 @@ payload:
   'remote bytes differ from the checked-out audit revision'` — a byte-comparison verdict
   drawn from bytes that were never fetched.
 
-Both sites now fault with a verdict that names the failed read
+Both sites now test for empty *content*, not zero bytes: a payload decoding to a single
+newline (`Cg==`) is one byte and would have passed a `[ -s ]` check while carrying nothing
+readable, so the guards compare against the artifact with whitespace stripped. Both fault
+with a verdict that names the failed read
 (`Empty privileged merge caller`, `Empty promotion retry`, `Empty canonical privileged
 merge workflow`, each reasoning `fetched artifact decoded to no content, which is a failed
 read rather than an absent file`). A repository that genuinely lacks the caller still
@@ -59,7 +82,7 @@ message. Each of the three verdicts was confirmed to redden against the pre-fix 
 
 The whole decode-after-fetch class was swept rather than these two lines. Two further
 sites outside this script are confirmed vulnerable by direct reproduction and are tracked
-separately, not fixed here: `scripts/required-checks-audit.sh:365`, where an empty decode
+separately, not fixed here: `scripts/required-checks-audit.sh:365-366`, where an empty decode
 feeds `required-checks-workflow.py` and an empty stdin returns
 `{"changelog_contract": "absent", …}` at exit 0 — a correctly-wired adopter reported as
 having no wiring — and `scripts/classify-repo-stacks.sh:75`, where the decode is consumed
