@@ -200,7 +200,7 @@ run_audit() {
     WORKFLOW_STATE="${WORKFLOW_STATE-active}" \
     CHECK_APP_ID="${CHECK_APP_ID-15368}" \
     PRIVILEGED_MERGE_AUDIT_SHA="${PRIVILEGED_MERGE_AUDIT_SHA-$audit_sha}" \
-    bash "$audit" >"$tmp/out" 2>&1
+    bash "${AUDIT_SCRIPT:-$audit}" >"$tmp/out" 2>&1
 }
 
 run_audit \
@@ -500,6 +500,65 @@ ALPHA_CONTENT="$(bash "$generator" "$contract_sha" "$required_checks" | sed "s/@
       && pass "consumer inventory fails closed on a mutable canonical workflow pin" \
       || fail "mutable caller pin lacks actionable evidence"
   }
+
+# The 40-hex pin guard cannot fire against today's extractor, whose capture group is
+# literally ([0-9a-f]{40}) -- the guard exists to survive that extractor changing. Widening
+# the capture is exactly that change, and it is the only way to measure the guard's control
+# flow rather than describe it. The fixture is ordered: Verjson/alpha populates every
+# loop-scoped variable with a conforming value, Verjson/beta then trips the guard, and
+# Verjson/.github follows. Each must be judged on its own evidence.
+widened_root="$tmp/widened"
+widened_audit="$widened_root/scripts/privileged-merge-conformance.sh"
+mkdir -p "$widened_root/scripts" "$widened_root/.github/workflows"
+ln -sf "$root/.github/workflows/ai-privileged-merge.yml" \
+  "$root/.github/workflows/ai-promotion-retry.yml" "$widened_root/.github/workflows/"
+sed 's/ai-privileged-merge\\\.yml@(\[0-9a-f\]{40})/ai-privileged-merge\\\.yml@([0-9A-Za-z]+)/' \
+  "$audit" >"$widened_audit"
+if ! cmp -s "$audit" "$widened_audit" && grep -q 'ai-privileged-merge\\\.yml@(\[0-9A-Za-z\]+)' "$widened_audit"; then
+  pass "pin-extractor widening fixture actually mutates the caller pin extractor"
+else
+  fail "pin-extractor widening fixture did not change the extractor, so the guard stays unreachable"
+fi
+
+mutable_pin_caller="$(bash "$generator" "$contract_sha" "$required_checks" | sed "s/@$contract_sha/@main/" | base64 | tr -d '\n')"
+AUDIT_SCRIPT="$widened_audit" \
+  ACTIVE_REPOSITORIES=$'Verjson/alpha\nVerjson/beta\nVerjson/.github' \
+  SECRET_REPOSITORIES=$'Verjson/alpha\nVerjson/.github' \
+  BETA_CONTENT="$mutable_pin_caller" run_audit \
+  && fail "non-40-hex caller pin reported green under a widened extractor" \
+  || {
+    grep -q "pin is not a 40-hex commit SHA" "$tmp/out" \
+      && grep -q 'Missing privileged merge App key access::repository=Verjson/beta' "$tmp/out" \
+      && ! grep -q 'repository=Verjson/\.github' "$tmp/out" \
+      && grep -q 'result=nonconformant repositories_scanned=3 consumers=3' "$tmp/out" \
+      && pass "a repository that trips the 40-hex pin guard is still judged on its own secret-access evidence" \
+      || fail "the 40-hex pin guard abandoned the repository's remaining evidence: $(<"$tmp/out")"
+  }
+
+# The remaining early exits leak loop-scoped state without a reachable read-before-assignment
+# today, so no fixture can observe them. Pin the structural invariant that makes them
+# unobservable instead: the per-repository reset runs before any branch can leave the
+# iteration, so a repository can never inherit its predecessor's values.
+if python3 - "$audit" <<'RESET_ORDER'
+import re
+import sys
+
+source = open(sys.argv[1], encoding="utf-8").read().splitlines()
+start = next(i for i, line in enumerate(source) if line == 'while IFS= read -r repository; do')
+end = next(i for i, line in enumerate(source) if line == 'done <<<"$repositories"')
+body = source[start + 1:end]
+reset = next(i for i, line in enumerate(body) if line.startswith("  unset "))
+exits = [i for i, line in enumerate(body) if re.search(r"\b(continue|break)\b", line)]
+# The only legitimate pre-reset exit skips a blank inventory line before any state is set.
+assert body[exits[0]].strip() == '[ -n "$repository" ] || continue', body[exits[0]]
+early = [body[i].strip() for i in exits[1:] if i < reset]
+assert not early, early
+RESET_ORDER
+then
+  pass "the per-repository reset precedes every branch that can leave the iteration"
+else
+  fail "an early exit runs before the per-repository reset, so loop state can cross repositories"
+fi
 
 GH_TOKEN='' run_audit \
   && fail "missing audit credential reported green" \
