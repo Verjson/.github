@@ -111,6 +111,127 @@ else
   fail "the gate exited $status in the shallow checkout; output: $output"
 fi
 
+# (c) A second fragment claiming an identity another fragment already holds.
+# `check-pr` exits 0 on this — it only covers the dependency-manifest/fragment
+# pairing — so on a hub pull request it was previously invisible, and two
+# fragments for one issue signal overlapping ownership that `NEXT/README.md`
+# asks to be consolidated rather than renumbered.
+duplicate="$tmp/duplicate-identity"
+new_fixture "$duplicate"
+write_fragment "$duplicate" 2026-09-18-issue-1000-second.md 1000 "Second entry" patch
+commit_branch "$duplicate"
+
+status=0
+output="$(cd "$duplicate" && bash "$gate" . 2>&1)" || status=$?
+if [ "$status" -ne 0 ] && printf '%s\n' "$output" | grep 'duplicate identity issue:1000' >/dev/null; then
+  pass "a second fragment claiming a held identity reddens the hub gate"
+else
+  fail "the gate exited $status for a duplicate identity; output: $output"
+fi
+
+# `check-pr` is the gate that already ran on hub pull requests. Pin that it is
+# silent here, so the reason this wrapper exists stays visible in the suite
+# rather than becoming folklore: if `check-pr` ever grew this coverage, this
+# assertion is where that is noticed.
+status=0
+(cd "$duplicate" && python3 "$repo_root/scripts/changelog.py" check-pr \
+  --repo-root . --base origin/main --head HEAD) >/dev/null 2>&1 || status=$?
+if [ "$status" -eq 0 ]; then
+  pass "check-pr still exits 0 on a duplicate identity, so it cannot replace this gate"
+else
+  fail "check-pr now exits $status on a duplicate identity; revisit why this gate is separate"
+fi
+
+# (d) A complete fragment must pass. Without this, every assertion above is
+# satisfied by a gate that reddens unconditionally, which would be worse than
+# the gap it closes: a required check that reddens for a reason the diff cannot
+# cause teaches reviewers to re-run rather than read (ADR 0185).
+clean="$tmp/clean"
+new_fixture "$clean"
+write_fragment "$clean" 2026-09-18-issue-1003-clean.md 1003 "Clean entry" patch
+commit_branch "$clean"
+
+status=0
+output="$(cd "$clean" && bash "$gate" . 2>&1)" || status=$?
+if [ "$status" -eq 0 ]; then
+  pass "a complete branch-added fragment passes the hub gate"
+else
+  fail "the gate exited $status on a clean branch; output: $output"
+fi
+
+# (e) A branch that adds no fragment at all is not this gate's business — the
+# dependency-manifest/fragment pairing is `check-pr`'s gate, and a wrapper that
+# also demanded a fragment would be a second, undeclared policy.
+no_fragment="$tmp/no-fragment"
+new_fixture "$no_fragment"
+printf 'unrelated\n' >"$no_fragment/unrelated.txt"
+commit_branch "$no_fragment"
+
+status=0
+output="$(cd "$no_fragment" && bash "$gate" . 2>&1)" || status=$?
+if [ "$status" -eq 0 ]; then
+  pass "a branch that adds no fragment is left to check-pr"
+else
+  fail "the gate exited $status on a branch with no fragment; output: $output"
+fi
+
+# (f) Failure modes must be loud. The whole defect class this closes is a gate
+# that reports success without having looked, so an unresolvable base must never
+# be indistinguishable from a clean pull request.
+unreachable="$tmp/unreachable-base"
+new_fixture "$unreachable"
+write_fragment "$unreachable" 2026-09-18-issue-1004-no-impact.md 1004 "Orphan base"
+commit_branch "$unreachable"
+git -C "$unreachable" remote remove origin
+git -C "$unreachable" update-ref -d refs/remotes/origin/main
+
+status=0
+output="$(cd "$unreachable" && bash "$gate" . 2>&1)" || status=$?
+if [ "$status" -ne 0 ] && printf '%s\n' "$output" | grep 'cannot resolve the base revision' >/dev/null; then
+  pass "an unresolvable base fails loudly instead of validating nothing"
+else
+  fail "the gate exited $status with no base; output: $output"
+fi
+
+# (g) Two histories with no common ancestor make `base...HEAD` an empty diff, so
+# the contract would report success having compared nothing. That is the exact
+# shape of the original gap and must be refused by name.
+orphan="$tmp/orphan-history"
+new_fixture "$orphan"
+write_fragment "$orphan" 2026-09-18-issue-1005-no-impact.md 1005 "No ancestor"
+commit_branch "$orphan"
+# HEAD stays on the branch under test; only the BASE is moved to a history that
+# shares no root with it. Pointing both at the orphan would make merge-base
+# succeed trivially and prove nothing.
+git -C "$orphan" checkout -q --orphan unrelated
+git -C "$orphan" commit -q --allow-empty -m unrelated
+git -C "$orphan" update-ref refs/remotes/origin/main refs/heads/unrelated
+git -C "$orphan" switch -q feature
+
+status=0
+output="$(cd "$orphan" && bash "$gate" . 2>&1)" || status=$?
+if [ "$status" -ne 0 ] && printf '%s\n' "$output" | grep 'share no common ancestor' >/dev/null; then
+  pass "a base with no common ancestor is refused rather than silently diffing nothing"
+else
+  fail "the gate exited $status with an unrelated base; output: $output"
+fi
+
+# (h) The gate itself is not a `*.test.sh`, so the actions-ci orphan detector in
+# `actions-ci-groups.test.sh` does not cover it: deregistering it would leave
+# every assertion above passing locally while nothing ran in Actions. That is
+# precisely how the nine tests in #1320 rotted, so the registration is asserted
+# here, where the gate's own contract lives.
+manifest="$repo_root/scripts/actions-ci-groups.tsv"
+registered="$(awk -F '\t' '
+  $1 == "platform" && $2 == "bash scripts/ci-gate/hub-changelog-validate.sh" { count++ }
+  END { print count + 0 }
+' "$manifest")"
+if [ "$registered" -eq 1 ]; then
+  pass "the hub gate is registered exactly once in the platform actions-ci group"
+else
+  fail "the hub gate is registered $registered time(s) in the platform group, so it does not run in Actions"
+fi
+
 if [ "$fails" -ne 0 ]; then
   printf '%d test(s) failed.\n' "$fails" >&2
   exit 1
