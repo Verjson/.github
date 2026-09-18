@@ -183,9 +183,16 @@ DECLARATION_KEY = "contract_version"
 # error ADR 0185 calls muting. The leading `/` stays inside the optional group,
 # so `Verjson/.github-mirror@<sha>` still matches nothing: the character after
 # the hub name is either `/` or `@`, never arbitrary text.
+# The ref admits a whole `${{ ... }}` expression as one unit. Such a ref is still
+# UNPINNED_REFERENCE -- the verdict was never in question -- but `[^\s"']+` alone
+# stops at the expression's first space and quotes the offending ref back as
+# `${{`, which is not a thing anyone wrote. The expression branch is lazy to its
+# own `}}` and `.` never crosses a line, so it cannot run past the value into the
+# rest of the line; the alternation is trailing and unanchored, so it settles
+# without backtracking.
 USES_RE = re.compile(
     r"(?:uses|\"uses\"|'uses')\s*:\s*[\"']?Verjson/\.github"
-    r"(?:/(?P<path>[^@\s\"']+))?@(?P<ref>[^\s\"']+)",
+    r"(?:/(?P<path>[^@\s\"']+))?@(?P<ref>(?:\$\{\{.*?\}\}|[^\s\"'])+)",
     re.IGNORECASE)
 # The trailing boundary keeps a hex run longer than 40 characters from being
 # truncated into a contract SHA: without it, `[0-9a-f]{40}` matches the first 40

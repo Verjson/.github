@@ -707,6 +707,48 @@ class UsesShapeCoverage(unittest.TestCase):
         self.assertEqual([f.kind for f in findings], ["PIN_MISMATCH"])
         self.assertIn("root-action.yml", findings[0].detail)
 
+    def test_an_unpinned_expression_ref_is_quoted_whole(self):
+        # The verdict was already right; the detail string was not. `[^\s"']+`
+        # stops at the first space, so the reader was told the offending ref is
+        # `${{`, which is not a thing anyone wrote (Verjson/.github#1472).
+        root = self.repo()
+        (root / ".github" / "workflows" / "expr.yml").write_text(
+            "jobs:\n  ci:\n    uses: Verjson/.github/.github/workflows/x.yml@"
+            "${{ env.CONTRACT_REF }}\n")
+        track(root)
+        findings = self.verify(root)
+        self.assertEqual([f.kind for f in findings], ["UNPINNED_REFERENCE"])
+        self.assertIn("'${{ env.CONTRACT_REF }}'", findings[0].detail)
+
+    def test_a_lookalike_repository_is_not_a_root_action_reference(self):
+        # The boundary the optional path segment must not cross. An owner/repo
+        # that merely starts with the hub name is a different repository, and a
+        # pattern reading its pin as a hub pin invents a PIN_MISMATCH nobody can
+        # clear. Making the path optional widens what the scan *reads*; it must
+        # not widen what the scan *claims* (Verjson/.github#1472, #1468).
+        root = self.repo()
+        (root / ".github" / "workflows" / "mirror.yml").write_text(
+            "jobs:\n  ci:\n    steps:\n      - uses: Verjson/.github-mirror@"
+            + "b" * 40 + "\n")
+        track(root)
+        # A gap, because the line does name the hub string and carries no pin
+        # this scan can read -- but never a reference whose ref is compared.
+        self.assertEqual([f.kind for f in self.verify(root)], ["UNRESOLVED_REFERENCE"])
+
+    def test_an_expression_ref_does_not_swallow_a_later_sha_on_the_line(self):
+        # The expression branch is lazy and line-bounded. A greedy or
+        # cross-value one would absorb the rest of a comment line, hiding the
+        # generated header claim that follows it behind the `uses:` span.
+        root = self.repo()
+        (root / ".github" / "workflows" / "commented-expr.yml").write_text(
+            "#    uses: Verjson/.github/.github/workflows/x.yml@${{ env.REF }} "
+            "pinned at Verjson/.github " + "b" * 40 + "\n")
+        track(root)
+        details = sorted(f.detail for f in self.verify(root))
+        self.assertEqual([f.kind for f in self.verify(root)],
+                         ["UNPINNED_REFERENCE", "PIN_MISMATCH"])
+        self.assertTrue(any("header names " + "b" * 40 in d for d in details), details)
+
     def test_whitespace_before_the_uses_colon_is_a_contract_reference(self):
         # `uses : x` is legal YAML; the old pattern required `uses:` exactly.
         root = self.repo()
