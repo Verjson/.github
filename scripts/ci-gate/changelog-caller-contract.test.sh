@@ -1954,7 +1954,11 @@ run_adopter "$legacy_release" \
 # An alternation inside a command ending `> .github/workflows/release.yml` would
 # hand these ~21 repositories a line that deletes the very file it is meant to
 # regenerate, so the absence of the redirect is asserted, not just its wording.
-legacy_release_finding="$(grep -F '.github/workflows/release.yml' "$tmproot/run.out" | head -1)"
+# Anchored on the arm's own wording rather than sliced out of a pipe with
+# `head`: a hand-copied release.yml declares no generator-mode header, so this
+# matches exactly one line, and a pipe-fed early-exiting consumer would kill the
+# producer on SIGPIPE under pipefail (#1430/#1445).
+legacy_release_finding="$(grep -F '.github/workflows/release.yml declares' "$tmproot/run.out")"
 { grep -qF 'out of release-node, release-artifact, release-snapshot' <<<"$legacy_release_finding" \
   && grep -qF 'release-artifact publishes GitHub Release assets' "$tmproot/run.out" \
   && grep -qF 'release-snapshot publishes nothing from the release workflow' "$tmproot/run.out" \
@@ -2951,7 +2955,9 @@ paste_exec="$tmproot/adopter-remedy-paste-exec"
 build_adopter "$paste_exec"
 stale_pin "$paste_exec" .github/workflows/release.yml
 run_adopter "$paste_exec"
-release_remedy="$(sed -nE 's|^.*\.github/workflows/release\.yml is still at .*starting with: (scripts/gen-changelog-caller\.sh [^>]*> \.github/workflows/release\.yml).*$|\1|p' "$tmproot/run.out" | head -1)"
+release_remedy="$(sed -nE 's|^.*\.github/workflows/release\.yml is still at .*starting with: (scripts/gen-changelog-caller\.sh [^>]*> \.github/workflows/release\.yml).*$|\1|p' "$tmproot/run.out")"
+# A here-string, not a pipe, for the same SIGPIPE reason as above.
+release_remedy="$(head -n1 <<<"$release_remedy")"
 if [ -z "$release_remedy" ]; then
   pass "the release caller remedy states no pasteable command, so it cannot truncate the member"
 else
