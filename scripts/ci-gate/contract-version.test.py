@@ -694,6 +694,47 @@ class UsesShapeCoverage(unittest.TestCase):
         self.assertEqual([f.kind for f in findings], ["UNRESOLVED_REFERENCE"])
         self.assertIn("alias.yml", findings[0].detail)
 
+    def test_a_root_action_pin_is_a_reference_not_a_gap(self):
+        # `uses: Verjson/.github@<sha>` names the repository's root action. The
+        # pin is present, immutable and readable; a pattern that requires a path
+        # segment reports it as a gap instead -- a false gap on a correct pin,
+        # which is the muting hazard ADR 0185 names (Verjson/.github#1472).
+        root = self.repo()
+        (root / ".github" / "workflows" / "root-action.yml").write_text(
+            "jobs:\n  ci:\n    steps:\n      - uses: Verjson/.github@" + "b" * 40 + "\n")
+        track(root)
+        findings = self.verify(root)
+        self.assertEqual([f.kind for f in findings], ["PIN_MISMATCH"])
+        self.assertIn("root-action.yml", findings[0].detail)
+
+    def test_an_unpinned_expression_ref_is_quoted_whole(self):
+        # The verdict was already right; the detail string was not. `[^\s"']+`
+        # stops at the first space, so the reader was told the offending ref is
+        # `${{`, which is not a thing anyone wrote (Verjson/.github#1472).
+        root = self.repo()
+        (root / ".github" / "workflows" / "expr.yml").write_text(
+            "jobs:\n  ci:\n    uses: Verjson/.github/.github/workflows/x.yml@"
+            "${{ env.CONTRACT_REF }}\n")
+        track(root)
+        findings = self.verify(root)
+        self.assertEqual([f.kind for f in findings], ["UNPINNED_REFERENCE"])
+        self.assertIn("'${{ env.CONTRACT_REF }}'", findings[0].detail)
+
+    def test_a_lookalike_repository_is_not_a_root_action_reference(self):
+        # The boundary the optional path segment must not cross. An owner/repo
+        # that merely starts with the hub name is a different repository, and a
+        # pattern reading its pin as a hub pin invents a PIN_MISMATCH nobody can
+        # clear. Making the path optional widens what the scan *reads*; it must
+        # not widen what the scan *claims* (Verjson/.github#1472, #1468).
+        root = self.repo()
+        (root / ".github" / "workflows" / "mirror.yml").write_text(
+            "jobs:\n  ci:\n    steps:\n      - uses: Verjson/.github-mirror@"
+            + "b" * 40 + "\n")
+        track(root)
+        # A gap, because the line does name the hub string and carries no pin
+        # this scan can read -- but never a reference whose ref is compared.
+        self.assertEqual([f.kind for f in self.verify(root)], ["UNRESOLVED_REFERENCE"])
+
     def test_whitespace_before_the_uses_colon_is_a_contract_reference(self):
         # `uses : x` is legal YAML; the old pattern required `uses:` exactly.
         root = self.repo()
@@ -702,6 +743,163 @@ class UsesShapeCoverage(unittest.TestCase):
             + "b" * 40 + "\n")
         track(root)
         self.assertEqual([f.kind for f in self.verify(root)], ["PIN_MISMATCH"])
+
+    def test_a_key_merely_ending_in_uses_is_not_a_reference(self):
+        # The cost of making the path segment optional: `uses` is a substring of
+        # `statuses`, so an unanchored pattern reads a key that is not `uses:` at
+        # all. Scoping the case flag off the key does not stop this one --
+        # `statuses` is lowercase -- so the delimiter anchor is what rejects it:
+        # the character before the key must be the line start, a quote, a
+        # backtick, a `#`, or an escaped newline, and `t` is none of those. Both
+        # shapes are asserted, because the path form carried this hazard long
+        # before the pathless form existed (Verjson/.github#1472).
+        root = self.repo()
+        (root / ".github" / "workflows" / "statuses.yml").write_text(
+            "jobs:\n  ci:\n    statuses: Verjson/.github@" + "b" * 40 + "\n"
+            "    statuses: Verjson/.github/.github/workflows/node-ci.yml@"
+            + "c" * 40 + "\n")
+        track(root)
+        self.assertEqual([f.kind for f in self.verify(root)], [])
+
+    def test_a_capitalised_prose_list_item_is_not_a_reference(self):
+        # The invariant `USES_KEY_RE` is documented to protect: Actions requires
+        # a lowercase key, so `- Uses:` in English prose is never a reference.
+        # The gap half honours that by being case-sensitive; before this fix the
+        # pin half did not, so a Markdown list item in a file naming the hub
+        # produced a PIN_MISMATCH -- strictly worse than the false *gap* the
+        # documented rationale exists to prevent (Verjson/.github#1472).
+        root = self.repo()
+        (root / "README.md").write_text(
+            "- Uses: Verjson/.github@" + "b" * 40 + " for its CI.\n"
+            "- Uses: Verjson/.github/.github/workflows/node-ci.yml@"
+            + "c" * 40 + " for its CI.\n")
+        track(root)
+        self.assertEqual([f.kind for f in self.verify(root)], [])
+
+    def test_lowercase_prose_reads_alike_in_both_uses_shapes(self):
+        # The residual this fix closes, and the symmetry it must preserve while
+        # closing it. A lowercase `uses:` mid-sentence was read as a key in the
+        # path form long before the pathless form existed; delimiter anchoring
+        # rejects it in *both*, because the character before a real key is the
+        # line start, a quote, a backtick, a `#`, or an escaped newline, and
+        # English puts a space there. The two shapes never diverge -- that is
+        # what #1472's criterion 5 asks for -- and they now agree on the
+        # stricter verdict rather than on the looser one (Verjson/.github#1472).
+        root = self.repo()
+        (root / "PROSE.md").write_text(
+            "The repo uses: Verjson/.github@" + "b" * 40 + " today.\n"
+            "The repo uses: Verjson/.github/.github/workflows/x.yml@"
+            + "c" * 40 + " today.\n")
+        track(root)
+        self.assertEqual([f.kind for f in self.verify(root)], [])
+
+    def test_a_pin_inside_a_source_string_fixture_is_still_read(self):
+        # The `\\n` alternative in the delimiter class. Deleting it alone drops
+        # 22 of the 632 references the fleet carries -- 13 `.py`, 3 `.sh`, 3
+        # `.js`, 2 `.ts`, 1 `.mjs` -- pins written inside a source-string
+        # literal, where the key follows a two-character `\\n` escape rather
+        # than a real line break. Line anchoring drops these too, which with the
+        # quoted shape below is the actual reason `^\\s*(?:-\\s+)?` was
+        # rejected (Verjson/.github#1472).
+        root = self.repo()
+        (root / "fixture.py").write_text(
+            'EXPECTED = "jobs:\\n  ci:\\n    uses: '
+            'Verjson/.github/.github/workflows/node-ci.yml@' + "b" * 40 + '"\n')
+        track(root)
+        self.assertEqual([f.kind for f in self.verify(root)], ["PIN_MISMATCH"])
+
+    def test_a_shell_grep_assertion_quoting_a_pin_is_still_read(self):
+        # The quote alternative, which is the one the anchor most depends on:
+        # deleting it alone drops 122 of the fleet's 632 references, 105 of them
+        # `.sh` assertions that quote the pin they expect. The key here follows
+        # the opening `"` of the grep pattern,
+        # never the line start, so an anchor that only accepts the line start
+        # reports a repository with skewed assertions as carrying no reference
+        # at all (Verjson/.github#1472).
+        root = self.repo()
+        (root / "check.sh").write_text(
+            'grep -qF "uses: Verjson/.github/.github/workflows/node-ci.yml@'
+            + "b" * 40 + '" "$1"\n')
+        track(root)
+        self.assertEqual([f.kind for f in self.verify(root)], ["PIN_MISMATCH"])
+
+    def test_a_pin_inside_a_backtick_literal_is_still_read(self):
+        # The backtick alternative, which the other three do not cover and which
+        # nothing else in this suite would have killed. Deleting it alone drops
+        # 24 of the fleet's 632 references: 16 `.md` lines documenting a pin as
+        # inline code, and 8 `.ts`/`.py` template literals that build a caller
+        # fixture. A consumer test asserting a stale pin is a real skew the sweep
+        # exists to report, and the backtick opens a string in exactly the way
+        # the quote characters do.
+        #
+        # The verdict is UNPINNED_REFERENCE rather than PIN_MISMATCH, and that is
+        # asserted rather than worked around: the ref class excludes whitespace
+        # and the two quotes but *not* a backtick, so the closing backtick is
+        # absorbed into the ref and a backtick-delimited pin never compares equal
+        # to a release commit. That is the ref class's behaviour, not the
+        # anchor's -- it is identical under the pattern this PR replaces -- so it
+        # is pinned here and left to Verjson/.github#1483 rather than changed
+        # inside a key-side change (Verjson/.github#1472).
+        root = self.repo()
+        (root / "surface.test.ts").write_text(
+            "const pinnedUses = `    uses: "
+            "Verjson/.github/.github/workflows/node-ci.yml@" + "b" * 40 + "`;\n")
+        track(root)
+        findings = self.verify(root)
+        self.assertEqual([f.kind for f in findings], ["UNPINNED_REFERENCE"])
+        self.assertIn("b" * 40 + "`", findings[0].detail)
+
+    def test_an_expression_ref_stops_at_its_own_closing_braces(self):
+        # Discriminates lazy from greedy, which the first version of this test
+        # did not: its fixture carried one `}}`, so both spans were identical
+        # and a `.*?` -> `.*` mutant survived the whole suite. Two expressions
+        # with a header SHA between them is the shape that tells them apart --
+        # lazy stops at the first `}}` and leaves the SHA outside the `uses:`
+        # span, greedy runs to the last `}}` and swallows the header claim.
+        root = self.repo()
+        (root / ".github" / "workflows" / "two-exprs.yml").write_text(
+            "#    uses: Verjson/.github/.github/workflows/x.yml@${{ env.A }} "
+            "pinned at Verjson/.github " + "b" * 40 + " ${{ env.B }}\n")
+        track(root)
+        findings = self.verify(root)
+        self.assertEqual([f.kind for f in findings],
+                         ["UNPINNED_REFERENCE", "PIN_MISMATCH"])
+        self.assertIn("'${{ env.A }}'", findings[0].detail)
+        self.assertIn("header names " + "b" * 40, findings[1].detail)
+
+    def test_an_overlong_expression_is_not_absorbed_whole(self):
+        # The bound that keeps the scan linear, asserted as behaviour because a
+        # timing assertion would be flaky. An unbounded `.*?` re-scans the line
+        # tail from every `$`, so a line dense with unterminated `${{` costs
+        # O(n^2): measured 53ms at 1600 openers, 833ms at 6400, 13.1s at 25600,
+        # and over 120s at 102400, against a 1 MiB `MAX_SCAN_BYTES` and a scan
+        # that reads every tracked file. The bounded class is linear on the same
+        # inputs (3.1ms / 12.7ms / 39ms / 188ms). The price is this fixture: an
+        # expression longer than the bound is no longer read as one unit and
+        # falls back to the plain class, quoting `${{` again. No fleet line is
+        # anywhere near 200 characters of expression (Verjson/.github#1472).
+        root = self.repo()
+        (root / ".github" / "workflows" / "overlong.yml").write_text(
+            "jobs:\n  ci:\n    uses: Verjson/.github/.github/workflows/x.yml@"
+            "${{ env." + "A" * 250 + " }}\n")
+        track(root)
+        findings = self.verify(root)
+        self.assertEqual([f.kind for f in findings], ["UNPINNED_REFERENCE"])
+        self.assertIn("'${{'", findings[0].detail)
+
+    def test_a_sha_inside_an_expression_is_not_a_second_claim(self):
+        # An intended consequence of reading the expression whole, stated rather
+        # than left to be discovered. A 40-hex run *inside* `${{ ... }}` now
+        # falls within the `uses:` span, so the header pass skips it and the
+        # line is one reference rather than a templated ref plus a phantom pin
+        # claim. The base pattern stopped at `${{` and counted both.
+        root = self.repo()
+        (root / ".github" / "workflows" / "hex-in-expr.yml").write_text(
+            "#    uses: Verjson/.github/.github/workflows/x.yml@"
+            "${{ env.X_" + "b" * 40 + " }}\n")
+        track(root)
+        findings = self.verify(root)
+        self.assertEqual([f.kind for f in findings], ["UNPINNED_REFERENCE"])
 
     def test_a_crlf_pin_is_a_contract_reference(self):
         # Five files in the measured fleet carry CRLF and a `uses:` key. The
