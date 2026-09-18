@@ -385,8 +385,13 @@ fi
 #
 # Adding a file under `scripts/ci-gate/` therefore has exactly two honest
 # outcomes: register it somewhere Actions runs it, or declare it here as a
-# library with a reason. Neither happens by accident, and nothing new is exempt
-# by virtue of what it is called.
+# library with a reason. Nothing is exempt by virtue of what it is called.
+#
+# What the declaration list can and cannot do: a declaration that goes stale
+# reddens below, so the list cannot decay silently. It cannot tell a genuine
+# library from a real gate parked here to silence it -- that is not a computable
+# property. Declaring a gate here passes. Reviewing a diff to this list is the
+# control for that, which is why the list is here and not in a data file.
 #
 # The hosted-compatibility route is not new policy: that job is already the
 # authoritative second execution path, and this file already asserts that its
@@ -395,8 +400,11 @@ fi
 # Deliberate residual, stated rather than papered over: this proves a gate is
 # *named* on an Actions execution path, not that the path executes. A script
 # named only by a workflow whose triggers never fire, or guarded by an `if:` that
-# is never true, still counts as reachable here. Reachability of workflows
-# themselves is a separate invariant and a separate check.
+# is never true, still counts as reachable here -- as does one named only by a
+# `sparse-checkout:` entry or an `env:` value while its invocation is deleted,
+# since the name is matched anywhere in the workflow text and those shapes are
+# real in this tree. Reachability of workflows themselves is a separate
+# invariant and a separate check.
 if python3 - "$root" "$manifest" "$workflow" <<'PY'
 import pathlib
 import shlex
@@ -482,8 +490,19 @@ def referenced(text):
     return seen
 
 
+def workflow_source(path):
+    """A tracked path missing from the worktree is a stated failure, not a traceback."""
+    try:
+        return (root / path).read_text(encoding="utf-8")
+    except OSError as error:
+        raise SystemExit(
+            f"{path} is tracked but could not be read, so gate-script reachability "
+            f"could not be established: {error}"
+        ) from error
+
+
 workflow_text = "\n".join(
-    (root / path).read_text(encoding="utf-8")
+    workflow_source(path)
     for path in tracked(".github/workflows", ".github/actions")
     if path.endswith((".yml", ".yaml"))
 )
