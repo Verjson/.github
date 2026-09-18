@@ -472,8 +472,36 @@ jobs:
           # name can't confuse the ...-path. Behind → update the branch; the push
           # fires `synchronize`, and that fresh run reviews/merges against the
           # current base, so this run steps aside.
-          behind="$(gh api "repos/$REPO/compare/$base_ref...$head_sha" --jq '.behind_by' 2>/dev/null || echo 0)"
-          [[ "$behind" =~ ^[0-9]+$ ]] || behind=0
+          #
+          # An indeterminate answer is NOT `behind=0`. Previously the request
+          # failing, returning nothing, or returning an unparseable body all
+          # collapsed into 0 via `|| echo 0` / `|| behind=0`, so an outage, a
+          # rate limit, or an auth blip read as "not behind" and the gate
+          # merged a review taken against a possibly stale base — a fail-open
+          # whose only signal was silence (Verjson/.github#1476, ADR 0194).
+          #
+          # Only a numeric body counts as an answer; everything else returns
+          # non-zero and is retried on the same bounded pattern as pr_json, so
+          # a single transient blip still self-heals rather than wedging the
+          # gate fleet-wide. If it is still unanswerable after the retries we
+          # hold (fail closed) and say so, rather than merging on an
+          # assumption we could not check.
+          compare_behind() {
+            local raw
+            raw="$(gh api "repos/$REPO/compare/$base_ref...$head_sha" --jq '.behind_by' 2>/dev/null)" || return 1
+            [[ "$raw" =~ ^[0-9]+$ ]] || return 1
+            printf '%s' "$raw"
+          }
+          behind=""
+          for _ in 1 2 3; do
+            behind="$(compare_behind)" && break
+            behind=""
+          done
+          if [ -z "$behind" ]; then
+            out proceed false
+            echo "::error::Could not determine whether the head is behind $base_ref: the compare API was unanswerable after 3 attempts. Holding rather than merging on a possibly stale base."
+            exit 1
+          fi
           if [ "$behind" -gt 0 ]; then
             if gh api --method PUT "repos/$REPO/pulls/$PR_NUMBER/update-branch" >/dev/null 2>&1; then
               echo "Branch was $behind commit(s) behind $base_ref; updated it — a fresh run will merge against the current base."
