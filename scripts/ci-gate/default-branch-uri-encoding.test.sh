@@ -94,9 +94,18 @@
 #           · a nested BRACE group, or a here-document, in the brace body is not flattened
 #             and reads as disarmed. A REDIRECTION operator does not: `>&2`, `2>&1` and
 #             `>/dev/null` are flattened and the body still reads FATAL, and it has to --
-#             96 accepted fatal `|| { … }` bodies across 17 files in this repository's own
-#             144-file scan set carry a `>&2`, and the pinned live fixture below is that
-#             shape. Three revisions of this line claimed the stricter rule; the code never
+#             writing the diagnostic to stderr inside the failure branch is how this
+#             repository spells a fatal `|| { … }`, in workflows and in scripts alike, and
+#             the pinned live fixture below is that shape, so the stricter rule would report
+#             those guards disarmed. NO COUNT of them is stated, here or in ADR 0194. The
+#             figure that stood here does not survive its own predicate: "accepted fatal
+#             `|| { … }` bodies carrying a `>&2`" does not pin whether the unit is the
+#             accepted body, the record, or the occurrence, nor whether the `>&2` must sit
+#             inside the accepted body or merely somewhere on the record, and successive
+#             derivations under different readings disagreed. ADR 0194's rule -- a figure
+#             returns only with a predicate that pins its unit and its scope -- is what
+#             deleted the denominator there and is applied to this numerator too (#1464
+#             re-review round 7). Three revisions of this line claimed the stricter rule; the code never
 #             implemented it (#1464 re-review round 6, ADR 0194). A `(…)` subshell is
 #             likewise flattened, so `{ ( echo x ); exit 1; }` reads FATAL -- correctly, the
 #             `exit 1` is a top-level statement of the body.
@@ -715,16 +724,53 @@ arm_statement_is_fatal() { # $1 = structural text of one top-level `then`-arm st
 # small, explicitly enumerated set of shapes, and DECLINES everything else. Unmodelled
 # structure produces a REJECT -- a loud false alarm, fixed later by proving one more shape --
 # and never an ACCEPT. What is listed below is therefore not "the constructs that disarm a
-# guard"; it is the frontier of what this model claims to represent, and anything outside it,
-# including a construct no one has thought of yet, lands on the rejecting side by default.
-# The one record shape whose bare `)` is NOT a group: a `case` arm's pattern label, and the
-# `;;`/`;&`/`;;&` that ends an arm. It is proven only while a `case` is actually open, and
-# only when the WHOLE record is the label -- `) || echo swallowed` and `( exit 1 )` do not
-# match it, and a `(` with no `)` cannot. `scripts/privileged-merge-conformance.sh:327` is
-# the live guard that needs it: the use it protects sits in an `else` arm containing a
-# `case` over the compare status.
-CASE_ARM_TERMINATOR=';;&?|;&'
+# guard"; it is the frontier of what this model claims to represent.
+#
+# Read that frontier as LEXICAL, and no wider. What `arm_record_is_modelled` refuses is a
+# record whose TEXT carries structure the depth model cannot pair; a record whose text is an
+# ordinary simple command is walked past, because walking past ordinary commands is the whole
+# job. So a command that BUILDS control flow at RUN TIME is outside this model and is not
+# refused: `eval "fi"` is read as a call to `eval` and walked past, and so is `source x.sh`.
+# That residual is stated rather than defended against -- `eval "fi"` is not a realistic
+# vector, since bash reports a syntax error and `eval` returns 2, so it closes nothing -- and
+# it is stated because two earlier revisions of this sentence claimed a frontier wider than
+# the code's. The accepted-but-unrepresented set is exactly "records whose run-time effect is
+# not their text" (#1464 re-review round 7). Within the lexical frontier, a construct no one
+# has thought of yet does land on the rejecting side by default.
+# The one record shape whose bare `)` is NOT a group: a `case` arm's pattern label, with the
+# `;;` that ends an arm. It is proven only while a `case` is actually open, and only when the
+# WHOLE record is the label -- `) || echo swallowed` does not match it, and a `(` with no `)`
+# cannot. `( exit 1 )` DOES match it; an earlier revision of this sentence said otherwise and
+# the fixture added alongside it says the opposite outright (#1464 re-review round 7). It is
+# admitted on exactly the terms the shape states -- this record is a case arm LABEL -- and a
+# label is INERT, so admitting a subshell-shaped one grants it no statement and no depth
+# event. `;&` and `;;&` are deliberately NOT in the terminator: a record carrying either has
+# a bare `&` and declines at the `&` rule below before this shape is ever consulted, so
+# listing them made the model claim a spelling it never accepts (#1464 re-review round 7).
+# `scripts/privileged-merge-conformance.sh:327` is the live guard that needs the label: the
+# use it protects sits in an `else` arm containing a `case` over the compare status.
+CASE_ARM_TERMINATOR=';;'
 CASE_ARM_LABEL="^[[:space:]]*[(]?[^()]*[)][[:space:]]*(${CASE_ARM_TERMINATOR})?[[:space:]]*\$"
+
+# A record the model reads as a `case` arm pattern label. It is a LABEL, not a command: it
+# opens nothing, closes nothing, and runs nothing, so the exception grants exactly that one
+# property and no other. `negated_branch_dominates` therefore treats such a record as INERT
+# instead of feeding it to `branch_events`.
+#
+# That inertness is the whole of round 7's fix, and it is structural rather than another
+# enumeration. `branch_events` takes each `;`-part's FIRST WORD, so a label whose first word
+# happened to be a depth keyword -- `do )`, `if )`, `case )`, or an alternation like
+# `do|while )` -- emitted a spurious opening event. The guarded construct's own `fi` then
+# never fired at relative depth 0, the walk ran out of records with `in_then=0`, and a guard
+# that protects nothing read as live (#1464 re-review round 7). Round 8's fail-open would be
+# a list of words a label may not begin with; the set is not closed, and the label's first
+# word is not a command in the first place. Note the invariant that keeps this exception from
+# needing a statement rule too: `case` raises `d` and `case_depth` together and `esac` lowers
+# both, so `case_depth > 0` implies `d > 0`, and a label can never be read at relative
+# depth 0.
+arm_record_is_case_label() { # $1 = structural text, $2 = open `case` depth
+  [ "${2:-0}" -gt 0 ] && [[ "$1" =~ $CASE_ARM_LABEL ]]
+}
 
 arm_record_is_modelled() { # $1 = raw record, $2 = structural text, $3 = open `case` depth
   # Data regions the per-record structural pass cannot carry across records: a here-document
@@ -739,7 +785,7 @@ arm_record_is_modelled() { # $1 = raw record, $2 = structural text, $3 = open `c
   # A subshell is the round-6 vector twice over -- `( exit 1 ) || echo …` exits the subshell,
   # and `cleanup() { exit 1; }` only DEFINES an exit -- and both read as fatal at depth 0.
   if [[ "$st" == *'('* || "$st" == *')'* ]]; then
-    [ "${3:-0}" -gt 0 ] && [[ "$st" =~ $CASE_ARM_LABEL ]] || return 1
+    arm_record_is_case_label "$st" "${3:-0}" || return 1
   fi
   # A `&` that is not `&&`. A backgrounded `{ …; exit 1; } &` exits a subshell, not this
   # shell, and reads as fatal at depth 0. `>&`, `<&` and `&>` are descriptor-duplicating
@@ -763,6 +809,11 @@ negated_branch_dominates() { # $1 = index of the guard's record in GUARD_RECORDS
     # The inverted default: a record this walk cannot account for ENDS the walk as a REJECT.
     # Modelling these regions is shell parsing. Refusing them is not.
     arm_record_is_modelled "${GUARD_RECORDS[i]}" "$struct" "$case_depth" || return 1
+    # A record admitted as a `case` arm pattern label is INERT. It is the one shape whose
+    # bare `)` this model proves, and proving it says the record is a LABEL -- so it
+    # contributes no statement to the arm and no event to the depth count. Reading its first
+    # word as a command was the leak that made the exception grant more than it claims.
+    arm_record_is_case_label "$struct" "$case_depth" && continue
     depth_at_start=$d
     # Only a statement of the arm ITSELF is unconditionally reached: one nested inside a
     # further branch is not, which is the same reason `{ false && exit 1; }` is rejected.
@@ -1325,6 +1376,40 @@ guard_tail_case dead 'a single-line `( exit 1 )` subshell, which matches the lab
 guard_tail_case dead 'a label-shaped record with no `case` open above it' \
   'if ! '"$HEX_GUARD"'; then' \
   '  bogus)' \
+  '  exit 1' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+
+# ROUND 7. Admitting the label was not the leak; still READING it was. `branch_events` takes
+# each `;`-part's first word, so an arm label whose first word is a depth keyword -- `do )`,
+# `if )`, `case )`, or an alternation like `do|while )` -- opened a construct that never
+# closes. The guarded `fi` then fired at relative depth 1 rather than 0, the walk ran off the
+# end of the records with `in_then=0`, and this program ACCEPTed while its `then` arm only
+# counts a failure and falls through to the use. A label is a LABEL, so it now contributes no
+# event at all (`arm_record_is_case_label`). The alternative -- a list of words a label may
+# not begin with -- is the enumeration this whole mechanism exists to stop.
+guard_tail_case dead 'a `case` arm label whose first word is the `do` keyword' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  failures=$((failures + 1))' \
+  'else' \
+  '  case "$mode" in' \
+  '    do )' \
+  '      note=1' \
+  '      ;;' \
+  '  esac' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+# The control, and the reason inertness is not just "emit fewer events": the SAME label sits
+# above an `exit 1` that really is a statement of the `then` arm. While the label raised the
+# depth, that `exit 1` was read one level deep and did not count, so this live guard read as
+# disarmed too. The fail-open and this false negative are one bug with two signs.
+guard_tail_case live 'the same `do )` label above an `exit 1` at the arm top level' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  case "$mode" in' \
+  '    do )' \
+  '      note=1' \
+  '      ;;' \
+  '  esac' \
   '  exit 1' \
   'fi' \
   'gh api "repos/$repository/commits/$head_sha"'

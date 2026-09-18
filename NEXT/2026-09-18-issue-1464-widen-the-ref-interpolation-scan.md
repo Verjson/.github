@@ -108,11 +108,12 @@ fail-open classes and named none of the ones above. Fail-closed: `exit 300` is r
 though it is fatal; a nested *brace* group or a *here-document* in a brace body is not
 flattened,
 while a plain redirection (`>&2`, `>/dev/null`, `2>&1`) is flattened and still reads fatal —
-it has to, because 96 fatal `|| { … }` guard bodies across 17 files carry a `>&2` —
-`scripts/gen-adr-index.sh:106` and `.github/workflows/node-release.yml:318` are two, read and
-verified — and the stricter rule this note used to claim would report every one of them
-disarmed. That figure is published with its method, in ADR 0194, because the two it replaces
-(67, then 123) were published without one and neither could be reproduced: the universe is
+it has to, because writing the diagnostic to stderr inside the failure branch is how this
+repository spells a fatal `|| { … }`; `scripts/gen-adr-index.sh:106` and
+`.github/workflows/node-release.yml:318` are two, read and verified — and the stricter rule
+this note used to claim would report every guard so written disarmed. No count of them is
+stated. ADR 0194 records the universe and the predicate anyone re-deriving one must
+reproduce, and why no figure accompanies them: the universe is
 the scan's own 144-file set and the predicate is this gate's own `logical_lines slice` plus
 `brace_body_is_fatal` with `>&2` in the source text. No denominator is published, for the
 reason given at the end of this note. `continue`/`break` are never accepted, in or out of a
@@ -267,7 +268,59 @@ accepted by `brace_body_is_fatal` — a fact about the CONTENT of those three em
 string literals rather than about `.py`, so an edit to `scripts/gen-node-ci-protected.py`
 can move it. The denominator is **removed**, not adjudicated: three independent derivations
 produced two values, and a fourth here produces a third, so it does not belong in a durable
-record whichever is right. Every claim about it is removed with it. `97` is corrected to
-`96`: re-derived against both the committed and the working copy of this gate's functions at
-this head, under three readings of which `|| {` is meant, it returns 96 across 17 files every
-time. Only `96`, `17` and `144` are stated.
+record whichever is right. Every claim about it is removed with it.
+
+The numerator is now removed on the same rule, rather than corrected a third time. The
+predicate it was published with — "accepted fatal `|| { … }` bodies carrying a `>&2`" —
+never pinned its unit (the accepted body, the record `logical_lines` emits, or the `|| {`
+occurrence) or the scope of the `>&2` (inside the accepted body, or anywhere on the record),
+and independent derivations reading those axes differently disagreed. ADR 0194 already
+states the standard that settles it: a figure returns only with a predicate that pins its
+unit and its scope. What the fail-closed entry rests on is a property, not a count — this
+repository writes its errors to stderr inside the failure branch — and it is checkable by
+reading the two lines cited above. Only `144`, the size of the scan's own file set, is
+stated.
+
+## Round 7
+
+The arm-label exception round 6 added leaked more than it claimed, and closing that is a
+structural change rather than a seventh construct on a list. A record accepted as a `case`
+arm pattern label was still handed to `branch_events`, which reads each `;`-part's FIRST
+WORD. A label whose first word happened to be a depth keyword — `do )`, `if )`, `case )`,
+or an alternation such as `do|while )` — therefore emitted a spurious opening event, the
+guarded construct's own `fi` never fired at relative depth 0, the walk ran out of records
+with the use still reading as inside the `else` extent, and a guard that protects nothing
+read as live. All four spellings are ACCEPTed by the code this round changes, against a file
+`bash -n` accepts; renaming the same label `aa )` REJECTs, and `do)` without the space
+REJECTs, so the vector is the spaced and alternation spellings specifically.
+
+The fix is that a record admitted as an arm label is now INERT: `arm_record_is_case_label`
+is the shape, and the walk skips such a record entirely instead of reading a command out of
+it. The exception now grants exactly the one property it claims — this record is a modelled
+case arm label — and nothing else. Adding `do`/`if`/`case`/… to a set of words a label may
+not begin with would have been round 8 of the same cycle; the label's first word is not a
+command at all, which is why the structural answer is available here. Its cost is nil: the
+four pinned figures are unchanged, every live control still ACCEPTs, and
+`scripts/privileged-merge-conformance.sh:327` — whose real consumer is the `slice`-mode
+`sha_constrained` path over its `contents/…?ref=$caller_contract_sha` reads — is unaffected,
+its three arm labels passing through inert.
+
+Two statements in the same paragraph were wrong and are corrected rather than reworded.
+`( exit 1 )` DOES match the arm-label shape; the sentence claiming it does not was
+contradicted by the fixture added beside it in the same commit. The effect was fail-closed,
+but a wrong stated reason is what the rounds before this one shipped. And the terminator the
+shape listed named `;&` and `;;&`, which the model never accepts: a record carrying either
+has a bare `&` and declines at the `&` rule first, so listing them made the model claim a
+spelling it refuses. The terminator is narrowed to `;;`, which is a narrowing of the CLAIM
+and not of the behavior — every `;&`/`;;&` record was rejected before and is rejected now.
+
+One claim is narrowed rather than defended. The header said anything outside the enumerated
+shapes lands on the rejecting side by default. That frontier is LEXICAL: what the walk
+refuses is a record whose TEXT carries structure the depth model cannot pair, so a record
+that reads as an ordinary simple command is walked past — which is the job. A command that
+builds control flow at run time is therefore outside the model and is not refused. `eval
+"fi"` is read as a call to `eval` and walked past, before this change and after it. It is
+not defended against and does not need to be — bash reports a syntax error and `eval`
+returns 2, so it closes nothing — but the residual set, "records whose run-time effect is
+not their text", is now named in the header instead of being covered by a sentence wider
+than the code.
