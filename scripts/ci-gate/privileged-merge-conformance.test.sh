@@ -4,9 +4,6 @@ set -uo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 audit="$root/scripts/privileged-merge-conformance.sh"
-# Assigned here, not defaulted at the call site, so an inherited environment value cannot
-# redirect the suite at a script the per-call prefix below never chose.
-AUDIT_SCRIPT="$audit"
 generator="$root/scripts/gen-privileged-merge-caller.sh"
 workflow="$root/.github/workflows/privileged-merge-conformance.yml"
 contract_sha=848c49fd4dac307f26180acd420760a27ceff0ba
@@ -203,7 +200,7 @@ run_audit() {
     WORKFLOW_STATE="${WORKFLOW_STATE-active}" \
     CHECK_APP_ID="${CHECK_APP_ID-15368}" \
     PRIVILEGED_MERGE_AUDIT_SHA="${PRIVILEGED_MERGE_AUDIT_SHA-$audit_sha}" \
-    bash "$AUDIT_SCRIPT" >"$tmp/out" 2>&1
+    bash "$audit" >"$tmp/out" 2>&1
 }
 
 run_audit \
@@ -496,50 +493,50 @@ HISTORICAL_WORKFLOW_CONTENT="$(printf '%s\n' 'name: incompatible' | base64 | tr 
       || fail "incompatible caller pin lacks interface evidence"
   }
 
-ALPHA_CONTENT="$(bash "$generator" "$contract_sha" "$required_checks" | sed "s/@$contract_sha/@main/" | base64 | tr -d '\n')" run_audit \
-  && fail "mutable caller pin reported green" \
-  || {
-    grep -q 'Invalid privileged merge caller pin' "$tmp/out" \
-      && pass "consumer inventory fails closed on a mutable canonical workflow pin" \
-      || fail "mutable caller pin lacks actionable evidence"
-  }
-
-# The 40-hex pin guard cannot fire against today's extractor, whose capture group is
-# literally ([0-9a-f]{40}) -- the guard exists to survive that extractor changing. Widening
-# the capture is exactly that change, and it is the only way to measure the guard's control
-# flow rather than describe it. The fixture is ordered: Verjson/alpha populates every
-# loop-scoped variable with a conforming value, Verjson/beta then trips the guard, and
-# Verjson/.github follows. Each must be judged on its own evidence.
-widened_root="$tmp/widened"
-widened_audit="$widened_root/scripts/privileged-merge-conformance.sh"
-mkdir -p "$widened_root/scripts" "$widened_root/.github/workflows"
-ln -sf "$root/.github/workflows/ai-privileged-merge.yml" \
-  "$root/.github/workflows/ai-promotion-retry.yml" "$widened_root/.github/workflows/"
-sed 's/ai-privileged-merge\\\.yml@(\[0-9a-f\]{40})/ai-privileged-merge\\\.yml@([0-9A-Za-z]+)/' \
-  "$audit" >"$widened_audit"
-# A test against a mutated copy is only worth anything if the mutation is confined to the
-# one line it claims to change, so require exactly one replaced line -- one `<`, one `>`.
-widened_changed_lines="$(diff "$audit" "$widened_audit" | grep -c '^[<>]')"
-if [ "$widened_changed_lines" -eq 2 ] \
-  && grep -q 'ai-privileged-merge\\\.yml@(\[0-9A-Za-z\]+)' "$widened_audit"; then
-  pass "pin-extractor widening fixture mutates the caller pin extractor and nothing else"
-else
-  fail "pin-extractor widening fixture changed $widened_changed_lines line(s) instead of the extractor alone"
-fi
-
+# A mutable ref is the most likely wrong pin, so it must draw the diagnostic that names it
+# rather than the one for a missing or duplicated `uses:` line. Both refuse; only the
+# explanation differs, and the wrong one sends an operator hunting a line that is present.
+# The fixture is ordered: Verjson/alpha populates every loop-scoped variable with a
+# conforming value, Verjson/beta then trips the guard, and Verjson/.github follows. Each
+# must be judged on its own evidence.
 mutable_pin_caller="$(bash "$generator" "$contract_sha" "$required_checks" | sed "s/@$contract_sha/@main/" | base64 | tr -d '\n')"
-AUDIT_SCRIPT="$widened_audit" \
-  ACTIVE_REPOSITORIES=$'Verjson/alpha\nVerjson/beta\nVerjson/.github' \
+ACTIVE_REPOSITORIES=$'Verjson/alpha\nVerjson/beta\nVerjson/.github' \
   SECRET_REPOSITORIES=$'Verjson/alpha\nVerjson/.github' \
   BETA_CONTENT="$mutable_pin_caller" run_audit \
-  && fail "non-40-hex caller pin reported green under a widened extractor" \
+  && fail "mutable caller pin reported green" \
   || {
     grep -q "pin is not a 40-hex commit SHA" "$tmp/out" \
+      && ! grep -q 'expected exactly one immutable canonical workflow pin' "$tmp/out" \
       && grep -q 'Missing privileged merge App key access::repository=Verjson/beta' "$tmp/out" \
       && ! grep -q 'repository=Verjson/\.github' "$tmp/out" \
       && grep -q 'result=nonconformant repositories_scanned=3 consumers=3' "$tmp/out" \
-      && pass "a repository that trips the 40-hex pin guard is still judged on its own secret-access evidence" \
-      || fail "the 40-hex pin guard abandoned the repository's remaining evidence: $(<"$tmp/out")"
+      && pass "a mutable pin draws the non-SHA diagnostic and is still judged on its own secret-access evidence" \
+      || fail "mutable caller pin lacks the non-SHA diagnostic or abandoned its evidence: $(<"$tmp/out")"
+  }
+
+# The pin-count arm keeps its own meaning, which is what makes the split worth having: a
+# caller carrying no canonical `uses:` line, and one carrying two, are structurally
+# different from a present-but-mutable pin and must not borrow its message.
+ALPHA_CONTENT="$(bash "$generator" "$contract_sha" "$required_checks" \
+  | sed "s#uses: Verjson/\.github/\.github/workflows/ai-privileged-merge\.yml@#uses: Verjson/other/.github/workflows/ai-privileged-merge.yml@#" \
+  | base64 | tr -d '\n')" run_audit \
+  && fail "caller with no canonical pin reported green" \
+  || {
+    grep -q 'expected exactly one immutable canonical workflow pin' "$tmp/out" \
+      && ! grep -q 'pin is not a 40-hex commit SHA' "$tmp/out" \
+      && pass "a caller carrying zero canonical pins draws the pin-count diagnostic" \
+      || fail "zero canonical pins lacks the pin-count diagnostic: $(<"$tmp/out")"
+  }
+
+ALPHA_CONTENT="$(bash "$generator" "$contract_sha" "$required_checks" \
+  | sed "s#^\( *\)\(uses: Verjson/\.github/\.github/workflows/ai-privileged-merge\.yml@.*\)\$#\1\2\n\1\2#" \
+  | base64 | tr -d '\n')" run_audit \
+  && fail "caller with two canonical pins reported green" \
+  || {
+    grep -q 'expected exactly one immutable canonical workflow pin' "$tmp/out" \
+      && ! grep -q 'pin is not a 40-hex commit SHA' "$tmp/out" \
+      && pass "a caller carrying two canonical pins draws the pin-count diagnostic" \
+      || fail "two canonical pins lacks the pin-count diagnostic: $(<"$tmp/out")"
   }
 
 # The remaining early exits leak loop-scoped state without a reachable read-before-assignment

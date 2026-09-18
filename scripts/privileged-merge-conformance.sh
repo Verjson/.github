@@ -313,8 +313,13 @@ while IFS= read -r repository; do
     fi
   elif [ "$caller_available" = true ]; then
     consumers=$((consumers + 1))
+    # Capture whatever ref the line actually carries, not only a well-formed one. A
+    # narrower capture silently turns a present-but-mutable pin into zero captures, which
+    # the count arm below then explains as a missing or duplicated `uses:` line -- the
+    # wrong diagnosis for the most likely wrong pin. The verdict is refusal either way;
+    # only the explanation was wrong.
     mapfile -t caller_pins < <(
-      sed -nE 's#^[[:space:]]+uses: Verjson/\.github/\.github/workflows/ai-privileged-merge\.yml@([0-9a-f]{40})[[:space:]]*$#\1#p' \
+      sed -nE 's#^[[:space:]]+uses: Verjson/\.github/\.github/workflows/ai-privileged-merge\.yml@([^[:space:]]+)[[:space:]]*$#\1#p' \
         <<<"$caller_content"
     )
     caller_contract_sha="${caller_pins[0]-}"
