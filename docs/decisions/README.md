@@ -12,6 +12,7 @@ Reverse-chronological index of org-level decisions.
 <!-- prettier-ignore -->
 | # | Date | Decision |
 |---|------|----------|
+| [0191](0191-contract-releases-are-the-unit-of-adoption/README.md) | 2026-09-17 | A contract version is a release, declared once and read back from disk |
 | [0190](0190-pin-the-producer-app-of-every-required-status-check/README.md) | 2026-09-17 | Pin the producer App of every required status check |
 | [0189](0189-scheduled-audits-adjudicate-findings-against-a-reviewed-expectation/README.md) | 2026-09-17 | Scheduled audits adjudicate findings against a reviewed expectation |
 | [0188](0188-contract-audits-assert-fields-against-a-growing-vendor-schema/README.md) | 2026-09-17 | Contract audits assert fields, and a growing vendor schema is not drift |
