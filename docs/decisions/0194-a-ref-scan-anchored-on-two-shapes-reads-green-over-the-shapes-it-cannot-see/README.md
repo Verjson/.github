@@ -111,6 +111,23 @@ merge-gate behavior for every PR, so it is separate work, tracked as
 [#1476](https://github.com/Verjson/.github/issues/1476). Read this ADR as closing the
 encoding route into the fail-open path, not the path itself.
 
+**That residual has since been closed, by [#1476](https://github.com/Verjson/.github/issues/1476)
+and [ADR 0195](../0195-an-indeterminate-authorization-answer-is-not-a-permissive-one/README.md).**
+This note records the outcome and reverses nothing above: what this ADR decided about the
+encoding route stands, and the path itself was closed elsewhere, as it said it would have to
+be. PR [#1494](https://github.com/Verjson/.github/pull/1494) replaced the
+`2>/dev/null || echo 0` swallow with a `compare_behind` helper that returns non-zero on a
+failed request, retries, and — when the compare API is still unanswerable — emits an
+`::error::` and HOLDS rather than merging on a possibly stale base. So the `behind=0` route
+this ADR named as open is no longer reachable by an outage, a rate limit, or a lost token
+scope. ADR 0195 generalizes the rule: an indeterminate answer is never decodable as a
+permissive one, which is the same argument this ADR made about a guard that fails open being
+worse than an absent one.
+
+That criterion could not be satisfied from #1494's own branch, because this ADR does not
+exist on `main` — it is introduced by PR [#1469](https://github.com/Verjson/.github/pull/1469),
+which is where this citation is therefore written.
+
 **The guard pin is a command-level anchor, and it allow-lists failure, not swallowing.**
 This claim has now been corrected three times, which is itself the lesson. The first version
 said a cited guard "still fails"; the second narrowed that to "does not swallow its own

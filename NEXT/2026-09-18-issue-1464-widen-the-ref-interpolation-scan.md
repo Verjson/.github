@@ -491,3 +491,13 @@ pinned now, because pinning only the unnamed one is what let round 10's argument
 decision is recorded in ADR 0196, which names what the inversion does not buy: it is not a
 proof of correctness against bash's parser, and `compgen -k` totality proves only that no
 reserved word is missing from the classification, not that each is in the right bucket.
+
+ADR 0194's Consequences section also records the resolution of the residual it named. That
+ADR flagged the behind-count compare's `2>/dev/null || echo 0` as a route into `behind=0`
+that its own encoding fix did not close, and tracked it as #1476. #1476 is now closed: PR
+#1494 replaced the swallow with a helper that returns non-zero on a failed request, retries,
+and holds with an `::error::` when the compare API is still unanswerable, and ADR 0195
+generalized the rule that an indeterminate answer is not a permissive one. The note is
+written here because ADR 0194 does not exist on `main` — this branch introduces it — so
+#1494 could not have written it from its own branch. It records an outcome and reverses
+nothing: a decided ADR is superseded by a successor, never edited to reverse.
