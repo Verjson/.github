@@ -172,16 +172,24 @@ reset_env
 RULES_FIXTURE="$rules_none"
 run
 expect "a base ref governed by no required checks cannot be gated by a green rollup" 3 "declares no required status checks"
+# The other side of the #1437 discriminator: rules WERE returned, so the ref is genuinely
+# ungoverned by status checks and the remedy names the ruleset that already governs it.
+# Without this the two arms could be collapsed back into one sentence and stay green.
+expect "a populated rule list names the ruleset that already exists rather than an empty response" 3 "1 rule(s) of type: pull_request"
 
+# An EMPTY rule list and a populated list with no required_status_checks rule are
+# different conditions with opposite remedies (#1437). The empty list must not be
+# reported with the ungoverned-ref sentence, because the remedy that sentence implies --
+# add a ruleset -- is wrong for the causes that actually produce an empty list.
 reset_env
 RULES_FIXTURE='[]'
 run
-expect "an empty rules response is refused rather than treated as fully satisfied" 3 "declares no required status checks"
+expect "an empty rules response is refused without being attributed to an ungoverned ref" 3 "returned an EMPTY rule list"
 
 reset_env
 RULES_FIXTURE='"not-an-array"'
 run
-expect "a malformed rules response cannot silently yield an empty required set that passes" 3 "declares no required status checks"
+expect "a malformed rules response is named as a bad shape, not as an empty or ungoverned one" 3 "is not a JSON array"
 
 # --- Gate B -----------------------------------------------------------------
 for name in 'build-test / deferred-ci' 'deferred-ci' 'deferred-ci (push)' 'ci / deferred-ci (ubuntu-latest)' 'Deferred-CI'; do
