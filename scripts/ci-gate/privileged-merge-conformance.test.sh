@@ -4,6 +4,9 @@ set -uo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 audit="$root/scripts/privileged-merge-conformance.sh"
+# Assigned here, not defaulted at the call site, so an inherited environment value cannot
+# redirect the suite at a script the per-call prefix below never chose.
+AUDIT_SCRIPT="$audit"
 generator="$root/scripts/gen-privileged-merge-caller.sh"
 workflow="$root/.github/workflows/privileged-merge-conformance.yml"
 contract_sha=848c49fd4dac307f26180acd420760a27ceff0ba
@@ -200,7 +203,7 @@ run_audit() {
     WORKFLOW_STATE="${WORKFLOW_STATE-active}" \
     CHECK_APP_ID="${CHECK_APP_ID-15368}" \
     PRIVILEGED_MERGE_AUDIT_SHA="${PRIVILEGED_MERGE_AUDIT_SHA-$audit_sha}" \
-    bash "${AUDIT_SCRIPT:-$audit}" >"$tmp/out" 2>&1
+    bash "$AUDIT_SCRIPT" >"$tmp/out" 2>&1
 }
 
 run_audit \
@@ -514,10 +517,14 @@ ln -sf "$root/.github/workflows/ai-privileged-merge.yml" \
   "$root/.github/workflows/ai-promotion-retry.yml" "$widened_root/.github/workflows/"
 sed 's/ai-privileged-merge\\\.yml@(\[0-9a-f\]{40})/ai-privileged-merge\\\.yml@([0-9A-Za-z]+)/' \
   "$audit" >"$widened_audit"
-if ! cmp -s "$audit" "$widened_audit" && grep -q 'ai-privileged-merge\\\.yml@(\[0-9A-Za-z\]+)' "$widened_audit"; then
-  pass "pin-extractor widening fixture actually mutates the caller pin extractor"
+# A test against a mutated copy is only worth anything if the mutation is confined to the
+# one line it claims to change, so require exactly one replaced line -- one `<`, one `>`.
+widened_changed_lines="$(diff "$audit" "$widened_audit" | grep -c '^[<>]')"
+if [ "$widened_changed_lines" -eq 2 ] \
+  && grep -q 'ai-privileged-merge\\\.yml@(\[0-9A-Za-z\]+)' "$widened_audit"; then
+  pass "pin-extractor widening fixture mutates the caller pin extractor and nothing else"
 else
-  fail "pin-extractor widening fixture did not change the extractor, so the guard stays unreachable"
+  fail "pin-extractor widening fixture changed $widened_changed_lines line(s) instead of the extractor alone"
 fi
 
 mutable_pin_caller="$(bash "$generator" "$contract_sha" "$required_checks" | sed "s/@$contract_sha/@main/" | base64 | tr -d '\n')"
@@ -536,28 +543,84 @@ AUDIT_SCRIPT="$widened_audit" \
   }
 
 # The remaining early exits leak loop-scoped state without a reachable read-before-assignment
-# today, so no fixture can observe them. Pin the structural invariant that makes them
-# unobservable instead: the per-repository reset runs before any branch can leave the
-# iteration, so a repository can never inherit its predecessor's values.
-if python3 - "$audit" <<'RESET_ORDER'
+# today, so no fixture can observe them. Pin the two structural invariants that keep them
+# unobservable: the per-repository reset runs before any branch can leave the iteration, and
+# it names every variable the iteration assigns. The second is the one #1448 was made of --
+# a variable added to the loop and forgotten from the reset list -- and a position-only
+# check cannot see it.
+if python3 - "$audit" <<'RESET_CONTRACT'
 import re
 import sys
 
 source = open(sys.argv[1], encoding="utf-8").read().splitlines()
-start = next(i for i, line in enumerate(source) if line == 'while IFS= read -r repository; do')
-end = next(i for i, line in enumerate(source) if line == 'done <<<"$repositories"')
-body = source[start + 1:end]
-reset = next(i for i, line in enumerate(body) if line.startswith("  unset "))
-exits = [i for i, line in enumerate(body) if re.search(r"\b(continue|break)\b", line)]
+opener = 'while IFS= read -r repository; do'
+closer = 'done <<<"$repositories"'
+assert source.count(opener) == 1, "the fleet loop header is no longer unique"
+assert source.count(closer) == 1, "the fleet loop footer is no longer unique"
+body = source[source.index(opener) + 1:source.index(closer)]
+
+# Whole-line comments are prose, not control flow: the word "continue" inside one must not
+# be read as an exit, and an `unset` named in one must not be read as the reset.
+code = [line for line in body if not line.lstrip().startswith("#")]
+
+# Anchor the reset on being the loop's only top-level `unset` rather than on being the first
+# line that happens to start with one, so an unrelated `unset` cannot satisfy this vacuously.
+reset_starts = [i for i, line in enumerate(code) if re.match(r"^  unset\s", line)]
+assert len(reset_starts) == 1, f"expected exactly one per-repository reset, found {len(reset_starts)}"
+reset_at = reset_starts[0]
+
+statement = []
+index = reset_at
+while True:
+    statement.append(code[index].rstrip())
+    if not statement[-1].endswith("\\"):
+        break
+    statement[-1] = statement[-1][:-1]
+    index += 1
+reset = set(" ".join(statement).replace("unset", "", 1).split())
+assert reset, "the reset statement named nothing"
+
+exits = [i for i, line in enumerate(code) if re.search(r"\b(?:continue|break)\b", line)]
 # The only legitimate pre-reset exit skips a blank inventory line before any state is set.
-assert body[exits[0]].strip() == '[ -n "$repository" ] || continue', body[exits[0]]
-early = [body[i].strip() for i in exits[1:] if i < reset]
-assert not early, early
-RESET_ORDER
+assert code[exits[0]].strip() == '[ -n "$repository" ] || continue', code[exits[0]]
+early = [code[i].strip() for i in exits[1:] if i < reset_at]
+assert not early, f"early exits precede the reset: {early}"
+
+# Leading-whitespace anchored, so `echo "::error title=..."` annotation text and the embedded
+# awk program -- whose lines begin with `$0` or a bare word -- cannot forge an assignment.
+prefix = r"^\s+(?:(?:if|elif|while|until|!|\|\||&&)\s+)*"
+patterns = [
+    re.compile(prefix + r"([A-Za-z_][A-Za-z0-9_]*)(?:\[[^]]*\])?="),
+    re.compile(prefix + r"mapfile\s+(?:-[A-Za-z]+\s+)*-t\s+([A-Za-z_][A-Za-z0-9_]*)"),
+    re.compile(r"^\s+(?:\S+=\S*\s+)*read\s+(?:-r\s+)?((?:[A-Za-z_][A-Za-z0-9_]*\s+)*[A-Za-z_][A-Za-z0-9_]*)"),
+    re.compile(prefix + r"printf\s+-v\s+([A-Za-z_][A-Za-z0-9_]*)"),
+]
+assigned = set()
+for line in code:
+    for pattern in patterns:
+        match = pattern.match(line)
+        if match:
+            assigned.update(match.group(1).split())
+
+# Confirmed by reading the script, not inherited: these are the only loop-body assignments
+# that must survive an iteration. The three counters are fleet totals reported after the
+# loop, and IFS is a command-prefix assignment scoped to the `read` it precedes.
+carried = {"repositories_scanned", "consumers", "failures", "IFS"}
+assert carried <= assigned, f"the carry-over list names something the loop never assigns: {carried - assigned}"
+assert not (reset & carried), f"the reset clears a value the fleet audit must carry: {reset & carried}"
+# `visibility` and `selected_repositories` are assigned before the loop and never inside it,
+# so they need no exemption; if that changes, this reddens rather than silently widening.
+assert not ({"visibility", "selected_repositories"} & assigned), "fleet-wide state moved into the loop body"
+
+forgotten = assigned - reset - carried
+assert not forgotten, f"assigned per repository but never reset: {sorted(forgotten)}"
+dead = reset - assigned
+assert not dead, f"reset but never assigned in the loop: {sorted(dead)}"
+RESET_CONTRACT
 then
-  pass "the per-repository reset precedes every branch that can leave the iteration"
+  pass "the per-repository reset precedes every early exit and names every variable the iteration assigns"
 else
-  fail "an early exit runs before the per-repository reset, so loop state can cross repositories"
+  fail "the per-repository reset is mispositioned or has drifted from the loop's assignments"
 fi
 
 GH_TOKEN='' run_audit \
