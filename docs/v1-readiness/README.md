@@ -257,7 +257,7 @@ Two things this table makes visible that the per-repository view does not:
   itself.
 
 This repository is itself such a consumer: `contracts/container-deployment-cli/package.json:6`
-pins `@verjson/cli-cloud@0.28.1` **exactly**.
+pins `@verjson/cli-cloud@1.0.0` **exactly**.
 
 **Bar.**
 
