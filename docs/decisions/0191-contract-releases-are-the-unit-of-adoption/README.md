@@ -358,6 +358,30 @@ checked by deleting it and requiring the suite to redden, because a green run
 over a guard nothing exercises is the sentence-instead-of-a-measurement this
 ADR's own §3 was found relying on (#1463).
 
+§3's totality is a claim about the *file set*, and #1433 measured the other
+half — which `uses:` **shapes** the recognizer sees within a file it read.
+Across 1208 tracked YAML files and 7361 Markdown files in 94 organization
+repositories plus this one, 1553 `uses:` keys and 432 hub references, the
+line-based recognizer missed **zero** real references: every shape that occurs
+is a single-line scalar, quoted or not, some with a trailing comment and five
+with CRLF. The shapes it could not see are shapes nobody writes — a quoted or
+space-padded key, a value on the following line, a block scalar, an alias to an
+anchor, and a path assembled from an expression, each with **0** occurrences.
+The recognizer was widened for the two it can read exactly (a quoted key, space
+before the colon) with no change to any of the 432 references measured, and the
+rest are now `UNRESOLVED_REFERENCE` gaps rather than silence, on the same
+principle as `UNSCANNED`: a shape the scan cannot resolve is named, not read as
+"this repository has no reference". That gap half is anchored to the start of a
+line and requires the file to name the hub — without both, the measured corpus
+produces 30 findings from prose that ends a sentence with `uses:`, from
+`statuses:` containing `uses:`, and from this suite's own fixture strings; with
+both, it produces none. **The stated ceiling:** the scan stays line-based and
+will not join continuation lines or resolve anchors to read a reference, and a
+hub path assembled at run time from an expression — where the owner and
+repository never appear literally in the tree — leaves no text for any scan of
+the tree to find. The first is reported as a gap; the second cannot be, and is
+recorded here rather than implied away.
+
 Not verified here, and deliberately so: no release has been cut, no adopter
 declares a version yet, and the required-check binding in §6 is decided rather
 than wired. The steps that implement them carry their own verification.

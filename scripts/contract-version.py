@@ -171,8 +171,14 @@ DECLARATION_KEY = "contract_version"
 # The optional quote is not cosmetic: `uses: 'Verjson/.github/x.yml@<sha>'` is
 # valid, common YAML, and an unquoted-only pattern reports a skewed quoted pin as
 # no finding at all -- a clean PASS on exactly the skew this check exists to catch.
+# The key itself is matched loosely for the same reason as the value quote:
+# `"uses": x` and `uses : x` are both legal YAML that Actions accepts, and a
+# pattern keyed on the literal `uses:` reads a pin written either way as no
+# reference at all. Neither shape occurs anywhere in the fleet measured for
+# #1433, so this widens the recognizer without changing a single verdict on it.
 USES_RE = re.compile(
-    r"uses:\s*[\"']?Verjson/\.github/(?P<path>[^@\s\"']+)@(?P<ref>[^\s\"']+)",
+    r"(?:uses|\"uses\"|'uses')\s*:\s*[\"']?Verjson/\.github/"
+    r"(?P<path>[^@\s\"']+)@(?P<ref>[^\s\"']+)",
     re.IGNORECASE)
 # The trailing boundary keeps a hex run longer than 40 characters from being
 # truncated into a contract SHA: without it, `[0-9a-f]{40}` matches the first 40
@@ -186,6 +192,25 @@ USES_RE = re.compile(
 # header pass that reads every comment line has no window keeping them apart.
 HEADER_RE = re.compile(
     r"Verjson/\.github[^\n]*?\b(?P<sha>[0-9a-f]{40})(?![0-9a-f])", re.IGNORECASE)
+# The gap half of the recognizer. `USES_RE` reads a pin that is on its key's
+# line; a `uses:` key whose value is somewhere else is not a reference this scan
+# can resolve, and reporting it as no reference is the clean PASS on a real skew.
+# Both patterns below are anchored to the start of the line, with a balanced
+# quote if the key is quoted, and that anchoring is load-bearing rather than
+# tidy: measured over the 1208 tracked YAML files and 7361 Markdown files of 94
+# organization repositories plus this one, the unanchored form reports 30 lines
+# -- `statuses:` contains `uses:`, prose ends a sentence with `uses:`, and a
+# Python fixture string opens with `"uses:` -- and the anchored form reports
+# none (#1433). The leading `^` and the `.match()` below each anchor on their
+# own, so neither is individually mutation-killable; the suite kills them
+# together rather than pretending one of them is redundant.
+USES_KEY_RE = re.compile(r"""^\s*(?:-\s+)?(?:uses|"uses"|'uses')\s*:""",
+                         re.IGNORECASE)
+# What is left on the line once the key is consumed, when the value is not:
+# nothing (a plain scalar on the following line), a block-scalar indicator, or
+# an alias to an anchor defined elsewhere in the file.
+OFFLINE_VALUE_RE = re.compile(r"""\s*(?:[>|][-+0-9]*|\*\S+)?\s*(?:#.*)?$""")
+HUB_RE = re.compile(r"Verjson/\.github", re.IGNORECASE)
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 MAX_SCAN_BYTES = 1 << 20
 # Git's own binary heuristic reads the first 8000 bytes; matching it means a
@@ -394,11 +419,24 @@ def _scan_files(root):
 
 
 def references(root):
-    """`(found, unscanned)`: every contract reference on disk, and every gap.
+    """`(found, unscanned, unresolved)`: every reference, and every kind of gap.
+
+    `unscanned` is a file this scan could not read at all; `unresolved` is a
+    `uses:` key inside a file it read whose reference it could not resolve. The
+    second exists because ADR 0191 sec.3's totality claim is about the *file* set,
+    and a shape the recognizer cannot see is the same clean PASS on a real skew
+    as a file it never opened (#1433).
 
     Generated headers are read as *claims* alongside the pins, never as
     instructions: adopter-controlled text is an input to this comparison, not to
     anything privileged.
+
+    The stated ceiling: this scan stays line-based, so it names an unresolvable
+    reference rather than joining continuation lines or resolving anchors to
+    read one. A reference whose hub path is assembled at run time from an
+    expression, and whose owner and repository therefore never appear literally
+    anywhere in the tree, is outside even that -- there is no text for any scan
+    of the tree to find, and no honest report beyond saying so here.
 
     Every comment line is a candidate header, not a fixed leading window.
     `gen-changelog-caller.sh` stamps `CONTRACT_REF` on line 13 of the ADR index
@@ -407,13 +445,29 @@ def references(root):
     a line are excluded from the header pass instead, which is what the window
     was actually buying: a commented-out pin stays one reference, not two.
     """
-    found, unscanned = [], []
+    found, unscanned, unresolved = [], [], []
     for relative, text, problem in _scan_files(root):
         if text is None:
             unscanned.append((relative, problem))
             continue
-        for line in text.splitlines():
+        # An anchor and a continuation line are both file-scoped in YAML, so a
+        # file that never names the hub cannot carry a hub reference this scan
+        # failed to read. That is what keeps the gap half quiet on the ~1500
+        # third-party `uses:` keys the fleet actually has.
+        names_hub = HUB_RE.search(text) is not None
+        for number, line in enumerate(text.splitlines(), 1):
             pins = list(USES_RE.finditer(line))
+            key = None if pins or not names_hub else USES_KEY_RE.match(line)
+            if key is not None and HUB_RE.search(line):
+                unresolved.append(
+                    (relative, number,
+                     "is a `uses:` key naming Verjson/.github with no path@ref "
+                     "this scan can read"))
+            elif key is not None and OFFLINE_VALUE_RE.fullmatch(line[key.end():]):
+                unresolved.append(
+                    (relative, number,
+                     "carries a `uses:` key whose value is not on its line, so "
+                     "this line-based scan cannot tell what it references"))
             for match in pins:
                 found.append((relative, "uses", match.group("ref")))
             if not line.lstrip().startswith("#"):
@@ -424,7 +478,7 @@ def references(root):
                 if any(low <= start < high for low, high in spans):
                     continue
                 found.append((relative, "header", match.group("sha")))
-    return found, unscanned
+    return found, unscanned, unresolved
 
 
 def read_declaration(root):
@@ -453,10 +507,12 @@ def verify(root, releases, today: str):
     those apply once there is a version to compare.
     """
     version, finding = read_declaration(root)
-    found, unscanned = references(root)
+    found, unscanned, unresolved = references(root)
     gaps = [Finding("UNSCANNED", f"{relative} {problem}, so it cannot be shown to carry "
                                  "no contract reference")
             for relative, problem in unscanned]
+    gaps += [Finding("UNRESOLVED_REFERENCE", f"{relative}:{number} {problem}")
+             for relative, number, problem in unresolved]
     if finding is not None and finding.kind == "DECLARATION_MISSING" and not found:
         # No declaration and no reference is a repository that does not consume
         # the contract, not a defect. Reporting it would fire on every repository
