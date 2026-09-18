@@ -217,9 +217,13 @@ coverage:
   in the set. Anyone re-deriving it must first choose the unit and the `>&2` scope the
   predicate leaves open, and must state the choice alongside any figure.
 
-  **No denominator is stated either**, for the same reason and by the same rule. Only the
-  one figure that reproduces exactly from the text above — **144**, the size of the scan's
-  own file set — is stated. A count, numerator or denominator, returns only with a predicate
+  **No denominator is stated either**, for the same reason and by the same rule. The one
+  figure stated is **144**, the size of the scan's own file set, and it is stated because
+  the gate now ASSERTS it as `SCANNED_FILES`, beside `RECOGNIZED_REF_SITES=77` — not
+  because it reproduces from prose. It did not: until #1464 re-review round 9 nothing
+  pinned it, and its breakdown re-derives as 57 `.py` + 38 `.sh` + 49 `.yml` only after the
+  `*.test.sh`/`*.test.py`/`*_test.py` exclusion is applied, the naive per-extension totals
+  being 144, 157 and 49. A count, numerator or denominator, returns only with a predicate
   that pins its unit and its scope.
 - An action reached only through a `&&`/`||` chain inside the body is not unconditionally
   reached. This anchor does not evaluate conditions: it cannot tell `{ false && exit 1; }`

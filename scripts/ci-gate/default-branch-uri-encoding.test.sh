@@ -142,10 +142,15 @@
 #             or nested `{`, any `&` that is not `&&` or part of `>&`/`<&`/`&>`, and any
 #             expansion, quote or here-document crossing a record, anywhere between the
 #             guard and the use, now reads as disarmed. The one bare `)` it proves is a
-#             `case` arm's pattern label while a `case` is open (`CASE_ARM_LABEL`), added
-#             because `scripts/privileged-merge-conformance.sh:327` is a live guard whose
-#             `else` arm contains a `case`. Measured on this repository, that cost moved
-#             none of the pinned counts.
+#             `case` arm's pattern label, added because
+#             `scripts/privileged-merge-conformance.sh:327` is a live guard whose `else` arm
+#             contains a `case`. Rounds 7 and 8 proved it while any `case` was open, which
+#             admitted an ordinary nested `case "$b" in y)` as a label and dropped its
+#             opening event -- a fail-OPEN. It is now proved only in ARM POSITION, the two
+#             places bash itself parses a word list ending in `)` as a pattern, and only for
+#             a record that emits no `branch_events` at all (#1464 re-review round 9).
+#             Measured on this repository, that cost moved none of the pinned counts: 77
+#             sites, 144 files, 14 allowlisted sites, 11 allowlist entries, all unchanged.
 #           · `continue`/`break` are rejected outright rather than modelled. They leave a
 #             guard only inside a loop, the lexical `do`/`done` count that established that
 #             was ~60 lines whose last real site #1466 rewrote into an `elif`, and in
@@ -193,10 +198,22 @@
 #         a record in the `else` arm. All four are REJECTED, and all four are pinned as
 #         fixtures with controls -- as are the four ISOLATING cases that keep each of
 #         `arm_record_is_modelled`'s rules individually load-bearing.
-#         Six consecutive rounds shipped a sentence of the form "this is the only ..." about
-#         this anchor and every one was falsified within a round. Enumerate what is open; do
-#         not write another one. Round 6's structural answer is not that the list is now
-#         complete -- it is that the walk stops ACCEPTING what is not on it.
+#         Round 7 then found the exception round 6 had just added reading a label's first
+#         word as a command; round 8's inertness fix was itself read into by round 9's
+#         `case "$b" in y)`.
+#         Eight consecutive rounds shipped a sentence of the form "this is the only ..." or
+#         "the accepted set is exactly ..." about this anchor and every one was falsified
+#         within a round. Enumerate what is open; do not write another one. Round 6's
+#         structural answer is not that the list is now complete -- it is that the walk stops
+#         ACCEPTING what is not on it. Round 9 adds the only POSITIVE claim this file makes
+#         about the walk, stated and tested at `arm_record_is_case_label`: a record treated
+#         as inert emits no `branch_events` at all. Nothing else is claimed.
+#         Known unpinned, so a later round does not mistake it for proven: dropping
+#         `expecting_label=0` on `esac` leaves this whole suite green. Every input that
+#         distinguishes it would need a record that is arm-label-SHAPED, legal bash directly
+#         after `esac`, and read as fatal by `arm_statement_is_fatal` -- and `exit N`,
+#         `return N` and the named helpers cannot be spelled that way. The assignment is kept
+#         because it is the correct model, not because a test forces it.
 #       · that same proof is positional, not dataflow: it establishes that the use LINE is
 #         inside the protected arm, not that the value reaching the use is the value the
 #         guard tested. A re-assignment between the guard and the use, or a different
@@ -212,7 +229,10 @@
 #     written", and nothing beyond that.
 # The recognized-site count is pinned in RECOGNIZED_REF_SITES for the same reason the
 # allowlist is explicit: moving an interpolation out of a recognized shape is a way to
-# lose coverage without losing a green run.
+# lose coverage without losing a green run. SCANNED_FILES pins the OTHER half of the same
+# property -- a file dropping out of the scan loses coverage just as quietly, and the file
+# count was reported in the PASS line and repeated in ADR 0194 while nothing asserted it
+# (#1464 re-review round 9).
 # Do not read a green run here as "every ref interpolation in this repository is encoded
 # correctly". Read it as "every shape this scan recognizes is".
 set -euo pipefail
@@ -732,47 +752,88 @@ arm_statement_is_fatal() { # $1 = structural text of one top-level `then`-arm st
 # job. So a command that BUILDS control flow at RUN TIME is outside this model and is not
 # refused: `eval "fi"` is read as a call to `eval` and walked past, and so is `source x.sh`.
 # That residual is stated rather than defended against -- `eval "fi"` is not a realistic
-# vector, since bash reports a syntax error and `eval` returns 2, so it closes nothing -- and
-# it is stated because two earlier revisions of this sentence claimed a frontier wider than
-# the code's. The accepted-but-unrepresented set is exactly "records whose run-time effect is
-# not their text" (#1464 re-review round 7). Within the lexical frontier, a construct no one
-# has thought of yet does land on the rejecting side by default.
+# vector, since bash reports a syntax error and `eval` returns 2, so it closes nothing.
+#
+# NO COMPLETENESS CLAIM IS MADE HERE. Three earlier revisions of this paragraph named the
+# accepted-but-unrepresented set exactly, each narrower than the last, and each was falsified
+# by the next round -- most recently by `case "$b" in y)`, a record squarely inside the
+# lexical frontier whose run-time effect IS its text and which was accepted, unrepresented,
+# and fail-OPEN anyway (#1464 re-review round 9). A sentence rewritten four times to survive
+# successive counterexamples is the wrong sentence, so it is gone rather than narrowed again.
+#
+# What this model does guarantee is ONE property, and `arm_inertness_emits_no_events` pins it
+# over the scan's own files rather than over a fixture list:
+#
+#     A RECORD THIS WALK TREATS AS INERT EMITS NO `branch_events` AT ALL.
+#
+# The guarantee is worth what the argument for choosing it is worth. Dropping an OPENING
+# event is the only direction in which a dropped event can fail open: dropping a closer
+# raises the relative depth, so the guarded `fi` fires too deep, or a later `esac`/`done`
+# lands at depth 0 and returns 1; dropping `else`/`elif` leaves `in_then` set, and running
+# out of records still inside the `then` arm proves nothing. The property above is stricter
+# than that argument needs, because it forbids dropping a closer too. That is deliberate:
+# "a label is a label -- it opens nothing and closes nothing" is a claim this model can state
+# once and test, whereas "which drops happen to be fail-closed" is a claim it would have to
+# re-derive on every future edit. Everything outside that one property is UNCLAIMED.
 # The one record shape whose bare `)` is NOT a group: a `case` arm's pattern label, with the
-# `;;` that ends an arm. It is proven only while a `case` is actually open, and only when the
-# WHOLE record is the label -- `) || echo swallowed` does not match it, and a `(` with no `)`
-# cannot. `( exit 1 )` DOES match it; an earlier revision of this sentence said otherwise and
-# the fixture added alongside it says the opposite outright (#1464 re-review round 7). It is
-# admitted on exactly the terms the shape states -- this record is a case arm LABEL -- and a
-# label is INERT, so admitting a subshell-shaped one grants it no statement and no depth
-# event. `;&` and `;;&` are deliberately NOT in the terminator: a record carrying either has
-# a bare `&` and declines at the `&` rule below before this shape is ever consulted, so
-# listing them made the model claim a spelling it never accepts (#1464 re-review round 7).
+# `;;` that ends an arm. Only when the WHOLE record is the label -- `) || echo swallowed`
+# does not match it, and a `(` with no `)` cannot. `( exit 1 )` DOES match it; an earlier
+# revision of this sentence said otherwise and the fixture added alongside it says the
+# opposite outright (#1464 re-review round 7). `;&` and `;;&` are deliberately NOT in the
+# terminator: a record carrying either has a bare `&` and declines at the `&` rule below
+# before this shape is ever consulted, so listing them made the model claim a spelling it
+# never accepts (#1464 re-review round 7).
 # `scripts/privileged-merge-conformance.sh:327` is the live guard that needs the label: the
 # use it protects sits in an `else` arm containing a `case` over the compare status.
 CASE_ARM_TERMINATOR=';;'
 CASE_ARM_LABEL="^[[:space:]]*[(]?[^()]*[)][[:space:]]*(${CASE_ARM_TERMINATOR})?[[:space:]]*\$"
+# A record that ENDS an arm, and therefore puts the walk back in arm position. `;;` only:
+# `;&` and `;;&` carry a bare `&` and are declined before this is consulted.
+CASE_ARM_ENDS=";;[[:space:]]*\$"
 
 # A record the model reads as a `case` arm pattern label. It is a LABEL, not a command: it
 # opens nothing, closes nothing, and runs nothing, so the exception grants exactly that one
 # property and no other. `negated_branch_dominates` therefore treats such a record as INERT
 # instead of feeding it to `branch_events`.
 #
-# That inertness is the whole of round 7's fix, and it is structural rather than another
-# enumeration. `branch_events` takes each `;`-part's FIRST WORD, so a label whose first word
-# happened to be a depth keyword -- `do )`, `if )`, `case )`, or an alternation like
-# `do|while )` -- emitted a spurious opening event. The guarded construct's own `fi` then
-# never fired at relative depth 0, the walk ran out of records with `in_then=0`, and a guard
-# that protects nothing read as live (#1464 re-review round 7). Round 8's fail-open would be
-# a list of words a label may not begin with; the set is not closed, and the label's first
-# word is not a command in the first place. Note the invariant that keeps this exception from
-# needing a statement rule too: `case` raises `d` and `case_depth` together and `esac` lowers
-# both, so `case_depth > 0` implies `d > 0`, and a label can never be read at relative
-# depth 0.
-arm_record_is_case_label() { # $1 = structural text, $2 = open `case` depth
-  [ "${2:-0}" -gt 0 ] && [[ "$1" =~ $CASE_ARM_LABEL ]]
+# TWO conditions, and neither is a shape rule, because four consecutive rounds of shape rules
+# each shipped the next fail-open inside the mechanism that closed the previous one.
+#
+# 1. ARM POSITION, not "a `case` is open somewhere". `case … in` and `;;` are the only two
+#    places bash itself will parse a word list ending in `)` as a pattern; anywhere else in
+#    an arm a `)` is a group. Rounds 7 and 8 asked only whether some `case` was open, which
+#    admitted `case "$b" in y)` -- an ordinary nested `case` written on one line, in the
+#    middle of an arm, `bash -n` clean -- as a label. Its `case` event was then dropped, the
+#    guarded `fi` fired one level too shallow, and a guard whose `then` arm falls through
+#    read as live (#1464 re-review round 9). This is parser state rather than another shape,
+#    which is why it is not the fifth entry in that series: in arm position `)` IS a label to
+#    bash, and outside it `)` is NOT, and those are the two things being asked.
+#
+# 2. THE RECORD MUST EMIT NO `branch_events` AT ALL. This is the guarantee the header states,
+#    enforced where inertness is granted rather than argued about afterwards. It is what
+#    makes "a label opens nothing and closes nothing" true by construction instead of true by
+#    a survey of shapes: a label-shaped record that would emit an event is simply not a label
+#    here, and falls to `arm_record_is_modelled`'s bare-parenthesis refusal -- a REJECT, the
+#    inverted default, never an ACCEPT. It closes round 9's vector a second time, and it also
+#    retires the round-7 exception for `do )`, `if )`, `case )` and `do|while )` labels: those
+#    now DECLINE rather than going inert. That is the measured cost of the guarantee, and it
+#    is paid deliberately -- see the fixtures below, and the cost measured over the scanned
+#    files in `arm_inertness_emits_no_events`.
+#
+# Note what is NOT relied on any more. Round 7 justified the exception with "`case` raises `d`
+# and `case_depth` together and `esac` lowers both, so `case_depth > 0` implies `d > 0`, and a
+# label can never be read at relative depth 0." That was FALSE: `fi` and `done` lower `d`
+# without lowering `case_depth`, so `probe || { if q; then a; fi; }` inside an arm emits a
+# bare `fi` and leaves `d` at 0 with a `case` still open (#1464 re-review round 9). The claim
+# is deleted rather than repaired, because nothing needs it: an inert record contributes no
+# statement and no event, so what relative depth it is read at grants it nothing either way.
+arm_record_is_case_label() { # $1 = structural text, $2 = 1 when an arm label is expected
+  [ "${2:-0}" -eq 1 ] || return 1
+  [[ "$1" =~ $CASE_ARM_LABEL ]] || return 1
+  [ -z "$(branch_events "$1")" ]
 }
 
-arm_record_is_modelled() { # $1 = raw record, $2 = structural text, $3 = open `case` depth
+arm_record_is_modelled() { # $1 = raw record, $2 = structural text, $3 = 1 when in arm position
   # Data regions the per-record structural pass cannot carry across records: a here-document
   # body, and a quote, backtick or expansion left open at the end of a record, all read as
   # ordinary commands on the records that follow (#1464 re-review rounds 5 and 6).
@@ -803,17 +864,24 @@ arm_record_is_modelled() { # $1 = raw record, $2 = structural text, $3 = open `c
 }
 
 negated_branch_dominates() { # $1 = index of the guard's record in GUARD_RECORDS
-  local i d=0 event struct in_then=1 arm_terminates=1 depth_at_start case_depth=0
+  local i d=0 event struct in_then=1 arm_terminates=1 depth_at_start expecting_label=0
   for ((i = $1 + 1; i < ${#GUARD_RECORDS[@]}; i++)); do
     struct="$(shell_structure "${GUARD_RECORDS[i]}")"
     # The inverted default: a record this walk cannot account for ENDS the walk as a REJECT.
     # Modelling these regions is shell parsing. Refusing them is not.
-    arm_record_is_modelled "${GUARD_RECORDS[i]}" "$struct" "$case_depth" || return 1
-    # A record admitted as a `case` arm pattern label is INERT. It is the one shape whose
-    # bare `)` this model proves, and proving it says the record is a LABEL -- so it
-    # contributes no statement to the arm and no event to the depth count. Reading its first
-    # word as a command was the leak that made the exception grant more than it claims.
-    arm_record_is_case_label "$struct" "$case_depth" && continue
+    arm_record_is_modelled "${GUARD_RECORDS[i]}" "$struct" "$expecting_label" || return 1
+    # A record admitted as a `case` arm pattern label is INERT: it contributes no statement
+    # to the arm and no event to the depth count. `arm_record_is_case_label` grants that only
+    # in arm position and only to a record that emits nothing, so the `continue` below cannot
+    # discard an event -- which is the property `arm_inertness_emits_no_events` pins.
+    # An empty arm (`x) ;;`) puts the walk straight back into arm position.
+    if arm_record_is_case_label "$struct" "$expecting_label"; then
+      if [[ "$struct" =~ $CASE_ARM_ENDS ]]; then expecting_label=1; else expecting_label=0; fi
+      continue
+    fi
+    # `;;` ends an arm wherever it appears, so the next record is in arm position again.
+    # It is read before the events below, because `esac` on a later record clears it again.
+    [[ "$struct" =~ $CASE_ARM_ENDS ]] && expecting_label=1
     depth_at_start=$d
     # Only a statement of the arm ITSELF is unconditionally reached: one nested inside a
     # further branch is not, which is the same reason `{ false && exit 1; }` is rejected.
@@ -824,13 +892,18 @@ negated_branch_dominates() { # $1 = index of the guard's record in GUARD_RECORDS
     while IFS= read -r event; do
       case "$event" in
         if | do) d=$((d + 1)) ;;
-        'case') d=$((d + 1)); case_depth=$((case_depth + 1)) ;;
+        # A `case` puts the walk in arm position: the next record bash will accept is a
+        # pattern label. Only this record's own `case` does, because a record carrying both
+        # the `case` and its first label has a bare `)` outside arm position and was already
+        # declined above.
+        'case') d=$((d + 1)); expecting_label=1 ;;
         # `arm_terminates` is already 0-for-yes, so it IS the answer below the construct.
         fi) [ "$d" -eq 0 ] && return "$arm_terminates"; d=$((d - 1)) ;;
         # A `done`/`esac` closing at depth 0 would close a construct this walk never saw
         # opened, so the depth model has lost the file. Decline rather than guess.
         done) [ "$d" -eq 0 ] && return 1; d=$((d - 1)) ;;
-        'esac') [ "$d" -eq 0 ] && return 1; d=$((d - 1)); case_depth=$((case_depth - 1)) ;;
+        # `esac` leaves arm position: what follows is the enclosing arm's body, not a label.
+        'esac') [ "$d" -eq 0 ] && return 1; d=$((d - 1)); expecting_label=0 ;;
         else | elif) [ "$d" -eq 0 ] && in_then=0 ;;
       esac
     done < <(branch_events "$struct")
@@ -997,6 +1070,113 @@ PYFX
 # a trailing `&`, and `|| exit 0` all walked past it. Enumerating swallows is a losing
 # game, so the anchor now allow-lists the tails that DO fail and rejects everything else.
 # These cases run against synthetic files, so fixing a real guard cannot retire one.
+# --------------------------------------------------------------------------------------
+# THE INVARIANT, asserted as a property of the MECHANISM rather than as one more fixture
+# list. Eight rounds of this review each enumerated one more shape and each shipped the next
+# fail-open inside the mechanism that closed the previous one, so the ninth states what the
+# walk guarantees and tests that instead:
+#
+#     A RECORD THIS WALK TREATS AS INERT EMITS NO `branch_events` AT ALL.
+#
+# Why that is the right property, rather than the ninth shape: an inert record's events are
+# DISCARDED, and a discarded OPENING event is the only direction in which the discard can
+# fail open. A discarded closer raises the relative depth, so the guarded `fi` fires too deep
+# or a later `esac`/`done` lands at depth 0 and returns 1; a discarded `else`/`elif` leaves
+# `in_then` set, and running out of records inside the `then` arm proves nothing. The
+# property asserted here is the stricter "no event at all", because that is a claim about
+# what a label IS, while "no OPENING event" is a claim about which discards this year's
+# control flow happens to survive.
+#
+# The corpus is the scan's own files, not a fixture list, and it has teeth: it contains
+# records that are arm-label-SHAPED and do emit events -- `.github/workflows/gate-rearm.yml`
+# writes `case "$EVENT_ACTION" in labeled|…) ;;`, which is round 9's own vector. Deleting the
+# emit-nothing clause from `arm_record_is_case_label` therefore turns this test red on real
+# repository content. `WITNESSES` pins a floor under that so repository churn cannot quietly
+# empty the corpus and leave the assertion vacuously true, and the synthetic witnesses below
+# carry the same teeth independently of any file.
+#
+# `.py` files are excluded: the shell record model is never applied to them (`py_guard_is_live`
+# takes the weaker comment-only anchor), so their text is not a record corpus for this walk.
+arm_label_is_inert_violations() { # $1 = file; prints every record that breaks the invariant
+  local rec struct
+  while IFS= read -r rec; do
+    # Sound prefilter: `CASE_ARM_LABEL` needs a `)`, and blanking only ever replaces a
+    # character with a space, so a record with no `)` cannot acquire one.
+    case "$rec" in *')'*) ;; *) continue ;; esac
+    struct="$(shell_structure "$rec")"
+    # Arm position is the most PERMISSIVE state the walk can be in, so asking with it set
+    # covers every state the walk could reach at this record.
+    arm_record_is_case_label "$struct" 1 || continue
+    [ -n "$(branch_events "$struct")" ] && printf '%s\n' "$rec"
+  done < <(logical_lines slice <"$1" 2>/dev/null)
+  return 0
+}
+
+arm_label_shaped_emitters() { # $1 = file; counts records that are label-SHAPED and do emit
+  local rec struct n=0
+  while IFS= read -r rec; do
+    case "$rec" in *')'*) ;; *) continue ;; esac
+    struct="$(shell_structure "$rec")"
+    [[ "$struct" =~ $CASE_ARM_LABEL ]] || continue
+    [ -n "$(branch_events "$struct")" ] && n=$((n + 1))
+  done < <(logical_lines slice <"$1" 2>/dev/null)
+  printf '%s\n' "$n"
+}
+
+inert_violations=0
+inert_witnesses=0
+for scan_file in "${scanned[@]}"; do
+  case "$scan_file" in *.py) continue ;; esac
+  while IFS= read -r offender; do
+    [ -n "$offender" ] || continue
+    inert_violations=$((inert_violations + 1))
+    echo "::error::an inert arm label emitted a branch event: $scan_file :: $offender"
+  done < <(arm_label_is_inert_violations "$root/$scan_file")
+  inert_witnesses=$((inert_witnesses + "$(arm_label_shaped_emitters "$root/$scan_file")"))
+done
+[ "$inert_violations" -eq 0 ] \
+  || fail "$inert_violations record(s) in the scanned files were treated as inert while emitting a branch event"
+# The corpus must keep at least one record that could break the invariant, or the assertion
+# above stops being evidence of anything.
+[ "$inert_witnesses" -ge 1 ] \
+  || fail "no scanned file contains an arm-label-shaped record that emits a branch event; the invariant test above is now vacuous"
+
+# The same property on records chosen to break it, so the test does not depend on repository
+# churn keeping a witness alive. Each must be label-SHAPED, must EMIT, and must therefore be
+# declined -- and `arm_record_is_modelled` must then refuse it outright, because a record
+# carrying a bare `)` that is not a label is exactly what the inverted default rejects.
+for witness in \
+  'case "$b" in y)' \
+  'case "$EVENT_ACTION" in labeled|edited) ;;' \
+  'do )' \
+  'if )' \
+  'do|while )' \
+  'esac )' \
+  'fi )' \
+  'else )'; do
+  witness_struct="$(shell_structure "$witness")"
+  [[ "$witness_struct" =~ $CASE_ARM_LABEL ]] \
+    || fail "invariant witness is not arm-label-shaped, so it proves nothing: $witness"
+  [ -n "$(branch_events "$witness_struct")" ] \
+    || fail "invariant witness emits no branch event, so it proves nothing: $witness"
+  ! arm_record_is_case_label "$witness_struct" 1 \
+    || fail "an emitting record was treated as an inert arm label: $witness"
+  ! arm_record_is_modelled "$witness" "$witness_struct" 1 \
+    || fail "a declined arm label was still walked past instead of ending the walk: $witness"
+done
+
+# Arm POSITION, asserted on the predicate rather than through a whole program: the same
+# record is a label where bash would parse one and a bare group anywhere else. This is what
+# round 7's `case_depth > 0` could not say, and it is the half of the fix that keeps the
+# exception accurate instead of merely narrow.
+for positioned in '  a)' '  "") ;;' '  ahead|identical) ;;' '  *)' '  ( exit 1 )'; do
+  positioned_struct="$(shell_structure "$positioned")"
+  arm_record_is_case_label "$positioned_struct" 1 \
+    || fail "a record in arm position was not read as a label: $positioned"
+  ! arm_record_is_case_label "$positioned_struct" 0 \
+    || fail "a record outside arm position was read as a label: $positioned"
+done
+
 HEX_GUARD='[[ "$head_sha" =~ ^[0-9a-f]{40}$ ]]'
 
 guard_tail_case() { # $1 = live|dead, $2 = label, $3… = the guard's physical lines
@@ -1399,11 +1579,14 @@ guard_tail_case dead 'a `case` arm label whose first word is the `do` keyword' \
   '  esac' \
   'fi' \
   'gh api "repos/$repository/commits/$head_sha"'
-# The control, and the reason inertness is not just "emit fewer events": the SAME label sits
-# above an `exit 1` that really is a statement of the `then` arm. While the label raised the
-# depth, that `exit 1` was read one level deep and did not count, so this live guard read as
-# disarmed too. The fail-open and this false negative are one bug with two signs.
-guard_tail_case live 'the same `do )` label above an `exit 1` at the arm top level' \
+# Round 7 kept this shape LIVE as its control: the same label above an `exit 1` that really
+# is a statement of the `then` arm. Round 9 gives it up. `arm_record_is_case_label` now
+# requires a label to emit no `branch_events` at all, and `do )` emits `do`, so this record
+# declines and the walk REJECTs. That is the measured price of the guarantee, and it is
+# recorded here as a fail-CLOSED false negative rather than hidden: a `do )` / `if )` /
+# `case )` arm label is a shape no file in this repository writes, and the alternative is
+# arguing every round about which dropped events happen to be harmless.
+guard_tail_case dead 'a `do )` label above an `exit 1`: fail-CLOSED, and the price of the guarantee' \
   'if ! '"$HEX_GUARD"'; then' \
   '  case "$mode" in' \
   '    do )' \
@@ -1411,6 +1594,127 @@ guard_tail_case live 'the same `do )` label above an `exit 1` at the arm top lev
   '      ;;' \
   '  esac' \
   '  exit 1' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+
+# ROUND 9. Rounds 7 and 8 asked only whether SOME `case` was open. An ordinary nested `case`
+# written on one line -- `case "$b" in y)` -- matches the arm-label shape, so its `case` event
+# was dropped, the guarded `fi` fired one level too shallow, the walk ran out of records with
+# `in_then=0`, and this guard read as LIVE while its `then` arm falls through whenever `q`
+# fails (#1464 re-review round 9). `bash -n` clean. `.github/workflows/gate-rearm.yml` writes
+# that exact spelling, so it is repository content and not a contrived shape.
+#
+# The fix is arm POSITION -- `case … in` and `;;` are the only two places bash will parse a
+# word list ending in `)` as a pattern -- plus the emit-nothing requirement above. Either one
+# alone closes this vector; both are kept, because the first is what makes the exception
+# accurate and the second is what makes the guarantee hold by construction.
+# `;;` puts the walk back in arm position, so a SECOND arm is still read. Without that, only
+# the first label of each `case` is recognized and every later one declines -- fail-closed,
+# but it silently retires the shape `scripts/privileged-merge-conformance.sh:336` writes.
+guard_tail_case live 'a two-arm `case` above a terminating statement of the arm' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  case "$mode" in' \
+  '    a)' \
+  '      note=1' \
+  '      ;;' \
+  '    b)' \
+  '      note=2' \
+  '      ;;' \
+  '  esac' \
+  '  exit 1' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+guard_tail_case dead 'a nested `case … in PAT)` on ONE line, whose `case` event was dropped' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  if q; then' \
+  '    case "$a" in' \
+  '      x)' \
+  '        case "$b" in y)' \
+  '          note=1' \
+  '          ;;' \
+  '        esac' \
+  '        ;;' \
+  '    esac' \
+  '    exit 1' \
+  '  fi' \
+  '  failures=$((failures + 1))' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+# The same program with the nested `case` split over two lines. It was already REJECTed, and
+# pinning it says the one-line spelling was accepted by the LABEL reading and by nothing else.
+guard_tail_case dead 'the same program with the nested `case` split over two lines' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  if q; then' \
+  '    case "$a" in' \
+  '      x)' \
+  '        case "$b" in' \
+  '          y)' \
+  '          note=1' \
+  '          ;;' \
+  '        esac' \
+  '        ;;' \
+  '    esac' \
+  '    exit 1' \
+  '  fi' \
+  '  failures=$((failures + 1))' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+# The control: a genuinely live guard whose `then` arm terminates below a nested `case` in the
+# split spelling. Arm-position tracking must not cost this, or the fix is a rejection widening
+# wearing a parser's clothes.
+guard_tail_case live 'a terminating arm below a nested `case` in the split spelling' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  case "$a" in' \
+  '    x)' \
+  '      case "$b" in' \
+  '        y)' \
+  '          note=1' \
+  '          ;;' \
+  '      esac' \
+  '      ;;' \
+  '  esac' \
+  '  exit 1' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+# Round 7 argued the label exception needed no statement rule because "`case_depth > 0`
+# implies `d > 0`". This program falsifies that: `probe || { if q; then a; fi; }` emits a bare
+# `fi` -- `branch_events` reads the `{`-part's first word as `{`, never as `if` -- so `d` drops
+# to 0 with a `case` still open, and `( exit 1 )` is then read as an inert label at relative
+# depth 0. The consequence is fail-CLOSED, so this fixture pins the outcome and the deleted
+# claim pins the reasoning: inertness grants nothing at ANY depth, which is why no depth
+# invariant is needed (#1464 re-review round 9).
+# Inertness has two halves, and until round 9 only the event half was pinned: with the
+# emit-nothing requirement in place, deleting the skip ENTIRELY left every other assertion in
+# this file green. It is load-bearing because a label is otherwise also read as a STATEMENT,
+# and `fail )` is a legal arm label that `arm_statement_is_fatal` calls terminating. The two
+# bare `fi`s below are round 9's blocker-2 fact put to work: each `{ if q; then y; fi; }`
+# emits `fi` and no `if`, so `d` reaches 0 with the `case` still open, the `fail )` label is
+# read at relative depth 0, and the third one returns at `fi` with `arm_terminates=0`. This
+# guard's `then` arm only counts a failure and falls through, so that ACCEPT is a fail-open.
+guard_tail_case dead 'a `fail )` arm label read as a terminating statement of the arm' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  if r; then' \
+  '    case "$x" in' \
+  '      a)' \
+  '        probe || { if q; then y; fi; }' \
+  '        probe || { if q; then y; fi; }' \
+  '        ;;' \
+  '      fail )' \
+  '        probe || { if q; then y; fi; }' \
+  '        ;;' \
+  '    esac' \
+  '  fi' \
+  '  failures=$((failures + 1))' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+guard_tail_case dead 'a bare `fi` that drops `d` to 0 with a `case` still open' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  case "$mode" in' \
+  '    a)' \
+  '      probe || { if q; then a; fi; }' \
+  '      ( exit 1 )' \
+  '      ;;' \
+  '  esac' \
   'fi' \
   'gh api "repos/$repository/commits/$head_sha"'
 
@@ -1756,6 +2060,13 @@ done < <(ref_sites)
 RECOGNIZED_REF_SITES=77
 [ "$sites" -ge "$RECOGNIZED_REF_SITES" ] \
   || fail "the ref-interpolation scan recognized $sites sites, below the pinned $RECOGNIZED_REF_SITES; a ref interpolation moved out of a shape this scan can see"
+# `git ls-files` over the three globs, less the `*.test.sh`/`*.test.py`/`*_test.py`
+# exclusion: 57 `.py` + 38 `.sh` + 49 `.yml`. The naive per-extension totals are 144, 157
+# and 49, so the breakdown reproduces only AFTER the exclusion, which is why it is asserted
+# here rather than described in prose.
+SCANNED_FILES=144
+[ "${#scanned[@]}" -ge "$SCANNED_FILES" ] \
+  || fail "the ref-interpolation scan covered ${#scanned[@]} files, below the pinned $SCANNED_FILES; a file carrying ref interpolations dropped out of the scan"
 [ "$encoders" -ge 16 ] || fail "only $encoders encoder expressions were exercised; the semantics check is not reaching the fixed sites"
 [ "$py_sites" -ge 18 ] || fail "the ref-interpolation scan found only $py_sites Python sites; it is not reaching the Python callers"
 [ "$py_encoders" -ge 6 ] || fail "only $py_encoders Python encoder calls were exercised; the semantics check is not reaching them"

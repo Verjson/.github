@@ -249,7 +249,8 @@ bypass forms is unwinnable, so the arm walk no longer accepts a record it has no
 accounted for. `arm_record_is_modelled` recognizes the shapes this model does represent --
 no here-document introducer, no data span left open at the record's end, no `&` outside
 `&&`/`>&`/`<&`/`&>`, at most one `{` and braces balanced, and a parenthesis only where an
-open `case` makes it an arm label -- and every other record ENDS the walk as a reject.
+open `case` makes it an arm label (Round 9 replaces that last clause with arm POSITION) --
+and every other record ENDS the walk as a reject.
 Unmodelled structure can no longer produce an accept. Its measured cost on this repository
 is none: the four pinned figures -- 77 interpolations, 144 workflows, 14 sites, 11
 allowlist entries -- are unchanged, because the one live guard it initially rejected,
@@ -324,3 +325,66 @@ not defended against and does not need to be — bash reports a syntax error and
 returns 2, so it closes nothing — but the residual set, "records whose run-time effect is
 not their text", is now named in the header instead of being covered by a sentence wider
 than the code.
+
+> **Superseded by Round 9.** The narrowing in this paragraph was the fourth revision of the
+> same sentence and is false too: `case "$b" in y)` is inside the lexical frontier, its
+> run-time effect *is* its text, and it was accepted and unrepresented anyway. The
+> completeness claim is deleted rather than narrowed a fifth time.
+
+## Round 9
+
+Rounds 7 and 8 proved an arm label wherever *some* `case` was open. An ordinary nested
+`case` written on one line — `case "$b" in y)` — matches the arm-label shape, so round 8's
+inertness dropped its opening `case` event. The guarded construct's own `fi` then fired one
+level too shallow, the walk ran out of records with `in_then=0`, and a guard whose `then`
+arm only counts a failure and falls through read as LIVE, in both `whole` and `slice` mode,
+against a file `bash -n` accepts. Splitting the same nested `case` over two lines REJECTs,
+which is how the label reading is isolated as the sole cause.
+`.github/workflows/gate-rearm.yml` writes that spelling, so it is repository content.
+
+Two changes, and neither is a ninth shape rule.
+
+*Arm position.* `case … in` and `;;` are the only two places bash itself parses a word list
+ending in `)` as a pattern; everywhere else in an arm a `)` opens a group. The walk now
+tracks that position — a `case` event or a record ending in `;;` enters it, consuming a
+label or an `esac` leaves it — and a `)`-bearing record read outside it declines, which is
+the inverted default and a REJECT. This is parser state rather than shape matching, and it
+is strictly narrower than the old `case_depth > 0` test: measured over the scanned files it
+admits nothing new and withdraws five records in `scripts/gen-container-deployment.sh`, none
+of which is a case label.
+
+*An inert record emits nothing.* `arm_record_is_case_label` now also requires the record to
+produce no `branch_events` at all, so the walk cannot discard an event by calling a record
+inert. This is the property the header states and `arm_inertness_emits_no_events` tests over
+the scan's own 144 files rather than over a fixture list; the corpus contains five records
+that are arm-label-shaped and do emit events, so deleting the requirement turns the suite
+red on real repository content. It closes the vector a second time, and it retires round 7's
+`do )` / `if )` / `case )` / `do|while )` exception: those now decline. That is the measured
+price and it is recorded as a fail-CLOSED false negative rather than hidden.
+
+The reason round 7 gave for needing no statement rule was false and is deleted, not
+repaired: "`case` raises `d` and `case_depth` together and `esac` lowers both, so
+`case_depth > 0` implies `d > 0`". `fi` and `done` lower `d` without lowering `case_depth`,
+and `branch_events` reads `probe || { if q; then a; fi; }` as a bare `fi` — the `{`-part's
+first word is `{`, never `if` — so `d` reaches 0 with a `case` still open and a label is
+read at relative depth 0. Nothing needs the claim: an inert record contributes no statement
+and no event, so the depth it is read at grants it nothing. The skip is still load-bearing
+for the statement half, and until this round nothing pinned it: `fail )` is a legal arm
+label that `arm_statement_is_fatal` calls terminating, and deleting the skip entirely left
+every other assertion in this file green.
+
+Cost, measured rather than asserted: the four published figures are unchanged — 77 ref
+interpolations (21 Python) across 144 files, 14 sites covered by 11 allowlist entries — and
+`scripts/privileged-merge-conformance.sh` still ACCEPTs in `slice` mode at `:331`, `:336`
+and `:340`, `:340` sitting past all three now-inert arm labels. `144` is now asserted as
+`SCANNED_FILES` beside `RECOGNIZED_REF_SITES=77`, because it was reported in the PASS line
+and repeated in ADR 0194 while nothing pinned it; its breakdown re-derives as 57 `.py` + 38
+`.sh` + 49 `.yml` only after the `*.test.sh`/`*.test.py`/`*_test.py` exclusion, whose naive
+per-extension totals are 144, 157 and 49.
+
+One mutant is known to survive and is named in the header so a later round does not mistake
+it for proven: dropping `expecting_label=0` on `esac` leaves the suite green. Distinguishing
+it would need a record that is arm-label-shaped, legal bash directly after `esac`, and read
+as fatal by `arm_statement_is_fatal`, and `exit N`, `return N` and the named helpers cannot
+be spelled that way. The assignment is kept because it is the correct model, not because a
+test forces it.
