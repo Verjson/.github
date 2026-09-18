@@ -400,6 +400,17 @@ class ScanTotality(unittest.TestCase):
         track(root)
         self.assertEqual(self.verify(root), [])
 
+    def test_a_64_hex_container_digest_is_not_a_40_hex_contract_sha(self):
+        # Without the trailing boundary on HEADER_RE, the first 40 characters
+        # of a `sha256:` digest read as a contract SHA and the repository gets
+        # a PIN_MISMATCH against a reference it does not have. The hub's own
+        # generated headers sit on comment lines next to image digests.
+        root = self.repo()
+        (root / ".github" / "workflows" / "image.yml").write_text(
+            "# Verjson/.github runner image sha256:" + "0123456789abcdef" * 4 + "\n")
+        track(root)
+        self.assertEqual(self.verify(root), [])
+
     def test_a_binary_past_the_scan_limit_is_quiet_like_any_other_binary(self):
         # The size check ran first, so the binary heuristic never got to speak
         # for anything over 1 MiB and every large image, archive, or compiled
@@ -492,6 +503,22 @@ class ReleaseDocument(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.load([{"version": "v3.2.0", "commit": "a" * 40,
                         "published": "2026-02-01T00:00:00Z"}])
+
+    def test_a_releases_document_that_is_not_an_array_is_a_usage_failure(self):
+        # A producer that emitted one object instead of a list, or `null`, must
+        # not be iterated: whatever a non-list yields on iteration is not a
+        # release, and a TypeError escaping load_releases is not the exit-2
+        # usage failure the caller handles.
+        with self.assertRaisesRegex(ValueError, "JSON array"):
+            self.load({"version": "v3.2.0", "commit": "a" * 40,
+                       "published": "2026-02-01"})
+
+    def test_a_release_entry_that_is_not_an_object_is_a_usage_failure(self):
+        # A list of tag names rather than release objects. Without the guard
+        # `.get` raises AttributeError, which is not a usage failure any caller
+        # catches, so the sweep dies with a traceback instead of exit 2.
+        with self.assertRaisesRegex(ValueError, "must be an object"):
+            self.load(["v3.2.0"])
 
     def test_a_well_formed_document_loads(self):
         releases = self.load(
