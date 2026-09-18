@@ -629,6 +629,30 @@ rc="$(WORKFLOWS_FAIL=true run_audit)"
   && pass "unreadable workflow source fails closed" \
   || { fail "a workflow-source API failure was absorbed ($rc)"; out | sed 's/^/diag - /'; }
 
+# --- an empty workflow-source fetch is a fault, not "the repository has none" -
+# The same defect shape as `generated-contract-artifact-empty`, one function
+# away: `gh api ... | base64 --decode` exits 0 on an empty stream, so a contents
+# fetch that returned nothing lands as an empty `$source` that the inspector
+# reads as a workflow with no jobs. This first asserts that reading directly,
+# because it is the reason the guard has to exist rather than an inference
+# about it: the inspector CANNOT distinguish "fetched nothing" from "the
+# adopter wires nothing", so only the audit can.
+inspector_on_empty="$(python3 -I "$REPO_ROOT/scripts/required-checks-workflow.py" changelog </dev/null)"
+inspector_on_empty_rc=$?
+{ [ "$inspector_on_empty_rc" -eq 0 ] \
+  && [ "$(jq -r '.changelog_contract' <<<"$inspector_on_empty")" = absent ] \
+  && [ "$(jq -r '.generated_changelog' <<<"$inspector_on_empty")" = absent ] \
+  && [ "$(jq -r '.path_filter' <<<"$inspector_on_empty")" = false ]; } \
+  && pass "the workflow inspector reports an empty source as absent wiring, so the audit must guard the fetch" \
+  || { fail "the inspector no longer reads empty input as absent wiring (rc=$inspector_on_empty_rc); re-derive the audit's empty-source guard"; printf 'diag - %s\n' "$inspector_on_empty"; }
+
+stack node
+: >"$content_root/.github/workflows/ci.yml"
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'workflow-source-unreadable' "$tmp/out.txt"; } \
+  && pass "an empty workflow-source fetch fails closed instead of reporting absent wiring" \
+  || { fail "an empty workflow source was read as a repository that wires nothing ($rc)"; out | sed 's/^/diag - /'; }
+
 stack node
 printf 'on: [unterminated\n' >"$tmp/workflow.yml"
 encode_workflow
