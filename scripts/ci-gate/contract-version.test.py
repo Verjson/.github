@@ -403,8 +403,10 @@ class ScanTotality(unittest.TestCase):
     def test_a_64_hex_container_digest_is_not_a_40_hex_contract_sha(self):
         # Without the trailing boundary on HEADER_RE, the first 40 characters
         # of a `sha256:` digest read as a contract SHA and the repository gets
-        # a PIN_MISMATCH against a reference it does not have. The hub's own
-        # generated headers sit on comment lines next to image digests.
+        # a PIN_MISMATCH against a reference it does not have. This line is
+        # constructed, not sampled: no file in this repository puts a 64-hex run
+        # on a line that also names the hub, so the boundary defends a shape the
+        # header pass admits rather than one it has already met.
         root = self.repo()
         (root / ".github" / "workflows" / "image.yml").write_text(
             "# Verjson/.github runner image sha256:" + "0123456789abcdef" * 4 + "\n")
@@ -518,6 +520,28 @@ class ScanTotality(unittest.TestCase):
         track(root)
         self.assertEqual(
             git(root, "ls-files", "-s", "link.yml").stdout.split()[0], "120000")
+        self.assertEqual(self.verify(root), [])
+
+    def test_a_symlinked_node_modules_is_skipped_rather_than_opened_as_a_gap(self):
+        # The shape the guard was written for, and the one the vendored-caller
+        # test above does not reach: `node_modules` is a symlink to a directory
+        # (this repository's own 48c9cd36), not a directory. A directory
+        # fixture passes whether or not the guard exists, because a tracked
+        # directory is never an index entry in the first place. A symlink is,
+        # and without the guard the scan follows it: `stat` succeeds on the
+        # target directory, `open` then raises `IsADirectoryError`, and a
+        # vendored tree becomes an `UNSCANNED` gap no adopter can clear -- the
+        # permanent exit 1 that gets a check muted.
+        root = self.repo()
+        vendored = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, vendored, ignore_errors=True)
+        (vendored / "ci.yml").write_text(
+            "jobs:\n  ci:\n    uses: Verjson/.github/.github/workflows/node-ci.yml@"
+            + "b" * 40 + "\n")
+        (root / "node_modules").symlink_to(vendored, target_is_directory=True)
+        track(root)
+        self.assertEqual(
+            git(root, "ls-files", "-s", "node_modules").stdout.split()[0], "120000")
         self.assertEqual(self.verify(root), [])
 
     def test_an_absent_git_is_a_refusal_rather_than_an_empty_scan(self):
