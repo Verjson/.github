@@ -22,6 +22,11 @@ fails=0
 
 pass() { printf 'ok   - %s\n' "$1"; }
 fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
+# A case whose FIXTURE cannot be built in this environment. It is not a pass:
+# reporting "ok" for an assertion that never ran is the defect class this suite
+# exists to close, and a silent omission is worse. Use it only where the reason
+# is a property of the host, and say which property.
+skip() { printf 'skip - %s\n' "$1"; }
 
 [ -x "$gen" ] || { echo "FAIL - $gen is not executable"; exit 1; }
 
@@ -1935,9 +1940,19 @@ build_adopter "$legacy_release" legacy
 run_adopter "$legacy_release" \
   && fail "emitted suite accepted the hand-copied verjson-payments release shape" \
   || pass "emitted suite rejects the hand-copied verjson-payments release shape"
-grep -q 'gen-changelog-caller.sh release-node' "$tmproot/run.out" \
-  && pass "the legacy release shape is rejected with the command that fixes it" \
-  || fail "the legacy release rejection names no remedy: $(tail -2 "$tmproot/run.out")"
+# The set-level atomicity verdict runs before every per-member assertion and is
+# fatal, so it is what a legacy release.yml now hits first: a hand-copied file
+# declares no generator-mode header at all. That is the correct diagnosis --
+# regenerating the member is the fix for every defect the per-member assertions
+# would have found in it -- but the remedy must name all three modes that write
+# release.yml. ~21 repositories carry this shape and they do not all want
+# release-node: telling every one of them to run it would publish npm packages
+# from repositories that publish GitHub Release assets, or nothing at all.
+{ grep -qF 'gen-changelog-caller.sh {release-node|release-artifact|release-snapshot}' "$tmproot/run.out" \
+  && grep -qF 'release-artifact publishes GitHub Release assets' "$tmproot/run.out" \
+  && grep -qF 'release-snapshot publishes nothing from the release workflow' "$tmproot/run.out"; } \
+  && pass "the legacy release shape is rejected with every command that could fix it" \
+  || fail "the legacy release rejection names no remedy, or names only one mode: $(tail -2 "$tmproot/run.out")"
 
 # The counterpart. docs/changelog/README.md tells adopters to write exactly this
 # comment next to a correct wiring, so a guard matching the raw line would break
@@ -2813,6 +2828,60 @@ expect_set_divergence_named .github/workflows/release.yml
 expect_set_divergence_named .github/workflows/release-propose.yml
 expect_set_divergence_named scripts/render-next.sh
 
+# Every enumerated member is a path the generator can actually WRITE. A member
+# no mode produces is dead enumeration that ships to ~95 repositories: it can
+# never fire, and the remedy it would print names a mode that does not write
+# that path. The generator's usage block is the authority on which mode writes
+# where, so the enumeration is checked against it rather than against a second
+# hand-kept list that can drift the same way.
+generator_output_paths="$(sed -nE 's|^#   scripts/gen-changelog-caller\.sh .* > (.+)$|\1|p' "$gen")"
+enumerated_members="$(sed -nE 's|^generated_set_check +([^ ]+) .*$|\1|p' "$emitted")"
+unwritable_members=''
+while read -r member; do
+  [ -n "$member" ] || continue
+  grep -qxF "$member" <<<"$generator_output_paths" || unwritable_members="$unwritable_members $member"
+done <<<"$enumerated_members"
+[ -n "$enumerated_members" ] \
+  || fail "no set members were enumerated; the extraction above stopped matching the emitted suite"
+[ -z "$unwritable_members" ] \
+  && pass "every enumerated set member is a path some generator mode writes" \
+  || fail "the set enumerates members no generator mode writes:$unwritable_members"
+
+# The remedy printed for `.github/workflows/changelog.yml` has to name every
+# mode that writes it. Adopters run all three: `generated-artifacts-with-adr-index`
+# additionally wires `adr-index: true` and the pinned scripts/gen-adr-index.sh,
+# so a human who follows a remedy hardcoded to `generated-artifacts` silently
+# drops that wiring and the validate_adr_generator path with it. A wrong remedy
+# on ~95 repositories is worse than no remedy.
+changelog_remedy="$tmproot/adopter-changelog-remedy"
+build_adopter "$changelog_remedy" yes generated-artifacts-with-adr-index
+stale_pin "$changelog_remedy" .github/workflows/changelog.yml
+run_adopter "$changelog_remedy"
+changelog_finding="$(grep -F '.github/workflows/changelog.yml is still at' "$tmproot/run.out")"
+{ grep -qF 'gen-changelog-caller.sh {generated-artifacts|generated-artifacts-with-adr-index|workflow}' <<<"$changelog_finding" \
+  && grep -qF 'adr-index: true' <<<"$changelog_finding"; } \
+  && pass "the changelog caller remedy names every mode that writes it, not just one" \
+  || fail "the changelog caller remedy names one mode and would drop adr-index wiring: ${changelog_finding:-<no changelog.yml finding>}"
+
+# The header states which MODE produced the file, and that is part of the claim.
+# A `changelog.yml` carrying a `pr-gate` header at the correct pin is not the
+# changelog caller, and the set-level verdict is advertised as authoritative --
+# accepting it would make the block print `ok` for a file it has not identified
+# and, when it did fire, print a remedy for the wrong mode. Downstream
+# per-member assertions reject this adopter either way, so the assertion is on
+# the SET-LEVEL verdict, not on the suite's exit status.
+forged_mode="$tmproot/adopter-forged-mode-header"
+build_adopter "$forged_mode"
+sed -i -E \
+  's|^(# Generated by Verjson/\.github scripts/gen-changelog-caller\.sh )[a-z][a-z-]*( [0-9a-f]{40})|\1pr-gate\2|' \
+  "$forged_mode/.github/workflows/changelog.yml"
+run_adopter "$forged_mode"
+{ ! grep -qF "every generated member of the adopter set pins $sha" "$tmproot/run.out" \
+  && grep -qF 'the generated adopter set is not atomic' "$tmproot/run.out" \
+  && grep -qF '.github/workflows/changelog.yml' "$tmproot/run.out"; } \
+  && pass "the set-level verdict refuses a member declaring a mode that does not write it" \
+  || fail "the set-level verdict accepted a changelog.yml carrying a pr-gate header at the pin: $(tr '\n' ' ' <"$tmproot/run.out" | tail -c 400)"
+
 # Regenerating the WHOLE set together is the conformant case, and it has to be
 # asserted positively: a check that only ever reddens proves nothing about the
 # state it is supposed to accept.
@@ -2872,7 +2941,13 @@ expect_unestablished_pin() {
 }
 
 remove_member() { rm -f "$1"; }
-make_unreadable() { chmod 000 "$1"; }
+make_unreadable() {
+  chmod 000 "$1"
+  # Belt and braces for a filesystem that does not honour the mode bits (an
+  # ACL, a permissive fuse mount): if the fixture is still readable the case
+  # below asserts nothing while printing "ok".
+  [ ! -r "$1" ] || fail "make_unreadable left $1 readable; the unreadable-member case would assert nothing"
+}
 empty_member() { : >"$1"; }
 mangle_pin_line() {
   # The pin declaration survives as prose but stops being a parsable claim.
@@ -2886,11 +2961,27 @@ duplicate_pin_line() {
 }
 
 expect_unestablished_pin "a required member deleted outright" scripts/render-next.sh remove_member
-expect_unestablished_pin "a required member that cannot be read" scripts/render-next.sh make_unreadable
+# `chmod 000` does not restrict uid 0, so on a container runner running as root
+# this fixture is readable and the case passes having exercised nothing. Named
+# as a skip rather than quietly left in: a vacuous "ok" here would be the same
+# shape of failure as the fail-open it covers.
+if [ "$(id -u)" -eq 0 ]; then
+  skip "a required member that cannot be read: chmod 000 does not restrict uid 0, so this fixture cannot be built here"
+else
+  expect_unestablished_pin "a required member that cannot be read" scripts/render-next.sh make_unreadable
+fi
 expect_unestablished_pin "a required member emptied to zero bytes" scripts/render-next.sh empty_member
 expect_unestablished_pin "a pin declaration that no longer parses" scripts/render-next.sh mangle_pin_line
 expect_unestablished_pin "a member declaring two different pins" scripts/render-next.sh duplicate_pin_line
 expect_unestablished_pin "a caller header stripped of its pin" .github/workflows/changelog-contract.yml mangle_pin_line
+# This suite is a member of the set it checks, so its own pin claim is read out
+# of the file the comparison value was itself assigned from: the "still at"
+# arm cannot fire for it. The multiplicity arm can, and it is exactly the
+# partial regeneration this section is about -- a human repinning the suite by
+# adding a second CONTRACT_REF line instead of regenerating the set leaves a
+# file that is half-old and half-new. The self-referential member stays
+# enumerated because of this arm, so the arm is asserted rather than assumed.
+expect_unestablished_pin "the suite itself declaring two different pins" scripts/changelog-contract.test.sh duplicate_pin_line
 
 # --------------------------------------------------------------------------
 # A member's header is a claim, never an instruction (#1369)
