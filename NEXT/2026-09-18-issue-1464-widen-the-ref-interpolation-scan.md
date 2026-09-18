@@ -440,3 +440,54 @@ five records on the same five sites, and `scripts/privileged-merge-conformance.s
 untouched in this round's delta. Fixing the event stream widens no reading: every new event
 is one bash already executes, so a record that gained an opener also had its matching closer
 counted all along, and the balance it restores can only make the walk stricter.
+
+Round 11 stops patching tokens and inverts the event stream itself. Round 10 argued its
+restart set was closed "because it is read off that grammar rather than collected from
+counterexamples"; `coproc` was in the set but `coproc`'s *optional NAME* was not, so
+`coproc c if q; then` emitted no events where the unnamed `coproc if q; then` emitted `if`,
+and only the unnamed spelling was pinned. End to end on bash 5.2.21, `bash -n` clean and
+clean through every existing filter, `if ! <hex guard>; then` / `coproc c if q; then` /
+`exit 1` / `fi` / `fi` / `gh api …` read LIVE in both `whole` and `slice` mode, went DEAD on
+deleting the two characters `c `, and when executed printed `REACHED use with [not-a-sha]`
+because the `exit 1` runs in the coprocess.
+
+The generator of that hole, and of the nine before it, is that `branch_events` was
+permissive: a command-position construct it had no rule for was scanned past in silence, so
+unmodelled and absent produced the same empty stream and absent reads as safe. The stream now
+has the same inverted default `arm_record_is_modelled` has had since round 6. Command-position
+classification is total over bash's reserved words — the closed set bash publishes as
+`compgen -k` — and a reserved word the walk does not positively classify is emitted as
+`decline:<word>`, which `negated_branch_dominates` reads *before* any event the same record
+emitted and rejects on. `branch_events_classifies_every_reserved_word` asserts the four
+buckets partition `compgen -k` exactly, so a word bash adds or an edit drops reddens there
+instead of rejoining a permissive default; it replaces a prose closure argument with a
+checkable one. `coproc` is declined rather than modelled, because modelling `coproc [NAME]
+command` is one more token rule of the kind that produced ten rounds of holes.
+
+Two things fall out instead of being special-cased. Grouping punctuation is now counted
+rather than stripped, so a doubled `((`/`))` declines: stripping it had manufactured
+command-position words out of arithmetic, and `if (( fi > 0 )); then a; fi` read `if fi fi`
+— a spurious closer firing the guarded return one level too shallow, caught only by the
+record-level parenthesis filter. And a declining record is visibly declined in the stream
+rather than silently clean, which is the difference between the walk abstaining and the walk
+clearing something.
+
+Cost, measured rather than assumed: across 144 files and 33,196 logical records, 132 records
+now carry a decline and all 132 were *already* refused by `arm_record_is_modelled`'s
+parenthesis rule — they are embedded `jq` and `awk` program bodies. The corpus contains no
+`coproc`. No site needed a new allowlist entry, all four published figures are unchanged
+again (77 ref interpolations, 21 of them Python, 144 files, 14 allowlisted sites, 11
+allowlist entries), and the corpus witness floor still measures five records.
+`stream_only_declines` pins that zero — it counts only declines that cost the anchor reach it
+previously had — with a floor requiring at least one declining record so the zero is not
+vacuous. A sound prefilter derived from the decline bucket keeps the suite near its previous
+runtime.
+
+One claim is deleted rather than narrowed: the pinned assertion that `coproc` is a restart,
+and therefore that the `if` after an unnamed `coproc` is counted. The walk no longer counts
+openers inside a `coproc`'s command at all. That loss is one-directional — the record now
+rejects instead of being modelled — so it costs reach, never safety, and both spellings are
+pinned now, because pinning only the unnamed one is what let round 10's argument stand. The
+decision is recorded in ADR 0196, which names what the inversion does not buy: it is not a
+proof of correctness against bash's parser, and `compgen -k` totality proves only that no
+reserved word is missing from the classification, not that each is in the right bucket.

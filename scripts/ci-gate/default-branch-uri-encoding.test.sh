@@ -151,6 +151,24 @@
 #             a record that emits no `branch_events` at all (#1464 re-review round 9).
 #             Measured on this repository, that cost moved none of the pinned counts: 77
 #             sites, 144 files, 14 allowlisted sites, 11 allowlist entries, all unchanged.
+#           · THE EVENT STREAM HAS THE SAME INVERTED DEFAULT (#1464 re-review round 11,
+#             ADR 0196). `branch_events` used to scan silently past any command-position
+#             construct it had no rule for, so "unmodelled" and "absent" produced the same
+#             empty stream and absent reads as safe -- the generator of every round from 5
+#             to 10. It now classifies TOTALLY over bash's reserved words, which bash itself
+#             publishes as `compgen -k`, and emits `decline:<word>` for a reserved word it
+#             does not positively classify; `negated_branch_dominates` reads a decline
+#             BEFORE any event the same record emitted and REJECTS. `coproc` is declined
+#             rather than modelled, because its optional NAME is not a command and
+#             `coproc c if q; then` lost the `if` entirely. Doubled `((`/`))` is declined
+#             too, because stripping the punctuation to "judge the word" manufactured
+#             SPURIOUS closers out of arithmetic (`(( fi ))` emitted `fi`). Measured cost:
+#             132 scanned records now decline and all 132 were ALREADY refused by
+#             `arm_record_is_modelled`, so no site needed a new allowlist entry and none of
+#             the counts above moved. `stream_only_declines` asserts that zero, so a later
+#             widening that does cost reach reddens instead of passing quietly. This does
+#             NOT make the walk correct against bash's parser; it converts an unknown
+#             construct from a silent fail-open into a visible decline.
 #           · `continue`/`break` are rejected outright rather than modelled. They leave a
 #             guard only inside a loop, the lexical `do`/`done` count that established that
 #             was ~60 lines whose last real site #1466 rewrote into an `elif`, and in
@@ -201,13 +219,22 @@
 #         Round 7 then found the exception round 6 had just added reading a label's first
 #         word as a command; round 8's inertness fix was itself read into by round 9's
 #         `case "$b" in y)`.
-#         Eight consecutive rounds shipped a sentence of the form "this is the only ..." or
+#         TEN consecutive rounds shipped a sentence of the form "this is the only ..." or
 #         "the accepted set is exactly ..." about this anchor and every one was falsified
-#         within a round. Enumerate what is open; do not write another one. Round 6's
+#         within a round -- round 10's was "the restart set is closed because it is read off
+#         that grammar rather than collected from counterexamples", and `coproc`'s optional
+#         NAME falsified it in one sitting. Enumerate what is open; do not write another one. Round 6's
 #         structural answer is not that the list is now complete -- it is that the walk stops
-#         ACCEPTING what is not on it. Round 9 adds the only POSITIVE claim this file makes
-#         about the walk, stated and tested at `arm_record_is_case_label`: a record treated
-#         as inert emits no `branch_events` at all. Nothing else is claimed.
+#         ACCEPTING what is not on it. This file makes exactly TWO positive claims about the
+#         walk, and both are tested rather than argued. Round 9's: a record treated as inert
+#         emits no `branch_events` at all (`arm_record_is_case_label`). Round 11's: the
+#         command-position classification is TOTAL over bash's reserved words, asserted
+#         against `compgen -k` by `branch_events_classifies_every_reserved_word`, so a word
+#         bash adds or an edit drops cannot silently rejoin a permissive default. Note what
+#         the second does NOT claim: that each word is in the RIGHT bucket, that the walk
+#         parses bash, or that a non-reserved word can never open a command position. It
+#         claims only that none is MISSING, which is the one thing ten rounds of prose
+#         closure arguments kept getting wrong. Nothing else is claimed.
 #       · that same proof is positional, not dataflow: it establishes that the use LINE is
 #         inside the protected arm, not that the value reaching the use is the value the
 #         guard tested. A re-assignment between the guard and the use, or a different
@@ -676,24 +703,60 @@ guard_tail_is_fatal() { # $1 = the text following the pinned guard
 #   `if a; then if b; then c; fi; fi`    emitted `if fi fi`  (the `then` opened the part)
 #   `time if q; then a; fi`              emitted `fi`        (the `time` opened the part)
 #
+# THE WALK DECLINES WHAT IT CANNOT POSITIVELY CLASSIFY. Rounds 5 to 10 each closed a real
+# counterexample and each was followed by another fail-open in the same place, because the
+# stream was PERMISSIVE: a command-position construct it had no rule for was scanned past in
+# silence, so "unmodelled" and "absent" produced the same empty stream and absent reads as
+# safe. Round 10's own closure argument -- "the restart set is closed because it is read off
+# bash's grammar" -- was false in one word: `coproc` was a restart, but `coproc`'s OPTIONAL
+# NAME is not a command, so `coproc c if q; then` read `coproc` (restart), read `c` as an
+# ordinary command word, stopped, and lost the `if` that followed it. Only the unnamed
+# spelling was pinned. That is the same net-negative direction, reopened one token over.
+#
+# So the classification below is TOTAL over bash's reserved words rather than a set of
+# restarts with an implicit "everything else is an ordinary command" default. A word in
+# command position is exactly one of:
+#   · a RESERVED WORD this walk positively classifies -- restart, pattern-open, or stop;
+#   · a reserved word it does NOT classify -- DECLINED, emitted as `decline:<word>`;
+#   · anything else, which by bash's grammar IS the command name, after which the rest of
+#     the part is its arguments and command position genuinely ends.
+# The reserved words are a closed set bash itself publishes as `compgen -k`, and
+# `branch_events_classifies_every_reserved_word` below requires every member to appear in
+# exactly one bucket. A word bash adds, or one a future edit drops from a bucket, therefore
+# fails that assertion instead of silently rejoining the permissive default. This is the
+# same inversion `arm_record_is_modelled` already applies one layer up, pushed down into the
+# stream, so an unmodelled construct is now LOUD rather than invisible.
+#
+# `coproc` is DECLINED rather than modelled. Modelling `coproc [NAME] command` is one more
+# token rule of exactly the kind that produced ten rounds of holes; declining it costs the
+# corpus nothing measurable and cannot be wrong in the fail-open direction.
+#
+# Parentheses are classified, not stripped. A SINGLE leading `(` opens a subshell and a
+# SINGLE trailing `)` closes a `case` pattern, and those two are modelled. A DOUBLED `((` or
+# `))` is arithmetic, whose contents are expressions and not commands, so blindly stripping
+# the punctuation invented command-position words out of arithmetic: `if (( fi > 0 )); then
+# a; fi` read `if fi fi`, a SPURIOUS closer that fires one level too shallow. Only the
+# `arm_record_is_modelled` parenthesis filter stood between that and the anchor. It now
+# declines at the stream, which is where a wrong stream is repaired.
+#
 # COMMAND POSITION RESTARTS after exactly the tokens bash's grammar lets a command follow
-# with no `;` or newline between them, and the list is closed because it is read off that
-# grammar rather than collected from counterexamples:
+# with no `;` or newline between them:
 #   · the list-introducing reserved words -- `if`, `elif`, `then`, `else`, `do`, `while`,
 #     `until`. (`while`/`until` introduce a list and so must restart, even though `do` is
 #     still the token counted for depth.)
 #   · the two grouping openers, `{` and `(`. `(` is the one opener bash accepts with no
 #     space after it, so it can be glued to the word it puts in command position (`(if q`).
 #   · the pipeline prefixes `!`, `time`, and `time`'s own `-p`/`--` options.
-#   · `coproc`, which takes a command.
 #   · a `)` ENDING the word, which closes a `case` pattern and puts the arm body in command
 #     position -- `a) if q; then b; fi` inside a `case` is ordinary shell.
-# Deliberately NOT restarts, because the word that follows each is a NAME or a pattern and
-# not a command -- `case if in …`, `for if in …`, `select if in …` and `function if` are all
-# legal and in none of them is `if` a reserved word: `case`, `for`, `select`, `function`,
-# `in`. Neither is an assignment or redirection prefix (`X=1 if …` and `>f if …` are both
-# syntax errors, so a reserved word can never be in command position after one), nor a
-# closer (`fi fi` is a syntax error too).
+# Classified as STOPPING command position, because the word that follows each is a NAME, a
+# pattern, or a conditional expression and not a command -- `for if in …`, `select if in …`
+# and `function if` are all legal and in none of them is `if` a reserved word: `for`,
+# `select`, `function`, `in`, `[[`, `]]`. So are the closers `fi`, `done`, `esac` and `}`
+# (`fi fi` is a syntax error). `case` is the twelfth and gets pattern state, below. An
+# assignment or redirection prefix is not a reserved word at all and takes the ordinary
+# command-name path (`X=1 if …` and `>f if …` are both syntax errors, so a reserved word
+# can never be in command position after one).
 # `case` is the one that needs state rather than a verdict: it restarts command position,
 # but only after the `)` that ends its first pattern, so the scan SKIPS from `case` to that
 # `)` and emits nothing in between. Without that skip `case $x in a) if q; then b; fi ;; esac`
@@ -701,8 +764,24 @@ guard_tail_is_fatal() { # $1 = the text following the pinned guard
 # `arm_record_is_modelled` declines that record for its bare `)` before the walk ever reads
 # it, so the miss was fail-closed there; it is fixed in `branch_events` anyway, because the
 # whole lesson of rounds 5 to 9 is that a net-negative stream is repaired at the stream.
-branch_events() { # $1 = structural text -> EVERY command-position if/fi/else/elif/do/done/case/esac
-  local st="$1" part rest word prev at_command trailing in_pattern
+# The four buckets, disjoint and together exactly `compgen -k`. They are data rather than
+# `case` arms so the totality assertion can read them; see
+# `branch_events_classifies_every_reserved_word`.
+# Every entry is quoted: these are DATA, and shellcheck reads an unquoted reserved word in
+# an array literal as a misplaced keyword (SC1010).
+BRANCH_RESTART_WORDS=('if' 'elif' 'then' 'else' 'do' 'while' 'until' '{' '!' 'time')
+BRANCH_PATTERN_WORDS=('case')
+BRANCH_STOP_WORDS=('fi' 'done' 'esac' 'for' 'select' 'function' 'in' '[[' ']]' '}')
+BRANCH_DECLINE_WORDS=('coproc')
+
+branch_word_in() { # $1 = word, $2… = bucket -> 0 when the word is a member
+  local needle="$1" w; shift
+  for w in "$@"; do [ "$w" = "$needle" ] && return 0; done
+  return 1
+}
+
+branch_events() { # $1 = structural text -> EVERY command-position event, or a `decline:<word>`
+  local st="$1" part rest word raw lead trail at_command prev trailing in_pattern
   st="${st//&&/;}"; st="${st//||/;}"; st="${st//|/;}"; st="${st//&/;}"
   local IFS=';'
   for part in $st; do
@@ -710,12 +789,18 @@ branch_events() { # $1 = structural text -> EVERY command-position if/fi/else/el
     while [ "$at_command" -eq 1 ]; do
       rest="${rest#"${rest%%[![:space:]]*}"}"
       [ -n "$rest" ] || break
-      word="${rest%%[[:space:]]*}"; rest="${rest#"$word"}"
-      # Strip the grouping punctuation off the word so the word itself can be judged. A
-      # leading `(` is a restart by itself; a trailing `)` is one too, per the note above.
-      trailing=0
-      while [ "${word#\(}" != "$word" ]; do word="${word#\(}"; done
-      while [ "${word%\)}" != "$word" ]; do word="${word%\)}"; trailing=1; done
+      word="${rest%%[[:space:]]*}"; rest="${rest#"$word"}"; raw="$word"
+      # Count the grouping punctuation instead of stripping it away. ONE leading `(` opens a
+      # subshell and ONE trailing `)` closes a `case` pattern; a DOUBLED `((`/`))` is an
+      # arithmetic command whose contents are expressions, and stripping it manufactured
+      # command-position words out of arithmetic (`(( fi ))` emitted a spurious `fi`).
+      lead=0; trail=0
+      while [ "${word#\(}" != "$word" ]; do word="${word#\(}"; lead=$((lead + 1)); done
+      while [ "${word%\)}" != "$word" ]; do word="${word%\)}"; trail=$((trail + 1)); done
+      if [ "$lead" -gt 1 ] || [ "$trail" -gt 1 ]; then
+        printf 'decline:%s\n' "$raw"; at_command=0; continue
+      fi
+      trailing="$trail"
       # Between `case` and the `)` that ends its first pattern nothing is a command: the
       # subject word, `in`, and the pattern itself are all data. `case if in a) ;; esac` is
       # legal bash in which `if` is a PATTERN, so emitting it here would invent an opener.
@@ -735,16 +820,30 @@ branch_events() { # $1 = structural text -> EVERY command-position if/fi/else/el
         # pairs with `done`, in both the same-line and the split spelling.
         do | done | case | esac) printf '%s\n' "$word" ;;
       esac
-      # `case` does not restart command position -- it opens a pattern, which the branch
-      # above skips until the `)` that ends it.
-      if [ "$word" = case ]; then in_pattern=1; prev="$word"; continue; fi
+      # A `)` ended the word, so a `case` pattern just closed and the arm body is in command
+      # position whatever the word itself was. Otherwise the word decides, and the decision
+      # is total over the reserved words: restart, open a pattern, stop, or DECLINE.
       if [ "$trailing" -eq 0 ]; then
-        case "$word" in
-          if | elif | then | else | do | while | until | '{' | '!' | time | coproc) ;;
+        if branch_word_in "$word" "${BRANCH_PATTERN_WORDS[@]}"; then
+          in_pattern=1; prev="$word"; continue
+        elif branch_word_in "$word" "${BRANCH_RESTART_WORDS[@]}"; then
+          :
+        elif branch_word_in "$word" "${BRANCH_DECLINE_WORDS[@]}"; then
+          # `coproc [NAME] command`: the optional NAME is not a command, so neither scanning
+          # past it nor restarting on it is sound. Refuse the record instead of modelling it.
+          printf 'decline:%s\n' "$raw"; at_command=0
+        elif branch_word_in "$word" "${BRANCH_STOP_WORDS[@]}"; then
+          at_command=0
+        else
           # `time [-p] [--] pipeline`, and only right after `time` or another of its options.
-          -p | --) case "$prev" in time | -p | --) ;; *) at_command=0 ;; esac ;;
-          *) at_command=0 ;;
-        esac
+          case "$word" in
+            -p | --) case "$prev" in time | -p | --) ;; *) at_command=0 ;; esac ;;
+            # Not a reserved word, so by bash's grammar it IS the command name and the rest
+            # of the part is its arguments. This is the one place command position really
+            # ends, and it is a positive classification rather than a fallthrough.
+            *) at_command=0 ;;
+          esac
+        fi
       fi
       prev="$word"
     done
@@ -933,12 +1032,17 @@ arm_record_is_modelled() { # $1 = raw record, $2 = structural text, $3 = 1 when 
 }
 
 negated_branch_dominates() { # $1 = index of the guard's record in GUARD_RECORDS
-  local i d=0 event struct in_then=1 arm_terminates=1 depth_at_start expecting_label=0
+  local i d=0 event events struct in_then=1 arm_terminates=1 depth_at_start expecting_label=0
   for ((i = $1 + 1; i < ${#GUARD_RECORDS[@]}; i++)); do
     struct="$(shell_structure "${GUARD_RECORDS[i]}")"
     # The inverted default: a record this walk cannot account for ENDS the walk as a REJECT.
     # Modelling these regions is shell parsing. Refusing them is not.
     arm_record_is_modelled "${GUARD_RECORDS[i]}" "$struct" "$expecting_label" || return 1
+    # The same default inside the event stream. A `decline:` is read BEFORE any event this
+    # record also emitted, so a record that both closes a construct and carries an
+    # unclassified command-position word cannot return through its `fi` first.
+    events="$(branch_events "$struct")"
+    case "$events" in *decline:*) return 1 ;; esac
     # A record admitted as a `case` arm pattern label is INERT: it contributes no statement
     # to the arm and no event to the depth count. `arm_record_is_case_label` grants that only
     # in arm position and only to a record that emits nothing, so the `continue` below cannot
@@ -975,7 +1079,7 @@ negated_branch_dominates() { # $1 = index of the guard's record in GUARD_RECORDS
         'esac') [ "$d" -eq 0 ] && return 1; d=$((d - 1)); expecting_label=0 ;;
         else | elif) [ "$d" -eq 0 ] && in_then=0 ;;
       esac
-    done < <(branch_events "$struct")
+    done < <(printf '%s\n' "$events")
   done
   # The records ran out without closing the construct. Inside the `else`/`elif` arm that is
   # the use sitting in the protected extent; still inside the `then` arm it proves nothing.
@@ -1190,6 +1294,48 @@ arm_label_is_inert_violations() { # $1 = file; prints every record that breaks t
   return 0
 }
 
+# THE MEASURED COST OF THE INVERSION, kept measured. Declining what the walk cannot
+# classify is only affordable while the corpus does not actually write those constructs, and
+# "it was free when we shipped it" is a claim that rots silently. This reports, per record,
+# whether the STREAM declines a record that `arm_record_is_modelled` would otherwise have
+# ACCEPTED -- i.e. a refusal the anchor did not already make one layer up, and therefore real
+# lost reach rather than a second refusal of the same record.
+# Sound prefilter, derived from the buckets rather than hand-listed: a decline is emitted
+# only for a doubled `((`/`))` or for a member of `BRANCH_DECLINE_WORDS`, and blanking only
+# ever replaces a character with a space, so a record containing none of those substrings
+# cannot acquire one. Deriving it from the bucket means adding a decline word cannot leave
+# the filter behind.
+branch_record_may_decline() { # $1 = raw record
+  local w
+  case "$1" in *'(('*) return 0 ;; *'))'*) return 0 ;; esac
+  for w in "${BRANCH_DECLINE_WORDS[@]}"; do
+    case "$1" in *"$w"*) return 0 ;; esac
+  done
+  return 1
+}
+
+stream_only_declines() { # $1 = file; counts records the stream declines that the record model accepts
+  local rec struct n=0
+  while IFS= read -r rec; do
+    branch_record_may_decline "$rec" || continue
+    struct="$(shell_structure "$rec")"
+    case "$(branch_events "$struct")" in *decline:*) ;; *) continue ;; esac
+    arm_record_is_modelled "$rec" "$struct" 1 && n=$((n + 1))
+  done < <(logical_lines slice <"$1" 2>/dev/null)
+  printf '%s\n' "$n"
+}
+
+# Every record the stream declines, whatever the record model says. The floor below uses it
+# so the zero above cannot be zero merely because nothing in the corpus declines at all.
+stream_declines() { # $1 = file; counts records whose event stream carries a decline
+  local rec n=0
+  while IFS= read -r rec; do
+    branch_record_may_decline "$rec" || continue
+    case "$(branch_events "$(shell_structure "$rec")")" in *decline:*) n=$((n + 1)) ;; esac
+  done < <(logical_lines slice <"$1" 2>/dev/null)
+  printf '%s\n' "$n"
+}
+
 arm_label_shaped_emitters() { # $1 = file; counts records that are label-SHAPED and do emit
   local rec struct n=0
   while IFS= read -r rec; do
@@ -1203,6 +1349,8 @@ arm_label_shaped_emitters() { # $1 = file; counts records that are label-SHAPED 
 
 inert_violations=0
 inert_witnesses=0
+declines=0
+costly_declines=0
 for scan_file in "${scanned[@]}"; do
   case "$scan_file" in *.py) continue ;; esac
   while IFS= read -r offender; do
@@ -1211,6 +1359,8 @@ for scan_file in "${scanned[@]}"; do
     echo "::error::an inert arm label emitted a branch event: $scan_file :: $offender"
   done < <(arm_label_is_inert_violations "$root/$scan_file")
   inert_witnesses=$((inert_witnesses + "$(arm_label_shaped_emitters "$root/$scan_file")"))
+  declines=$((declines + "$(stream_declines "$root/$scan_file")"))
+  costly_declines=$((costly_declines + "$(stream_only_declines "$root/$scan_file")"))
 done
 [ "$inert_violations" -eq 0 ] \
   || fail "$inert_violations record(s) in the scanned files were treated as inert while emitting a branch event"
@@ -1218,6 +1368,25 @@ done
 # above stops being evidence of anything.
 [ "$inert_witnesses" -ge 1 ] \
   || fail "no scanned file contains an arm-label-shaped record that emits a branch event; the invariant test above is now vacuous"
+
+# Measured when the inversion landed: 132 of the scanned records carry a decline, and every
+# one of them was ALREADY refused by `arm_record_is_modelled`'s parenthesis rule -- they are
+# embedded `jq` and `awk` program bodies that `logical_lines` reads as records. So the
+# inversion cost nothing: no site needed a new allowlist entry and none of this file's
+# published counts moved. That is a fact about today's corpus, not a property, which is why
+# it is asserted rather than written down.
+#
+# If this fires, the stream is refusing something the record model accepts, and the anchor
+# has lost reach it used to have. Do NOT raise it to make the run green: a rising number is
+# the signal the brief for this change asked to see before it could be papered over, and the
+# answer is to classify the construct positively or to decide deliberately that the reach is
+# not worth having.
+[ "$costly_declines" -eq 0 ] \
+  || fail "$costly_declines scanned record(s) are declined by the event stream but accepted by arm_record_is_modelled; the inversion is now costing the anchor reach it previously had"
+# ... and the zero above must be a zero about something. A corpus with no declining records
+# at all would satisfy it vacuously.
+[ "$declines" -ge 1 ] \
+  || fail "no scanned record carries a branch_events decline; the cost assertion above is now vacuous"
 
 # The same property on records chosen to break it, so the test does not depend on repository
 # churn keeping a witness alive. Each must be label-SHAPED, must EMIT, and must therefore be
@@ -1844,6 +2013,43 @@ branch_events_case() { # $1 = label, $2 = one record, $3 = its expected event st
   bash -n <<<"$2" 2>/dev/null || fail "the pinned record is not legal bash: $2"
 }
 # The openers a first-word reading loses, one per token that can open a part ahead of them.
+# THE CLOSURE ARGUMENT, MADE CHECKABLE. Every round from 5 to 10 ended with prose asserting
+# its set was closed, and every one of those was falsified by the next round -- round 10's
+# "read off that grammar rather than collected from counterexamples" missed `coproc`'s NAME.
+# Prose cannot carry this claim, so the claim is an assertion instead: bash publishes its own
+# reserved words as `compgen -k`, and the four buckets must partition exactly that set. A
+# word bash adds, or one an edit drops from a bucket, reddens HERE rather than silently
+# rejoining a permissive default -- which is the whole difference between this round and the
+# ten before it. What it does NOT prove is that each word is in the RIGHT bucket; that is
+# what the individual cases below are for. It proves only that none is missing.
+branch_events_classifies_every_reserved_word() {
+  local -a classified=("${BRANCH_RESTART_WORDS[@]}" "${BRANCH_PATTERN_WORDS[@]}" \
+    "${BRANCH_STOP_WORDS[@]}" "${BRANCH_DECLINE_WORDS[@]}")
+  local word seen=''
+  # Disjoint: a word in two buckets means one of them is not doing what it says.
+  for word in "${classified[@]}"; do
+    case " $seen " in *" $word "*) fail "reserved word '$word' is in two branch_events buckets" ;; esac
+    seen="$seen $word"
+  done
+  # Total: every reserved word bash knows is classified.
+  while IFS= read -r word; do
+    case " $seen " in
+      *" $word "*) ;;
+      *) fail "bash reserved word '$word' has no branch_events classification; command position after it is unmodelled" ;;
+    esac
+  done < <(compgen -k)
+  # Nothing invented: a bucket entry that is not a reserved word would be dead weight the
+  # totality check above cannot see.
+  local known; known="$(compgen -k | tr '\n' ' ')"
+  for word in "${classified[@]}"; do
+    case " $known " in
+      *" $word "*) ;;
+      *) fail "'$word' is classified by branch_events but is not a bash reserved word" ;;
+    esac
+  done
+}
+branch_events_classifies_every_reserved_word
+
 branch_events_case 'a `{` group opening the part' \
   'probe || { if q; then a; fi; }' 'if fi'
 branch_events_case 'a `then` opening the part' \
@@ -1870,11 +2076,37 @@ branch_events_case 'an `elif` introducing a list' \
   'if a; then b; elif if c; then d; fi; then e; fi' 'if elif if fi fi'
 branch_events_case 'a `case` arm label putting its body in command position' \
   'case $x in a) if q; then b; fi ;; esac' 'case if fi esac'
-branch_events_case 'a `coproc`, which takes a command' \
-  'coproc if q; then a; fi' 'if fi'
+# `coproc` was pinned here as a RESTART, asserting that the `if` after an unnamed `coproc`
+# is counted. That assertion is DELETED, not narrowed, and what it proved is gone with it:
+# the walk no longer counts openers inside a `coproc`'s command at all. The loss is
+# one-directional -- a `coproc` record now REJECTS the walk instead of being modelled -- so
+# it costs reach, never safety, and it buys the `coproc NAME` spelling the old rule could
+# not see. Both spellings are pinned now, because pinning only one is what let round 10's
+# closure argument stand.
+branch_events_case 'an unnamed `coproc`, declined rather than modelled' \
+  'coproc if q; then a; fi' 'decline:coproc fi'
+branch_events_case 'a `coproc NAME`, whose NAME is not a command' \
+  'coproc c if q; then a; fi' 'decline:coproc fi'
 # ... and the words after which a reserved word is NOT one, so the scan must stop. Each of
 # these is legal bash in which `if` is an ordinary NAME or pattern, so emitting it would be
 # a spurious OPENER -- the fail-CLOSED direction, but a false alarm all the same.
+# Arithmetic, whose contents are expressions and not commands. The old walk STRIPPED the
+# grouping punctuation to "judge the word", which manufactured a command-position word out
+# of the expression: `(( fi ))` emitted a bare `fi` -- a SPURIOUS CLOSER, which fires the
+# guarded return one level too shallow. Nothing in the stream caught it; only
+# `arm_record_is_modelled`'s parenthesis filter did, one layer up. Counting the punctuation
+# instead of stripping it declines these without a rule naming `fi`, `done` or `esac`, which
+# is the test that the inversion did the work rather than a fourth special case.
+for arith_closer in 'if (( fi > 0 )); then a; fi' '(( done ))' '(( esac ))'; do
+  bash -n <<<"$arith_closer" \
+    || fail "the arithmetic spurious-closer vector is not legal bash: $arith_closer"
+done
+branch_events_case 'an arithmetic command holding a closer word' \
+  'if (( fi > 0 )); then a; fi' 'if decline:(( fi'
+branch_events_case 'a bare arithmetic `done`' '(( done ))' 'decline:(('
+branch_events_case 'a bare arithmetic `esac`' '(( esac ))' 'decline:(('
+branch_events_case 'a single-paren subshell, still modelled' '( if q; then a; fi )' 'if fi'
+
 branch_events_case 'a `case` subject word, not a command' 'case if in a) ;; esac' 'case esac'
 branch_events_case 'a `for` loop variable named `if`' 'for if in 1; do :; done' 'do done'
 branch_events_case 'a `select` loop variable named `if`' 'select if in 1; do :; done' 'do done'
@@ -1943,6 +2175,22 @@ guard_tail_case live 'the same `time` prefix above an `exit 1` at the arm top le
   'if ! '"$HEX_GUARD"'; then' \
   '  time if q; then a; fi' \
   '  exit 1' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+
+# ROUND 11. Round 10 said its restart set was "closed because it is read off that grammar
+# rather than collected from counterexamples". It was not: `coproc` is in the set, but
+# `coproc`'s OPTIONAL NAME is not a command, so the scan reads `coproc` (restart), reads the
+# name as an ordinary command word, and stops. Every later command-position word of that
+# part is then invisible -- the exact net-negative direction round 10 claimed to have closed.
+# `coproc c if q; then` emits nothing where `coproc if q; then` emits `if`, and only the
+# unnamed spelling was pinned. `bash -n` clean, and clean through every existing filter:
+# no unpaired paren, no bare `&`, no unbalanced brace, no here-document.
+guard_tail_case dead 'a `coproc NAME` whose following `if` was lost entirely' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  coproc c if q; then' \
+  '    exit 1' \
+  '  fi' \
   'fi' \
   'gh api "repos/$repository/commits/$head_sha"'
 
