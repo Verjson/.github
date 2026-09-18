@@ -2523,6 +2523,24 @@ while IFS=$'\t' read -r file line kind var syntax; do
   fail "$label reaches a gh api $kind position without a percent-encoding or a 40-hex constraint in its block"
 done < <(ref_sites)
 
+# Stated ceiling: this acceptance is POSITIONAL, not a dataflow fact. It requires an
+# encoding assignment to the ref variable above the use within the block; it does not
+# track the value that actually reaches the URL. So a later assignment to the same
+# variable defeats it silently -- inserting `base_ref_path="$base_ref"` between the
+# `@uri` encoding and the `gh api` line in ai-review-merge.yml leaves the ref fully
+# unencoded and this gate still exits 0. (The conditional-arm form of the same clobber
+# IS caught.) That is the same class as the concatenation/relocation drains pinned
+# below, but it is worse in kind: those lower a count, while this one passes a site
+# that is genuinely unencoded. Tracked as Verjson/.github#1508. Do not cite this gate
+# as establishing encoding of a ref whose variable is assigned more than once.
+#
+# Corollary, found while trying to harden the other direction: the recognizer accepts
+# the encoding only as the ENTIRE assignment. Appending a guard to it --
+# `base_ref_path="$(jq … @uri)" || return 1` -- makes this gate FAIL the very line it
+# is meant to bless. So the encoding assignment is deliberately left bare; it still
+# fails closed, because an empty result yields a `compare/…` path that 404s and the
+# `[[ =~ ^[0-9]+$ ]]` below returns 1. Do not "fix" that by widening the recognizer.
+
 # Floors, not targets. They exist so that a recognizer regression -- an anchor dropped, a
 # grep that stops matching -- shows up as "the scan stopped reaching the repository" rather
 # than as a quieter green run. Raise them when the recognizer widens; never lower one to

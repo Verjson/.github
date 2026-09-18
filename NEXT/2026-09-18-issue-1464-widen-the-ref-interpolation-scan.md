@@ -501,3 +501,26 @@ generalized the rule that an indeterminate answer is not a permissive one. The n
 written here because ADR 0194 does not exist on `main` — this branch introduces it — so
 #1494 could not have written it from its own branch. It records an outcome and reverses
 nothing: a decided ADR is superseded by a successor, never edited to reverse.
+
+Two limits of the encoding gate are now stated in its own header rather than left to be
+rediscovered. First, its acceptance is positional: it requires an encoding assignment above
+the use within the block, and does not track the value that reaches the URL, so inserting
+`base_ref_path="$base_ref"` between the `@uri` line and the `gh api` line leaves the ref
+fully unencoded while the gate still exits 0. The shipped workflow is correct — that was
+verified by construction against the live compare call — but the gate must not be cited as
+establishing encoding for a variable assigned more than once. Tracked as #1508.
+
+Second, and found while attempting to harden the opposite direction, the recognizer accepts
+the encoding only as the entire assignment: appending `|| return 1` to it makes the gate fail
+the very line it exists to bless. The assignment is therefore deliberately left bare. It
+still fails closed, since an empty encoding yields a `compare/...` path that 404s and the
+`[[ =~ ^[0-9]+$ ]]` guard below returns 1.
+
+Also corrected here: the merge commit's message claimed that a future rebase resolving toward
+this branch's side — reinstating the `|| echo 0` fail-open — would be "caught by nothing".
+That is wrong, and understating live coverage on a privileged merge path invites redundant
+scaffolding later. Reinstating the swallow inside the command substitution makes
+`scripts/ci-gate/freshness.test.sh` exit 1 with 3 `FAIL -` assertions (`indeterminate compare
+(error) did not hold`, `compare attempt count is not exactly 3`, `retry did not stop on the
+first answer`), and it is registered at `scripts/actions-ci-groups.tsv:82`, so it runs.
+Coverage is symmetric: both resolution directions are caught.
