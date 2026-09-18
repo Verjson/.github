@@ -22,3 +22,12 @@ verdicts. The generator's usage text keeps its deliberate `|| :`: refusing a mis
 what that capture asserts.
 
 The suite already failed closed, so this changes diagnosability, not what it accepts.
+
+Three hardenings from the independent review, all of the same shape as the bug itself —
+a failure inside the capture reported as a refusal by the mode being captured. `printf -v`
+writes into the nearest scope holding the name, so a target naming one of the helper's own
+locals would assign in the helper and leave the caller reading an empty global; an
+unchecked `mktemp` redirects the mode's stderr to the empty filename, and bash's complaint
+about *that* is then attributed to the mode; and an unbounded stderr scrolls the named
+cause off the top of the one verdict line that exists to name it. The target is now
+rejected, `mktemp` is checked, and the verdict is bounded to 500 characters.

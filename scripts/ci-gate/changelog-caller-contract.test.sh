@@ -38,10 +38,28 @@ capture_mode() {
   local target="$1"
   shift
   local mode="$1" out err status=0
-  err="$(mktemp)"
+  # `printf -v` writes into the nearest scope holding the name, so a target naming one of
+  # these locals would assign here and leave the caller reading an empty global -- the
+  # #1427 misdiagnosis again, arriving through this function rather than through the
+  # generator. No current call site collides; this is what keeps that true.
+  case "$target" in
+    target | mode | out | err | status)
+      fail "capture_mode target '$target' shadows one of its own locals"
+      mode_capture_failures=$((mode_capture_failures + 1))
+      return ;;
+  esac
+  # An unchecked mktemp redirects the mode's stderr to the empty filename, and bash's own
+  # complaint about that is then reported as the MODE having refused. Same misattribution.
+  err="$(mktemp)" || {
+    fail "capture_mode could not allocate a scratch file for mode '$mode'"
+    mode_capture_failures=$((mode_capture_failures + 1))
+    return
+  }
   out="$(bash "$gen" "$@" 2>"$err")" || status=$?
   if [ "$status" -ne 0 ]; then
-    fail "generator mode '$mode' exited $status: $(tr '\n' ' ' <"$err" | sed 's/  */ /g; s/ *$//')"
+    # Bounded: a verbose mode's stderr is unbounded, and one verdict line that scrolls the
+    # named cause off the top defeats the point of naming it.
+    fail "generator mode '$mode' exited $status: $(tr '\n' ' ' <"$err" | sed 's/  */ /g; s/ *$//' | cut -c1-500)"
     mode_capture_failures=$((mode_capture_failures + 1))
   fi
   rm -f "$err"
