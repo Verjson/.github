@@ -177,9 +177,20 @@ and for that subset a deleted `release.yml` **is** distinguishable from "never
 adopted".
 
 What is actually missing is narrower than "record the selected modes at
-generation time", and the gap is a use, not a record: every release assertion in
-the emitted suite sits behind `if [ -f "$release_workflow" ]`, so the recorded
-selection is never read as a *presence* requirement. Closing it in general is
+generation time", and the gap is a use, not a record. A sentence of this
+paragraph is now withdrawn for the same reason its predecessor was: it claimed
+that *every release assertion in the emitted suite sits behind*
+`if [ -f "$release_workflow" ]`. Re-measured by generating the suite at this
+branch's head and reading it, that literal occurs exactly **once**, guarding a
+single `workflow_dispatch` assertion; the other 98 release assertions sit inside
+a *discovery loop* over every workflow whose text contains
+`changelog-release.yml@`, which collects nothing at all when no such workflow
+exists. (That one guarded assertion reads the loop variable after the loop has
+ended, so it checks only the last discovered caller — pre-existing, failing
+toward a miss, tracked as #1488.) The conclusion survives and the mechanism is
+worse than the withdrawn one described: an absent release caller is not skipped
+by a guard, it is never discovered, so the recorded selection is still never
+read as a *presence* requirement. Closing it in general is
 still a contract-shape change, because the record only covers what a flag
 varies. The ADR members carry no such signal at all: `ADR_INDEX_SHA256` and
 `ADR_INDEX_TEST_SHA256` came out byte-identical across every flag combination

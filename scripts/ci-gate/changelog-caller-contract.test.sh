@@ -2812,6 +2812,14 @@ stale_pin() { # stale_pin <dir> <member-path>
     "$1/$2"
 }
 
+# The other pin-declaration mutator, defined beside stale_pin because both
+# rewrite the same two declaration forms and both are used from more than one
+# section: this one leaves a member claiming two pins, which is the only arm
+# that can report the suite's own copy.
+duplicate_pin_line() {
+  sed -i -E -e '/^CONTRACT_REF="/p' "$1"
+}
+
 set_atomicity_seq=0
 expect_set_divergence_named() {
   # expect_set_divergence_named <member-path>
@@ -2916,9 +2924,14 @@ unknown_finding="$(grep -F '.github/workflows/changelog.yml is absent' "$tmproot
 # bytes" state, on ~95 repositories and on the required member changelog.yml as
 # well. The mode-naming assertion above cannot see this, because it checks what
 # the remedy SAYS; runnability is the property it stopped checking, which is how
-# the hazard reached a strengthened assertion unnoticed. Asserted over EVERY
-# emitted finding rather than the two members known to be multi-mode, so it
-# cannot recur for a member nobody thought about.
+# the hazard reached a strengthened assertion unnoticed. Two assertions follow,
+# and they are not the same claim. The syntactic scan reads EVERY emitted
+# finding for the `|`-beside-`>` shape, which is what a remedy SAYS. The
+# runnability check after it RUNS a remedy, once per enumerated set member,
+# because a remedy carrying no `|` at all can still empty its target: a flag
+# the generator rejects truncates the file exactly as completely. Neither is
+# scoped to the two members known to be multi-mode, so neither can recur for a
+# member nobody thought about.
 paste_safety="$tmproot/adopter-remedy-paste-safety"
 build_adopter "$paste_safety" yes generated-artifacts-with-adr-index
 # Emptying a member drives the arm that fires whatever pin form it declares, so
@@ -2951,27 +2964,96 @@ unsafe_remedies="$(grep -n '>' "$tmproot/run.out" | grep '|' || true)"
 # ...and the runnable form still actually runs. Pasted verbatim, into a canary
 # that must survive with generated content rather than the empty file the
 # pipeline form leaves behind.
-paste_exec="$tmproot/adopter-remedy-paste-exec"
-build_adopter "$paste_exec"
-stale_pin "$paste_exec" .github/workflows/release.yml
-run_adopter "$paste_exec"
-release_remedy="$(sed -nE 's|^.*\.github/workflows/release\.yml is still at .*starting with: (scripts/gen-changelog-caller\.sh [^>]*> \.github/workflows/release\.yml).*$|\1|p' "$tmproot/run.out")"
-# A here-string, not a pipe, for the same SIGPIPE reason as above.
-release_remedy="$(head -n1 <<<"$release_remedy")"
-if [ -z "$release_remedy" ]; then
-  pass "the release caller remedy states no pasteable command, so it cannot truncate the member"
-else
-  canary="$tmproot/remedy-canary"
+#
+# Every arm that can emit a runnable remedy is driven, because the arms differ
+# in which members they reach: emptying a member reaches the ones whose header
+# does not select a mode, the two multi-mode members only name one concrete
+# mode once their header declares one, and the suite's own copy can be reported
+# only through the multiplicity arm because the adopter has to run it. The
+# findings are accumulated rather than read from the last run, since run.out is
+# overwritten per run.
+remedy_scan="$tmproot/remedy-scan.out"
+cat "$tmproot/run.out" >"$remedy_scan"
+
+paste_modes="$tmproot/adopter-remedy-paste-modes"
+build_adopter "$paste_modes" yes generated-artifacts-with-adr-index
+stale_pin "$paste_modes" .github/workflows/changelog.yml
+stale_pin "$paste_modes" .github/workflows/release.yml
+run_adopter "$paste_modes"
+cat "$tmproot/run.out" >>"$remedy_scan"
+
+paste_self="$tmproot/adopter-remedy-paste-self"
+build_adopter "$paste_self" yes generated-artifacts-with-adr-index
+duplicate_pin_line "$paste_self/scripts/changelog-contract.test.sh"
+run_adopter "$paste_self"
+cat "$tmproot/run.out" >>"$remedy_scan"
+
+# A remedy ends at the path it redirects into; the trailing mode note is prose
+# for the reader and is not part of the command. `[^>]*` keeps the match from
+# spanning two remedies on one line, and the path carries no space.
+assert_remedy_runnable() { # assert_remedy_runnable <remedy> <target-rel>
+  local remedy="$1" target="$2" canary status
+  canary="$tmproot/remedy-canary-$(printf '%s' "$target" | tr '/.' '--')"
   rm -rf "$canary"
-  mkdir -p "$canary/scripts" "$canary/.github/workflows"
+  mkdir -p "$canary/scripts" "$canary/$(dirname "$target")"
   cp "$gen" "$canary/scripts/gen-changelog-caller.sh"
-  printf 'the adopter workflow this remedy must not destroy\n' >"$canary/.github/workflows/release.yml"
-  ( cd "$canary" && eval "$release_remedy" ) >"$tmproot/remedy-paste.out" 2>&1 || true
-  { [ -s "$canary/.github/workflows/release.yml" ] \
-    && grep -qF "$sha" "$canary/.github/workflows/release.yml"; } \
-    && pass "the release caller remedy, pasted verbatim, regenerates the member instead of emptying it" \
-    || fail "pasting the release caller remedy left $(wc -c <"$canary/.github/workflows/release.yml" | tr -d ' ') bytes: $(tr '\n' ' ' <"$tmproot/remedy-paste.out" | tail -c 300)"
+  # The generator pins the digest of the engine at the contract commit and
+  # reads it out of the git repository it sits in, falling back to
+  # raw.githubusercontent.com only when that fails. A bare tmpdir has no
+  # repository, so this canary used to take the network path -- which made the
+  # case fail on an unpushed commit and on a runner without egress, and report
+  # the loss as a destructive-remedy verdict. Borrowing this repository's
+  # object store restores the local path and keeps the assertion offline.
+  git -C "$canary" init -q
+  printf '%s\n' "$common_git_dir/objects" >"$canary/.git/objects/info/alternates"
+  printf 'the adopter file this remedy must not destroy\n' >"$canary/$target"
+  ( cd "$canary" && eval "$remedy" ) >"$tmproot/remedy-paste.out" 2>&1
+  status=$?
+  # The generator's exit status and the surviving byte count are asserted
+  # SEPARATELY. They fail together -- a generator that exits nonzero has
+  # already truncated the target through the redirect -- so a single combined
+  # assertion reports whichever cause it was written for and misnames the
+  # other. Naming a lost digest as a destructive remedy is the more expensive
+  # direction, because "destructive remedy" is this section's own verdict.
+  if [ "$status" -ne 0 ]; then
+    fail "the $target remedy exited $status, so the generator refused before writing: $(tr '\n' ' ' <"$tmproot/remedy-paste.out" | tail -c 300)"
+  elif [ ! -s "$canary/$target" ]; then
+    fail "the $target remedy exited 0 but left $(wc -c <"$canary/$target" | tr -d ' ') bytes, emptying the member it names"
+  elif ! grep -qF "$sha" "$canary/$target"; then
+    fail "the $target remedy regenerated a member that does not pin $sha"
+  else
+    pass "the $target remedy, pasted verbatim, regenerates the member instead of emptying it"
+  fi
+}
+
+remedy_targets=''
+if [ -z "$common_git_dir" ]; then
+  fail "could not resolve the object store for the remedy canary, so no remedy was executed"
+else
+  # `sort -u` reads its input to completion, so nothing here feeds an
+  # early-exiting consumer through a pipe.
+  runnable_remedies="$(grep -o 'scripts/gen-changelog-caller\.sh [^>]*> [^ ]*' "$remedy_scan" | sort -u)"
+  while IFS= read -r remedy; do
+    [ -n "$remedy" ] || continue
+    target="${remedy##*> }"
+    remedy_targets="$remedy_targets
+$target"
+    assert_remedy_runnable "$remedy" "$target"
+  done <<<"$runnable_remedies"
 fi
+
+# Executing the remedies that happened to be emitted proves nothing about a
+# member whose remedy was never reached, and a scan that silently covers six of
+# eight members is the same shape of gap this section exists to close. Pinned
+# per member rather than on a count.
+remedy_unchecked=''
+while read -r member; do
+  [ -n "$member" ] || continue
+  grep -qxF "$member" <<<"$remedy_targets" || remedy_unchecked="$remedy_unchecked $member"
+done <<<"$enumerated_members"
+[ -z "$remedy_unchecked" ] \
+  && pass "every enumerated member's runnable remedy was executed, not merely inspected" \
+  || fail "no runnable remedy was executed for:$remedy_unchecked; the runnability check is vacuous for them"
 
 # The header states which MODE produced the file, and that is part of the claim.
 # A `changelog.yml` carrying a `pr-gate` header at the correct pin is not the
@@ -3085,9 +3167,6 @@ mangle_pin_line() {
     -e '/^# Generated by Verjson\/\.github scripts\/gen-changelog-caller\.sh /s/[0-9a-f]{40}/<the pinned commit>/' \
     -e '/^CONTRACT_REF="/s/[0-9a-f]{40}/<the pinned commit>/' \
     "$1"
-}
-duplicate_pin_line() {
-  sed -i -E -e '/^CONTRACT_REF="/p' "$1"
 }
 
 expect_unestablished_pin "a required member deleted outright" scripts/render-next.sh remove_member
