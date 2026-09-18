@@ -174,8 +174,16 @@ DECLARATION_KEY = "contract_version"
 USES_RE = re.compile(
     r"uses:\s*[\"']?Verjson/\.github/(?P<path>[^@\s\"']+)@(?P<ref>[^\s\"']+)",
     re.IGNORECASE)
-# The trailing boundary matters: without it a 64-hex container digest in the same
-# header yields its first 40 characters as a bogus contract SHA.
+# The trailing boundary keeps a hex run longer than 40 characters from being
+# truncated into a contract SHA: without it, `[0-9a-f]{40}` matches the first 40
+# characters of a 64-hex container digest on a line that also names the hub, and
+# the repository gets a PIN_MISMATCH naming a reference it does not have.
+# Stated as what is measured rather than as an observed incident: no line in this
+# repository matches both `Verjson/.github` and a 64-hex run today
+# (`grep -rInE 'Verjson/\.github.*[0-9a-f]{64}'` finds nothing), so the covering
+# test constructs that line. The boundary is kept because the two shapes it joins
+# -- a generated hub header, and a digest -- are both comment-line content, and a
+# header pass that reads every comment line has no window keeping them apart.
 HEADER_RE = re.compile(
     r"Verjson/\.github[^\n]*?\b(?P<sha>[0-9a-f]{40})(?![0-9a-f])", re.IGNORECASE)
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")

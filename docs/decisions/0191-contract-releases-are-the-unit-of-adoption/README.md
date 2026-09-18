@@ -341,8 +341,22 @@ builds a tree with one conformant pin plus one skewed reference and requires a
 finding: a single- and a double-quoted `uses:` scalar, a header below the old
 six-line window, a caller vendored under `node_modules`, and an unreadable,
 oversize, or undecodable file. The quiet cases are pinned too, so the noise
-budget is a test rather than a hope: a binary file and a 40-hex string inside
-`.git` report nothing, and a commented-out pin is one reference, not two.
+budget is a test rather than a hope: a binary file reports nothing, a
+`node_modules` symlink is skipped rather than followed into an `UNSCANNED` gap
+no adopter could clear, a 64-hex digest on a line naming the hub is not
+truncated into a 40-hex SHA, and a commented-out pin is one reference, not two.
+
+Two limits on how far that reads. `.git` is pinned by a test — a 40-hex ref
+written into `.git/COMMIT_EDITMSG` reports nothing — but no *mutation* backs
+that test, because the exclusion is by construction: `_tracked_paths` enumerates
+`git ls-files`, which never names `.git`, so there is no guard to delete. Read
+the `.git` row as a boundary the suite observes, not one it defends. And
+the digest case is a constructed line, not a sampled one — no file here puts a
+64-hex run on a line that also names the hub — so the boundary defends a shape
+the header pass admits rather than one it has already met. Each guard above is
+checked by deleting it and requiring the suite to redden, because a green run
+over a guard nothing exercises is the sentence-instead-of-a-measurement this
+ADR's own §3 was found relying on (#1463).
 
 Not verified here, and deliberately so: no release has been cut, no adopter
 declares a version yet, and the required-check binding in §6 is decided rather
