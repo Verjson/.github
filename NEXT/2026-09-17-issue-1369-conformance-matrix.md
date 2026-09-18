@@ -134,3 +134,16 @@ Optional members remain optional: a repository that never adopted Renovate
 attribution, a release proposer or the ADR index is not failed for the absent
 file. Once present, it is held to the same pin as everything else. Requirements
 1 and 4 of #1369 remain follow-up work.
+
+Requirement 5 also surfaced a fail-open in `required-checks-audit.sh`, found
+because the larger generated contract test tripped it. `base64 --decode` exits 0
+on an empty stream, so an artifact the contents fetch did not return landed as a
+zero-byte file that every check downstream read as content — the byte comparison
+reported drift, and the parameter extraction reported invalid
+scope/node/package-dirs, for an artifact that was never retrieved. It is now a
+named `generated-contract-artifact-empty` fault. The empty stream came from the
+audit's own test stub, which passed base64 through `jq --arg` on the command
+line; a single argument is capped at `MAX_ARG_STRLEN` (128 KiB on Linux) against
+a 4/3 base64 expansion, so it began failing with `E2BIG` once the generated
+contract test passed roughly 96 KiB. It is 96 KiB now and grows with every
+contract addition, so the stub passes the content through a file.
