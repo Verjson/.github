@@ -107,15 +107,22 @@ The stated ceiling is now split by direction, because the previous version liste
 fail-open classes and named none of the ones above. Fail-closed: `exit 300` is rejected
 though it is fatal; a nested group or a *here-document* in a brace body is not flattened,
 while a plain redirection (`>&2`, `>/dev/null`, `2>&1`) is flattened and still reads fatal —
-it has to, because 123 `|| { … }` guard bodies across 22 of this repository's 206 tracked
-non-test shell and YAML files carry a `>&2`, and the stricter rule this note used to claim
-would report every one of them disarmed; `continue`/`break` are never accepted, in or out of
-a loop; a positive `if <guard>; then <use>` is not accepted, nor a negated branch with no
-`else`; an action reached only through a `&&`/`||` chain is not treated as
+it has to, because 97 fatal `|| { … }` guard bodies across 17 files carry a `>&2` —
+`scripts/gen-adr-index.sh:106` and `.github/workflows/node-release.yml:318` are two, read and
+verified — and the stricter rule this note used to claim would report every one of them
+disarmed. That figure is published with its method, in ADR 0194, because the two it replaces
+(67, then 123) were published without one and neither could be reproduced: the universe is
+the scan's own 144-file set, the predicate is this gate's own `logical_lines slice` plus
+`brace_body_is_fatal` with `>&2` in the source text, and 397 of those branches are fatal
+in total. `continue`/`break` are never accepted, in or out of a loop; a
+positive `if <guard>; then <use>` is not accepted, nor a negated branch whose only `else`
+belongs to a nested `if`, nor one where the guard is merely an operand of a `&&`/`||` in the
+condition; an action reached only through a `&&`/`||` chain is not treated as
 unconditionally reached, because this anchor does not evaluate conditions; the structural
 pass is lexical and models neither here-documents, `case` patterns, nor quoting nested
 inside `$(…)`. Fail-open, and therefore the real ceiling: a guard moved into a branch that
-never runs, a guard made vacuous by editing the value it tests, any terminating word
+never runs, the negated-branch proof's two residuals above, a guard made vacuous by editing
+the value it tests, any terminating word
 redefined as a no-op — `exit` and `return` can be shadowed by a function, so this covers the
 whole allow-list rather than just `fault` — and the pinned literal matched inside a string
 rather than as a command, since the literal search runs over raw text.
@@ -125,14 +132,39 @@ whose protected use sits in the sibling `else` arm — `elif ! [[ "$sha" =~ ^[0-
 then`. Nothing follows such a guard on its own command but `; then`, so the fatal-tail
 allow-list cannot judge it and reported it as no constraint at all; the proof is structural
 instead, because the arm the guard opens is the failing one and cannot fall through to the
-`else`. `scripts/privileged-merge-conformance.sh:327` is exactly that shape and four of its
-`gh api` uses were reported unconstrained by a scan that was green at this branch's own head
-and red once merged. The recognition is deliberately narrow and fail-closed elsewhere: a
-positive `if <guard>; then <use>` is rejected, because there the failing arm is the one that
-reaches the rest of the file, and so is a negated branch with no `else`, or one whose only
-`else` belongs to a nested `if`. All five shapes are pinned as regression cases, and the
-acceptance was verified by mutating the real guard at `:327` to `elif false; then` and by
-replacing its `else` with `fi`, each observed to exit non-zero.
+`else`. `scripts/privileged-merge-conformance.sh:327` is exactly that shape — its protected
+`gh api …/compare/$caller_contract_sha…main` is at `:331`, inside the `else` — and four of
+its `gh api` uses were reported unconstrained by a scan that was green at this branch's own
+head and red once merged.
+
+The first version of that proof asked only whether an `else` EXISTED at the guard's own
+depth, which is a fail-open, and round 4 found seven shapes it accepted that still ran the
+use with an unchecked value: a non-terminating `then` arm with the use after `fi`, two empty
+arms, a `then` arm of `exit 0` — the swallow the tail allow-list rejects by name — the use in
+the `else` *and* again after `fi`, the construct wrapped in a loop, a `then` arm calling a
+helper nothing proves terminates, and the `elif` form of the first. It also split two cases
+that are the same program, accepting a vacuous `else` where it rejected the pinned no-`else`
+fixture. What is required now is that the guard's failing arm cannot reach the use, by one of
+two facts: either the use lies inside the `else`/`elif` **extent**, or the `then` arm
+**terminates**, judged with the same `exit N`/`return N`/named-helper notions the tail
+allow-list uses rather than a third idea of termination. The pinned use is the last record of
+the input, which in `slice` mode is exact because the block slice is cut at the use's own
+line. `if ! guard; then echo …; exit 1; fi` — read as disarmed before — is accepted as a
+result.
+
+Both residuals are named in the ceiling rather than left implicit. The proof is positional,
+not dataflow: it shows the use's *line* is in the protected arm, not that the value reaching
+the use is the value the guard tested. And in `whole` mode — an allowlist entry's pinned
+guard, read from a whole file — there is no use to locate, so the end of the file stands in
+for it; no allowlist entry is written that way, and `slice` mode, which the
+privileged-merge-authorization path uses, is exact.
+
+Every one of those shapes is pinned as a regression case, on both the whole-file and the
+block-slice path, alongside the five that were already rejected correctly. Acceptance was
+verified by mutating the real guard at `:327` to `elif false; then` and by replacing its
+`else` with `fi`, each observed to exit non-zero; the new rejections were verified by
+restoring the else-exists rule and by making the `then`-arm termination test accept anything,
+each observed to redden the fixtures that pin them.
 
 The lexical `do`/`done` loop-depth count that let `continue`/`break` leave a guard is
 deleted, along with `continue`/`break` support itself — roughly 60 lines. It carried a

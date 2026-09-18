@@ -149,9 +149,15 @@ are one command, with the branch closed by brace **depth** so a closer carrying 
 `fail`/`fault`/`die`/`abort …`; a `{ … }` whose body is **flat** (no nested group, no
 **here-document**) and one of whose top-level statements is **exactly** one of those actions;
 or an empty tail, which under `set -euo pipefail` means the guard's own status is the
-command's. A guard may also be spent as the **negated condition** of an `if`/`elif` whose
-protected use sits in the sibling `else` arm, where the proof is structural rather than a
-tail: the arm the guard opens is the failing one and cannot fall through to the `else`. Every form in the table above, the six pre-existing swallows, the
+command's. A guard may also be spent as the **negated condition** of an `if`/`elif`, where the proof is
+structural rather than a tail. Existence of an `else` is not that proof, and treating it as
+one was this anchor's own fail-open through round 4: seven shapes had an `else` and still ran
+the use with an unchecked value. What is required now is that the guard's failing arm cannot
+reach the use, by one of two facts, and the pinned use is the **last record of the input**,
+which in `slice` mode is exact because `block_slice` cuts the file at the use's own line:
+either the use lies inside the `else`/`elif` **extent**, or the `then` arm **terminates** —
+judged by the same `exit N`/`return N`/named-helper notions the tail allow-list uses, so
+`exit 0` is not a terminator here either. Every form in the table above, the six pre-existing swallows, the
 continuation-line `|| true`, and the accepted shapes are permanent regression cases in
 `scripts/ci-gate/default-branch-uri-encoding.test.sh`, and the six new ones were each
 verified by mutating `node-ci.yml:437` in a real worktree and observing exit 1.
@@ -166,11 +172,24 @@ coverage:
   state and to trust than "any N that is not a multiple of 256".
 - A nested command group, or a **here-document**, in a brace body is not flattened. A plain
   redirection (`>&2`, `>/dev/null`, `2>&1`, `< <(…)`) is flattened and still reads FATAL, and
-  must keep doing so: 123 `|| { … }` guard bodies across 22 of this repository's 206 tracked
-  non-test shell and YAML files carry a `>&2`, and every one of them would read disarmed under
-  the stricter rule earlier revisions of this ADR described (`scripts/gen-adr-index.sh:106`
-  and `.github/workflows/node-release.yml:318` are two). The code never implemented that
-  stricter rule; the prose did, and this is the correction.
+  must keep doing so: **97** fatal `|| { … }` guard bodies, across **17** files, carry a
+  `>&2`, and every one would read disarmed under the stricter rule earlier revisions of this
+  ADR described. Two, verified by reading the lines: `scripts/gen-adr-index.sh:106` and
+  `.github/workflows/node-release.yml:318`, both `… || { echo "…" >&2; exit 1; }`. The code
+  never implemented that stricter rule; the prose did, and this is the correction.
+
+  **How that number was counted**, stated here because two earlier ones (67, then 123) were
+  not, and neither could be reproduced. *Universe:* the scan's own file set — `git ls-files
+  '.github/workflows/*.yml' 'scripts/*.sh' 'scripts/*.py'` with `*.test.sh`, `*.test.py` and
+  `*_test.py` removed, 144 files. No `.py` file contains a `|| { … }`, so the 87 shell and
+  YAML files among them give the same answer, and no figure quoted against a "206-file" or
+  "174-file" universe belongs to this measurement. *Predicate:* a logical line, as
+  `logical_lines slice` emits them, whose tail is `|| {`, whose body `brace_body_is_fatal`
+  accepts, and whose source text contains `>&2` — this gate's own two functions, not a regex
+  approximating them. *Command:* source those functions out of
+  `scripts/ci-gate/default-branch-uri-encoding.test.sh` and apply the predicate to each file
+  in the set. 397 of those branches are fatal; 97 carry the redirection. Re-derive it rather
+  than trusting it — each figure it replaces survived a full review round.
 - An action reached only through a `&&`/`||` chain inside the body is not unconditionally
   reached. This anchor does not evaluate conditions: it cannot tell `{ false && exit 1; }`
   from `{ [ -n "$x" ] && exit 1; }`, and reads both as disarmed.
@@ -190,9 +209,13 @@ coverage:
   the merged tree failed nothing but the fixtures that tested the count itself. Roughly 60
   lines whose only consumer was its own test, carrying a fail-open, in exchange for a
   fail-closed gap no current site occupies.
-- A **positive** `if <guard>; then <use>` is not accepted, nor a negated branch with no
-  `else`, nor one whose only `else` belongs to a nested `if`. Only the negated-branch-with-
-  `else` shape is proved; the rest fall through to the use for all this anchor can tell.
+- A **positive** `if <guard>; then <use>` is not accepted, nor a negated branch whose only
+  `else` belongs to a nested `if`, nor one where the guard is only an operand of a `&&`/`||`
+  in the condition. A negated branch with no `else`, or with a vacuous one, is accepted only
+  when the `then` arm terminates — the two are the same program and are now treated as such.
+  An earlier revision of this bullet said the shapes it rejected "fall through to the use for
+  all this anchor can tell". That was false in the other direction too: seven shapes it
+  *accepted* also fell through to the use, and they are now rejected and pinned.
 
 *Fail-open* — these satisfy the pin while the guard no longer guards, and are the honest
 ceiling of a command-level anchor:
@@ -207,6 +230,16 @@ ceiling of a command-level anchor:
   dropped rather than kept, because a one-entry denylist reads like protection while
   catching nothing adjacent to it (`or 1`, `or (lambda: True)()`, a `require` redefined
   above); the gap is stated instead of papered over.
+- **The negated-branch proof locates the use by position, not by dataflow.** It establishes
+  that the use's *line* sits in the protected arm, not that the value reaching the use is the
+  value the guard tested. A re-assignment between the guard and the use, or a different
+  variable on the use's own line, still reads as protected.
+- **In `whole` mode that proof has no use to locate.** An allowlist entry's pinned guard is
+  read from a whole file, where nothing marks the use, so the **end of the file** stands in
+  for it: a file that happens to end inside the `else` arm reads as protecting a use that may
+  be anywhere, including in another file. No allowlist entry is written that way today, and
+  in `slice` mode — the mode the privileged-merge-authorization path uses — the substitution
+  is exact rather than an approximation.
 - **A guard moved into a branch that never executes** still satisfies the pin. This is
   reachability analysis, which the anchor does not do.
 - **A guard made vacuous** by changing the value it tests, rather than the test itself.

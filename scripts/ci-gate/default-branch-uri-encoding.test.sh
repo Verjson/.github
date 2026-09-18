@@ -71,15 +71,15 @@
 #
 #         The shapes are, exactly: an empty tail, which under `set -euo pipefail` means the
 #         guard's own status is the command's; or, immediately after the final `&&`/`||`,
-#         `exit N`/`return N` for N in 1-255, `fail`/`fault`/`die`/`abort …`, `continue`
-#         or `break` inside a loop, or a `{ … }` whose body is FLAT and one of whose
-#         top-level statements is exactly one of those actions. "Exactly one of those
-#         statements" is the part that matters, and it is the second thing this pin got
-#         wrong: matching the action as a SUBSTRING of the brace body is a denylist wearing
+#         `exit N`/`return N` for N in 1-255, `fail`/`fault`/`die`/`abort …`, or a `{ … }`
+#         whose body is FLAT and one of whose top-level statements is exactly one of those
+#         actions. `continue` and `break` are NOT on it, in or out of a loop (see below).
+#         "Exactly one of those statements" is the part that matters, and it is the second
+#         thing this pin got wrong: matching the action as a SUBSTRING of the brace body is a denylist wearing
 #         an allow-list's clothes, and `|| { echo "would exit 1 here"; }`,
 #         `|| { ( exit 1 ); }`, `|| { false && exit 1; }`, `|| { cat <<EOF` / `exit 1`,
-#         `|| exit 256`, `|| return 256`, and an out-of-loop `|| continue` / `|| break`
-#         all matched it and all leave the guard standing (third #1464 re-review).
+#         `|| exit 256`, `|| return 256`, `|| continue` and `|| break` all matched it and
+#         all leave the guard standing (third #1464 re-review).
 #         Quoted spans, `#` comments, `${…}`, `$(…)` and `(…)` subshells are blanked by
 #         `shell_structure` before the split, so none of them can supply the action.
 #
@@ -97,12 +97,12 @@
 #             backticks, backslashes, `${…}`, `$(…)` and word-position `#`, and nothing
 #             else -- not here-documents, not `case` patterns, not quoting nested inside
 #             `$(…)`. Where it is unsure it blanks, which reads as NOT fatal.
-#           · `continue`/`break` need loop context, which is a lexical `do`/`done` count
-#             over statements in command position, with `do` also required to be
-#             loop-shaped -- node-ci.yml:345's prose "…not masked secrets; do not put
-#             credentials" otherwise raised the depth for that whole file. If the count
-#             does not hold together (unbalanced over a whole file, or ever negative),
-#             every depth is reported as 0 and both actions read as disarmed everywhere.
+#           · `continue`/`break` are rejected outright rather than modelled. They leave a
+#             guard only inside a loop, the lexical `do`/`done` count that established that
+#             was ~60 lines whose last real site #1466 rewrote into an `elif`, and in
+#             `slice` mode a lone `do` -- in prose, or in a here-document body -- licensed
+#             them for the whole slice after it. Rejecting them is fail-closed; the count
+#             was not (#1464 re-review round 4).
 #       - Python: the comment check and NOTHING MORE. Every cited Python guard is a
 #         sub-expression of an `if … is None:` or `require(…)`, and there is no single
 #         tail shape that means "this raises" without parsing the file. `SHA.fullmatch(x)`
@@ -120,6 +120,19 @@
 #         NAME with no proof that they terminate, and bash lets `exit` and `return` be
 #         shadowed by a function too, so this covers the whole allow-list, not just
 #         `fault`.
+#       · for a guard spent as the NEGATED condition of an `if`/`elif`, the pinned USE is
+#         taken to be the last record of the input. In `slice` mode that is exact, because
+#         `block_slice` cuts the file at the use's own line; in `whole` mode -- an allowlist
+#         entry's pinned guard, read from a whole file -- there is no use to cut at, so the
+#         END OF THE FILE stands in for it, and a file that happens to end inside the `else`
+#         arm reads as protecting a use that may be anywhere, including in another file. No
+#         allowlist entry is written that way today, and this is the only fail-OPEN in that
+#         class after round 4; every shape listed under `negated_branch_dominates` is now
+#         rejected.
+#       · that same proof is positional, not dataflow: it establishes that the use LINE is
+#         inside the protected arm, not that the value reaching the use is the value the
+#         guard tested. A re-assignment between the guard and the use, or a different
+#         variable on the use's line, still reads as protected.
 #       · the pinned literal matched inside a STRING rather than as a command. The literal
 #         search runs over raw text, so deleting a guard and leaving its text in an `echo`
 #         or a heredoc satisfies the pin. (In `.py` files one allowlist entry is honestly
@@ -343,8 +356,9 @@ block_slice() {
 #      inside a double-quoted `echo` argument is not a command; neither is one inside a
 #      `$(…)`, a `${…}`, or a comment. `shell_structure` blanks those spans, so every
 #      structural decision below reads command text only.
-#   3. Whether the guard sits inside a loop, because `continue`/`break` leave the guard
-#      only there. Outside one, bash warns and execution carries straight on.
+#   3. For a guard spent as the negated condition of an `if`/`elif`, where the arms of that
+#      construct begin and end, because the proof is then the use's POSITION rather than the
+#      guard's own tail. That is `negated_branch_dominates`, below.
 #
 # `shell_structure` is a lexical scan, not a shell parser: it tracks quotes, `${…}`,
 # `$(…)`, backticks, backslashes, and word-position `#`, and nothing else. Where it is
@@ -446,15 +460,15 @@ logical_lines() { # $1 = whole|slice; reads text on stdin, emits one logical lin
 # But an allow-list only fails closed if it enumerates SHAPES. Its first form matched the
 # fatal action as a SUBSTRING of the brace body, which is a denylist wearing an
 # allow-list's clothes: `|| { echo "would exit 1 here"; }`, `|| { ( exit 1 ); }`,
-# `|| { false && exit 1; }`, `|| exit 256`, `|| return 256`, and an out-of-loop
-# `|| continue` / `|| break` all matched and all leave the guard (third #1464 re-review).
+# `|| { false && exit 1; }`, `|| exit 256`, `|| return 256`, `|| continue` and `|| break`
+# all matched and all leave the guard (third #1464 re-review).
 # So the action must now be a WHOLE top-level statement of a flat brace body, read off the
 # structural form, and the status must be a real non-zero wait status.
 #
 # `return N` is here alongside `exit N` because the gate-rearm receipt guards live inside
-# shell functions, where a non-zero return is how the failure leaves the guard, and
-# `continue`/`break` because a loop that skips the iteration never reaches the URL the
-# guard protects -- which is the only property this anchor claims, and only inside a loop.
+# shell functions, where a non-zero return is how the failure leaves the guard.
+# `continue`/`break` are NOT here: they leave a guard only inside a loop, and the lexer that
+# established loop context was itself a fail-open in `slice` mode (#1464 re-review round 4).
 # The four named helpers are this repository's terminating idioms (`fail`, `fault`, `die`,
 # `abort`) and are allow-listed BY NAME, not by any proof that they terminate: redefining
 # one as a no-op is the same vacuous-guard ceiling the header already states.
@@ -557,22 +571,61 @@ guard_opens_negated_branch() { # $1 = text before the guard, $2 = text after it
   [[ "$2" =~ ^[[:space:]]*\;?[[:space:]]*then[[:space:]]*$ ]]
 }
 
-# Walk forward from the guard's logical line. Relative depth 0 is the arm the guard opened;
-# reaching an `else`/`elif` there means the use below is on the arm the guard PASSED, while a
-# `fi` there means the arm fell through and proves nothing. Running out of records proves
-# nothing either.
+# One top-level statement of the `then` arm, judged by the SAME two notions the tail
+# allow-list uses -- no third idea of what "terminates" means, and in particular `exit 0` is
+# not one of them here either.
+arm_statement_is_fatal() { # $1 = structural text of one top-level `then`-arm statement
+  local st="${1#"${1%%[![:space:]]*}"}"
+  case "$st" in
+    '{'*) brace_body_is_fatal "${st#\{}" ;;
+    *) guard_action_leads "$st" ;;
+  esac
+}
+
+# Walk forward from the guard's logical line to the PINNED USE, which is the LAST record of
+# the input: `block_slice` cuts the file at the use's own line, so in `slice` mode the end of
+# the records is the use itself. Relative depth 0 is the construct the guard opened.
+#
+# Existence of an `else` is NOT the question, and answering it was this anchor's own
+# fail-open (#1464 re-review round 4): seven shapes had one and still ran the use with an
+# unchecked value -- a non-terminating `then` arm with the use after `fi`, two empty arms, a
+# `then` arm of `exit 0`, the use in the `else` AND again after `fi`, the construct inside a
+# loop, a `then` arm calling a helper nothing proves terminates, and the `elif` form of the
+# first. Worse, it separated two cases that are the same program: a vacuous `else` was
+# accepted where the pinned no-`else` fixture below was rejected.
+#
+# Two things can make the guard protect the use, and both are checked, because neither
+# subsumes the other:
+#   · the use lies inside the `else`/`elif` EXTENT -- the arm entered only when `! guard`
+#     was false. This is how `scripts/privileged-merge-conformance.sh:327` is written, and
+#     its `then` arm only counts a failure and falls through, so nothing else establishes it.
+#   · the `then` arm TERMINATES, so a use below `fi` is reached only when the guard held.
+#     `if ! guard; then echo …; exit 1; fi` is the ordinary spelling and read as dead before.
+# A depth-0 `fi` means the construct closed ABOVE the use, so from there only the second can
+# apply. Running out of records still inside the `then` arm proves nothing.
 negated_branch_dominates() { # $1 = index of the guard's record in GUARD_RECORDS
-  local i d=0 event
+  local i d=0 event struct in_then=1 arm_terminates=1 depth_at_start
   for ((i = $1 + 1; i < ${#GUARD_RECORDS[@]}; i++)); do
+    struct="$(shell_structure "${GUARD_RECORDS[i]}")"
+    depth_at_start=$d
+    # Only a statement of the arm ITSELF is unconditionally reached: one nested inside a
+    # further branch is not, which is the same reason `{ false && exit 1; }` is rejected.
+    if [ "$in_then" -eq 1 ] && [ "$depth_at_start" -eq 0 ] \
+      && arm_statement_is_fatal "$struct"; then
+      arm_terminates=0
+    fi
     while IFS= read -r event; do
       case "$event" in
         if) d=$((d + 1)) ;;
-        fi) [ "$d" -eq 0 ] && return 1; d=$((d - 1)) ;;
-        else | elif) [ "$d" -eq 0 ] && return 0 ;;
+        # `arm_terminates` is already 0-for-yes, so it IS the answer below the construct.
+        fi) [ "$d" -eq 0 ] && return "$arm_terminates"; d=$((d - 1)) ;;
+        else | elif) [ "$d" -eq 0 ] && in_then=0 ;;
       esac
-    done < <(branch_events "$(shell_structure "${GUARD_RECORDS[i]}")")
+    done < <(branch_events "$struct")
   done
-  return 1
+  # The records ran out without closing the construct. Inside the `else`/`elif` arm that is
+  # the use sitting in the protected extent; still inside the `then` arm it proves nothing.
+  [ "$in_then" -eq 0 ]
 }
 
 guard_live_literal() { # $1 = literal proof text, $2 = whole|slice; reads the text on stdin
@@ -787,25 +840,76 @@ guard_tail_case live 'a multi-line `|| {` failure branch' \
 # `scripts/privileged-merge-conformance.sh:327` from a `|| { …; continue; }` into exactly this
 # shape, which made this scan report a live guard as dead at four call sites (#1464 re-review
 # round 4). The domination is structural: the failing arm cannot fall through to the `else`.
+# Each fixture ENDS at the use, because `block_slice` does: it cuts the file at the use's
+# own line, so the closing `fi` of a construct the use sits inside is not in the slice. A
+# fixture that trails a `fi` past the use would be asking a different question.
 guard_tail_case live 'a negated `elif` whose protected use is in the `else`' \
   'if [ "${#pins[@]}" -ne 1 ]; then' \
   '  failures=$((failures + 1))' \
   'elif ! '"$HEX_GUARD"'; then' \
   '  failures=$((failures + 1))' \
   'else' \
-  '  gh api "repos/$repository/commits/$head_sha"' \
-  'fi'
+  '  gh api "repos/$repository/commits/$head_sha"'
 guard_tail_case live 'a negated `if` whose protected use is in the `else`' \
   'if ! '"$HEX_GUARD"'; then' \
   '  failures=$((failures + 1))' \
   'else' \
-  '  gh api "repos/$repository/commits/$head_sha"' \
-  'fi'
+  '  gh api "repos/$repository/commits/$head_sha"'
+# The other way the guard reaches a use: the `then` arm leaves, so a use BELOW `fi` runs
+# only when the guard held. This ordinary spelling read as dead until round 4.
+guard_tail_case live 'a negated `if` whose `then` arm exits, with the use after `fi`' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  echo "::error::head sha is not a 40-hex object name" >&2' \
+  '  exit 1' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
 # Fail-closed boundaries of that shape, pinned so widening it stays deliberate. Without an
 # `else` the failing arm falls straight through to the use, so the branch proves nothing.
 guard_tail_case dead 'a negated `if` with no `else`, which falls through to the use' \
   'if ! '"$HEX_GUARD"'; then' \
   '  echo "::warning::head sha looks wrong"' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+# ... and neither does giving that same program a VACUOUS `else`. Accepting it while
+# rejecting the fixture directly above was this anchor's round-4 fail-open: the two are the
+# same program, and an `else` that exists is not an `else` the use is in. The shapes below
+# are the distinct mechanisms behind the seven that got through; `if`-with-non-terminating-
+# arm, two empty arms, and the construct wrapped in a `while` are restatements of the first
+# and are not pinned separately.
+guard_tail_case dead 'a vacuous `else`, which is the no-`else` program above' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  echo "::warning::head sha looks wrong"' \
+  'else' \
+  '  :' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+guard_tail_case dead 'a negated `elif` whose use is after `fi`, not in the `else`' \
+  'if [ -z "$head_sha" ]; then' \
+  '  :' \
+  'elif ! '"$HEX_GUARD"'; then' \
+  '  :' \
+  'else' \
+  '  :' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+guard_tail_case dead 'a use in the `else` AND again after `fi`, judged at the second' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  :' \
+  'else' \
+  '  gh api "repos/$repository/commits/$head_sha"' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+# The `then` arm has to leave by the SAME notion the tail allow-list uses. `exit 0` is the
+# swallow that list rejects, and an unlisted helper name is one nothing here proves
+# terminates; accepting either below `fi` would contradict the cases above.
+guard_tail_case dead 'a `then` arm of `exit 0`, the swallow the tail allow-list rejects' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  exit 0' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+guard_tail_case dead 'a `then` arm calling an unlisted helper, which may return' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  notice "head sha looks wrong"' \
   'fi' \
   'gh api "repos/$repository/commits/$head_sha"'
 guard_tail_case dead 'a negated `if` whose `else` belongs to a nested branch' \
