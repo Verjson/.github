@@ -2924,8 +2924,9 @@ unknown_finding="$(grep -F '.github/workflows/changelog.yml is absent' "$tmproot
 # bytes" state, on ~95 repositories and on the required member changelog.yml as
 # well. The mode-naming assertion above cannot see this, because it checks what
 # the remedy SAYS; runnability is the property it stopped checking, which is how
-# the hazard reached a strengthened assertion unnoticed. Two assertions follow,
-# and they are not the same claim. The syntactic scan reads EVERY emitted
+# the hazard reached a strengthened assertion unnoticed. Two distinct CLAIMS
+# follow, carried by more than two assertion sites because each claim is paired
+# with its own non-vacuity pin. The syntactic scan reads EVERY emitted
 # finding for the `|`-beside-`>` shape, which is what a remedy SAYS. The
 # runnability check after it RUNS a remedy, once per enumerated set member,
 # because a remedy carrying no `|` at all can still empty its target: a flag
@@ -2937,14 +2938,30 @@ build_adopter "$paste_safety" yes generated-artifacts-with-adr-index
 # Emptying a member drives the arm that fires whatever pin form it declares, so
 # one run collects a finding -- and therefore a remedy -- for every member at
 # once. The suite's own copy is excluded because the adopter has to run it.
+#
+# A member the fixture does not carry is a FAILURE, not a skip. Skipping it
+# drops it from $paste_safety_members, which is the very list the non-vacuity
+# pin below is computed from -- so a fixture that stopped writing every member
+# would satisfy that pin with an empty set and report the paste-safety scan as
+# covering members it never emptied. The adopter this section builds is the
+# full-set one, so every enumerated member must be present in it by
+# construction; if one is not, the enumeration and the fixture have diverged
+# and that is the thing worth reporting.
 paste_safety_members=''
+paste_safety_absent=''
 while read -r member; do
   [ -n "$member" ] || continue
   [ "$member" = scripts/changelog-contract.test.sh ] && continue
-  [ -f "$paste_safety/$member" ] || continue
+  if [ ! -f "$paste_safety/$member" ]; then
+    paste_safety_absent="$paste_safety_absent $member"
+    continue
+  fi
   : >"$paste_safety/$member"
   paste_safety_members="$paste_safety_members $member"
 done <<<"$enumerated_members"
+[ -z "$paste_safety_absent" ] \
+  && pass "the paste-safety fixture carries every enumerated set member" \
+  || fail "the paste-safety fixture is missing:$paste_safety_absent; those members were never emptied, so the non-vacuity pin below is computed from a short list"
 run_adopter "$paste_safety"
 paste_safety_unreported=''
 for member in $paste_safety_members; do
@@ -2965,14 +2982,36 @@ unsafe_remedies="$(grep -n '>' "$tmproot/run.out" | grep '|' || true)"
 # that must survive with generated content rather than the empty file the
 # pipeline form leaves behind.
 #
-# Every arm that can emit a runnable remedy is driven, because the arms differ
-# in which members they reach: emptying a member reaches the ones whose header
-# does not select a mode, the two multi-mode members only name one concrete
-# mode once their header declares one, and the suite's own copy can be reported
-# only through the multiplicity arm because the adopter has to run it. The
-# findings are accumulated rather than read from the last run, since run.out is
-# overwritten per run.
+# One arm per (member, declared mode) is driven rather than every arm, and that
+# is sufficient only because a remedy does not vary by ARM. generated_set_check
+# composes $remedy exactly twice -- both times through generated_set_remedy,
+# both times from the member's own fixed invocation arguments plus one mode
+# string: the invocation's own literal before a header has been read, the
+# header's declared mode after -- and every finding it emits appends that one
+# $remedy verbatim. So the runnable remedies a member can emit are fixed by the
+# member and the mode it declares, never by which arm fired, and driving the
+# absent, unreadable and mode-header arms as well would re-emit strings this
+# scan already holds. That property is load-bearing for the claim, so it is
+# PINNED below rather than left as prose: the moment an arm composes its own
+# remedy, the undriven arms stop being covered and this section says so.
+#
+# The runs are accumulated rather than read from the last one, since run.out is
+# overwritten per run. The first contribution re-runs its own adopter instead of
+# inheriting whatever the preceding statement left in run.out: that would couple
+# this section to statement order, and the seed is the input to the eval below,
+# so a run inserted above it would decide what gets evaluated.
+generated_set_check_body="$(awk '/^generated_set_check\(\) \{/,/^\}/' "$gen")"
+arm_findings="$(grep -c 'generated_set_note ' <<<"$generated_set_check_body" || true)"
+arm_findings_shared_remedy="$(grep -c 'generated_set_note .*\$remedy"$' <<<"$generated_set_check_body" || true)"
+remedy_assignments="$(grep -c '^ *remedy=' <<<"$generated_set_check_body" || true)"
+remedy_assignments_composed="$(grep -c '^ *remedy="\$(generated_set_remedy ' <<<"$generated_set_check_body" || true)"
+{ [ "$arm_findings" -gt 0 ] && [ "$arm_findings" = "$arm_findings_shared_remedy" ] \
+  && [ "$remedy_assignments" -gt 0 ] && [ "$remedy_assignments" = "$remedy_assignments_composed" ]; } \
+  && pass "every generated_set_check arm emits one composed remedy, so a driven arm stands in for the undriven ones" \
+  || fail "generated_set_check no longer composes one remedy for all its arms ($arm_findings_shared_remedy of $arm_findings findings append \$remedy; $remedy_assignments_composed of $remedy_assignments assignments come from generated_set_remedy), so the arms this section does not drive can emit a remedy it never runs"
+
 remedy_scan="$tmproot/remedy-scan.out"
+run_adopter "$paste_safety"
 cat "$tmproot/run.out" >"$remedy_scan"
 
 paste_modes="$tmproot/adopter-remedy-paste-modes"

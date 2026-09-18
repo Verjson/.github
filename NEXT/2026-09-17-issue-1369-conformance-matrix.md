@@ -220,3 +220,21 @@ retrieved. The fetch is the only place that can distinguish "returned nothing"
 from "wires nothing", so it fails closed there and the repository is counted
 unaudited. The inspector's behavior on empty input is asserted directly, because
 it is the reason the guard cannot live any further downstream.
+
+Round-4 review of that block corrected one false claim and one real coupling.
+The remedy-runnability cases drive one arm per member and declared mode, not
+every arm; the comment claimed otherwise, and the absent, unreadable and
+mode-header arms are in fact undriven. Driving them would add no coverage,
+because `generated_set_check` composes its remedy exactly twice — both times
+through `generated_set_remedy`, from the member's own fixed invocation
+arguments plus one mode string — and every arm appends that one value verbatim,
+so a member's runnable remedies depend on the member and its declared mode and
+never on which arm fired. That is the property the claim rests on, so it is now
+asserted against the generator's own source rather than left as prose: an arm
+that composes its own remedy reddens the case even though the string it emits
+is identical. Separately, the accumulated remedy scan was seeded from whatever
+the preceding statement had left in `run.out`, which coupled it to statement
+order while being the input to an `eval`; it now runs its own adopter. And a
+paste-safety fixture file that is missing is a failure naming the member rather
+than a silent skip, since skipping it shrank the very list the non-vacuity pin
+beside it is computed from.
