@@ -718,9 +718,13 @@ def verify_adopter_conformance(contract: dict, read, repositories: list[dict], c
 
 
 def read_workflow(read, selected: dict, label: str) -> dict:
+    # The ruleset names this ref; a ref name is not a constant, and raw in a query string
+    # `#` truncates it while `&` starts another parameter. "/" stays literal: a query value
+    # is where the API wants a nested branch name spelled out.
+    reference = urllib.parse.quote(selected["ref"], safe="/")
     source = single_object(
         read,
-        f"repositories/{selected['repository_id']}/contents/{selected['path']}?ref={selected['ref']}",
+        f"repositories/{selected['repository_id']}/contents/{selected['path']}?ref={reference}",
     )
     try:
         workflow = yaml.load(base64.b64decode(source["content"]), Loader=yaml.BaseLoader)

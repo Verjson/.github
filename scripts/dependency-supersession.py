@@ -70,6 +70,10 @@ def version(value: Any) -> tuple[int, int, int, int, str]:
 
 
 def content(repo: str, path: str, ref: str) -> tuple[str, dict[str, Any]]:
+    # This reads at a commit, never at a branch; restating that here keeps the ref that
+    # reaches the query string incapable of carrying `#`, `&` or a path separator.
+    if not re.fullmatch(r"[0-9a-f]{40}", ref):
+        raise Refusal(f"content ref is not a commit SHA: {ref!r}")
     response = gh(f"repos/{repo}/contents/{path}?ref={ref}")
     if not isinstance(response, dict) or response.get("encoding") != "base64" or not isinstance(response.get("content"), str) or not isinstance(response.get("sha"), str):
         raise Refusal("incomplete contents response")
