@@ -346,9 +346,11 @@ budget is a test rather than a hope: a binary file reports nothing, a
 no adopter could clear, a 64-hex digest on a line naming the hub is not
 truncated into a 40-hex SHA, and a commented-out pin is one reference, not two.
 
-Two limits on how far that reads. `.git` carries no assertion, because it needs
-none in the shape a test could delete: git's object storage is never in the
-index, so the boundary excludes it by construction rather than by a guard. And
+Two limits on how far that reads. `.git` is pinned by a test — a 40-hex ref
+written into `.git/COMMIT_EDITMSG` reports nothing — but no *mutation* backs
+that test, because the exclusion is by construction: `_tracked_paths` enumerates
+`git ls-files`, which never names `.git`, so there is no guard to delete. Read
+the `.git` row as a boundary the suite observes, not one it defends. And
 the digest case is a constructed line, not a sampled one — no file here puts a
 64-hex run on a line that also names the hub — so the boundary defends a shape
 the header pass admits rather than one it has already met. Each guard above is

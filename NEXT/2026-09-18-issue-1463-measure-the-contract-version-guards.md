@@ -6,17 +6,20 @@ impact: patch
 ---
 
 `scripts/contract-version.py` carried three claims its suite did not measure, and
-one of them was the headline of the change that introduced it.
+this adds the tests that measure them. A fourth claim, about the `node_modules`
+symlink guard, turned out to be measured already — the correction there is to the
+record, not to the code.
 
-The symlink guard is the one that mattered. The test that was supposed to prove
-`node_modules` is no longer a hole builds a real **directory** and vendors a
-skewed caller inside it — which passes whether or not the guard exists, because a
-tracked directory is never an index entry in the first place. The shape the guard
-was written for is a `node_modules` **symlink** to a directory, which is exactly
-what this repository's own 48c9cd36 ignores. There is now a test for that shape,
-and deleting `if path.is_symlink()` reddens it: the scan follows the link, `stat`
-succeeds on the target directory, `open` raises `IsADirectoryError`, and a
-vendored tree becomes an `UNSCANNED` gap no adopter can clear.
+The issue was filed from a review of `ed2dd8c` and reported four surviving
+mutants. Three of them are real and are closed here. The fourth is not: at the
+merge base, deleting `if path.is_symlink()` already reddens, killed by the
+existing tracked-symlink test's `PIN_MISMATCH` on `link.yml`. What was missing
+was a different *shape* — a symlink whose target is a **directory**, which is
+exactly what this repository's own `48c9cd36` ignores. Deleting the guard with
+that fixture present produces a second, distinct failure: the scan follows the
+link, `stat` succeeds on the target directory, `open` raises `IsADirectoryError`,
+and the vendored tree becomes an `UNSCANNED` gap no adopter can clear. Both
+consequences of removing the guard are now pinned; before, only one was.
 
 Every guard named in #1463 is now checked by deleting it and requiring the suite
 to redden, with the assertion that fires recorded rather than assumed:
