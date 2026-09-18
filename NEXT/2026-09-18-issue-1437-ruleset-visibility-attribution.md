@@ -34,3 +34,14 @@ The script's header now states what read access Gate A needs and that an adopter
 it fails closed with a message naming the token, recording that an empty list is not that
 adopter's signature. `docs/merge-gate-guidance-proposal.md`'s exit `3` bullet no longer
 teaches the ungoverned-ref remedy for all three conditions.
+
+Found by the independent review and fixed in the same branch: the three-way split was
+being fed a body that had already lost its shape. `jq -s 'add // []'` applied `//`, which
+treats `null` and `false` as absent, so a body of `null`, a body of `false`, and an empty
+body all arrived as `[]` and were reported with the empty-list remedies — "add a ruleset"
+or "fix the ref" — for a response that described neither. Those are the bodies a proxy or
+a cached error page actually produces, so the misattribution this entry removes was
+reachable through the very shape it was meant to name. The default is gone; each of the
+three now reaches the malformed-shape arm. The populated arm also filtered to `objects`
+before its `// "?"` fallback could apply, so an array of non-objects rendered a sentence
+promising rule types it then left blank.

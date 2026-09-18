@@ -191,6 +191,26 @@ RULES_FIXTURE='"not-an-array"'
 run
 expect "a malformed rules response is named as a bad shape, not as an empty or ungoverned one" 3 "is not a JSON array"
 
+# `null`, `false`, and an empty body are non-arrays too, and they are the ones a proxy or
+# a cached error page actually produces. They must not be reported as an EMPTY rule list:
+# that arm's remedies are "add a ruleset" and "fix the ref", and neither is the remedy for
+# a body that never described the ref's governance at all.
+for body in 'null' 'false' ''; do
+  reset_env
+  RULES_FIXTURE="$body"
+  run
+  expect "a ${body:-empty} rules body is named as a bad shape rather than an empty rule list" \
+    3 "is not a JSON array"
+done
+
+# An array whose entries are not objects is still an array, so it lands in the populated
+# arm and its sentence promises the rule types that were read. The sentence must not come
+# out with that promise unfilled.
+reset_env
+RULES_FIXTURE='["a","b"]'
+run
+expect "a populated list of non-objects still names a type rather than trailing off" 3 "2 rule(s) of type: ?"
+
 # --- Gate B -----------------------------------------------------------------
 for name in 'build-test / deferred-ci' 'deferred-ci' 'deferred-ci (push)' 'ci / deferred-ci (ubuntu-latest)' 'Deferred-CI'; do
   reset_env
