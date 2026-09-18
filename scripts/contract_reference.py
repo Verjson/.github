@@ -65,11 +65,15 @@ import re
 # delimiter class already reads as an opener. A source-string fixture
 # `f"jobs:\n  ci:\n    uses: Verjson/.github/x.yml@{sha}\n"` ends its value where
 # it ends its line, and until this it did not: the ref came back with the two
-# characters `\` and `n` on the end. That cost 25 of this repository's own 123
-# references a corrupted ref and 3 of them their pin outright -- a 40-hex SHA
-# read as 41 characters is the same muting as the backtick above, reached by a
-# different character. `\` is also what `git check-ref-format` forbids in a
-# refname, so nothing legitimate is lost.
+# characters `\` and `n` on the end. Measured at this tree over the 1388 tracked
+# files `contract-version` actually scans -- not the workflow directory alone --
+# re-admitting `\` corrupts 30 of the 140 references it reads, 28 of them ending
+# in a literal `\n`. It costs no pin at this tree, and saying it cost 3 would be
+# stale: the 40-hex alternative below now stops a pin after 40 characters, so the
+# backslash never reaches one. Against the pattern as it stood *before* that
+# alternative existed, the backtick and backslash exclusions together recovered 3
+# pins, and that is the only pattern the figure is true of. `\` is also what
+# `git check-ref-format` forbids in a refname, so nothing legitimate is lost.
 # The ref admits a 40-hex SHA as an alternative *before* that general class, and
 # that alternative alone is what makes a pin readable in flow-style YAML.
 # `steps: [{uses: Verjson/.github/x.yml@<40-hex>}]` is ordinary YAML, parses to
@@ -78,17 +82,30 @@ import re
 # through the `}` and `]`, yields `<sha>}]`, fails `SHA_RE`, and the pin is
 # invisible to `pins()` -- muting, and muting the single pattern this module
 # replaced did not do, because it required exactly 40 hex and closed on
-# `(?![0-9a-f])`. That boundary is restored and widened to `(?![\w./+-])`: a
-# 40-hex run is a whole ref when the next character cannot continue a refname,
-# which covers `}`, `]`, `,` and anything else structural without naming them.
+# `(?![0-9a-f])`. That boundary is restored and widened to `(?![\w./+@-])`,
+# and the earlier rationale for it here was backwards. It did not say "the next
+# character cannot continue a refname": `git check-ref-format` accepts
+# `refs/tags/<40-hex>}foo`, `]foo`, `,foo` and `{foo`, so the characters cited
+# as covered are exactly characters that *can* continue one. The lookahead
+# enumerates the characters this scan treats as ref-continuing, and it stops on
+# `}`, `]` and `,` because in the YAML and the source fixtures this corpus is
+# made of those are structure closing the value, not refname text. That is a
+# deliberate reading of the context, not a fact about refnames, and it is the
+# same judgement the general class makes in the opposite direction below.
 # Widening it past `(?![0-9a-f])` is the part that is not merely restoration --
 # it keeps a tag named `<40-hex>-rc1` or `<40-hex>.1` falling through to the
 # general class rather than being reported as a pin at its first 40 characters,
 # which is the inventing direction and worse than the muting one.
+# `@` is in the class for that reason and was added late: `@<40-hex>@2` is a
+# legal tag, and without it the scan read the first 40 characters as a pin and
+# invented a PIN_MISMATCH against a ref nobody pinned -- the very case the false
+# refname rationale claimed to have covered. Enumerating ref-continuing
+# characters is what closes it; "cannot continue a refname" would have admitted
+# `}`, `]` and `,` and left `@` out, which is the inversion of what is wanted.
 # The general class still admits `{`, `}`, `,` and `]`, and deliberately: this
 # corpus writes refs as `@{PIN}` and `@${ref}` substitutions in generator and
-# fixture sources, and excluding those characters drops 19 of the 123 references
-# entirely and truncates 7 more to `$`. So a *non*-SHA ref in flow style is
+# fixture sources, and excluding those characters drops 27 of the 140 references
+# entirely and truncates 10 more, 8 of those to `$`. So a *non*-SHA ref in flow
 # still quoted back with its closing `}]` attached. That is the noisy direction,
 # not the muting one -- the verdict on an unpinned ref is unpinned either way --
 # and it is left rather than fixed by enumerating punctuation the corpus proves
@@ -182,13 +199,51 @@ import re
 # with no braces at all -- `steps: [ uses: A@<sha> ]` -- which YAML parses to the
 # same structure as the block form. Without them such a pin is dropped whole,
 # muted by its position on the line rather than by anything about its content.
-# No adopter in the measured fleet writes a step this way today, so this gains
-# nothing now and costs nothing: the fleet sweep measures gained=[] lost=[].
+# What this costs was re-measured over the whole corpus rather than over the
+# workflow directory, because `contract-version` scans every tracked file and
+# `{`, `[` and `,` open a great deal besides a YAML flow mapping. Over all 1388
+# tracked files the widening gains 4 references and loses none: a `<40-hex>}]`
+# placeholder in this file and in the #1482 fragment, and two `{B}` fixture refs
+# in the inventory's own suite. None is a 40-hex pin. The fleet sweep, over the
+# `.github/workflows` listing the inventory reads, measures gained=[] lost=[].
+# So "costs nothing" is true of what is in the tree and is not a general claim.
+# `{`, `[` and `,` also precede a `uses:` key inside a `--jq` body, inside
+# `fromJSON('{...}')`, and after a comma in ordinary prose, and a 40-hex run in
+# one of those now reads as a pin where it previously read as nothing. That
+# direction is inventing rather than muting, which is the worse one, so it is
+# named here rather than waved off: the corpus carries no such line today, and
+# the cost is latent, not absent.
+# Four characters in this pattern are deliberately unasserted, and they are
+# named because the alternative is a later reader mistaking "no test covers it"
+# for "nobody thought about it". Every character in the delimiter class and the
+# ref class was mutated one at a time against the whole suite; these are what
+# survived, and each survived for a stated reason rather than for want of a
+# fixture.
+#   * the two quotes in the *path* class `[^@\s"']+`. A quote can only reach
+#     that class by sitting between the hub name and the `@` the path is
+#     required to end on, and no path anyone writes does. They are
+#     defence-in-depth against a shape the corpus cannot produce.
+#   * `[ \t]*` rather than `\s*` after the delimiter. `references()` scans
+#     `splitlines()` output, so within a line the two differ only on `\r`,
+#     `\f` and `\v`, which no line puts before a `uses:` key. Same footing as
+#     the `\n` in the expression class above.
+#   * the `+` in `(?:-[ \t]+)?`. Requiring a space after the bullet rejects
+#     `-uses:`, which is neither YAML sequence syntax nor a diff line anyone
+#     writes -- `- uses:` and `-    uses:` are what the corpus has, and both
+#     match either way.
+#   * the `^` in `SHA_RE`. Every call site here, in `contract-version` and in
+#     `fleet-contract-inventory` uses `.match()`, which anchors at position 0
+#     regardless; the `$` is what does the work. It stays for a later
+#     `.search()` call site.
+# Everything else in both classes is now killed by a test, including the two
+# that were not when this branch was first reviewed: `'` in the ref class and
+# `'` in the delimiter class, both subsumed by the 40-hex alternative in exactly
+# the way the backtick was.
 USES_RE = re.compile(
     r"(?:^|[\"'`#{\[,]|\\n)[ \t]*(?:-[ \t]+)?"
     r"(?-i:(?:uses|\"uses\"|'uses'))\s*:\s*[\"']?Verjson/\.github"
     r"(?:/(?P<path>[^@\s\"']+))?@"
-    r"(?P<ref>[0-9a-f]{40}(?![\w./+-])|(?:\$\{\{[^}\n]{0,200}\}\}|[^\s\"'`\\])+)",
+    r"(?P<ref>[0-9a-f]{40}(?![\w./+@-])|(?:\$\{\{[^}\n]{0,200}\}\}|[^\s\"'`\\])+)",
     re.IGNORECASE)
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")

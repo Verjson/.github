@@ -46,9 +46,17 @@ attributed to some other file. Its row prints `<root-action>` in the path column
 rather than a file name, because which of the two names it would resolve to depends on the
 tree being compared.
 
-The agreement is asserted by identity — `fci.USES_RE is cv.USES_RE` — not by running a
-fixture list through both. A fixture list pins the shapes it happens to name; identity
-means a second copy cannot be reintroduced at all without the test failing.
+The agreement is asserted by identity, not by running a fixture list through both: the
+inventory reads `cv.USES_RE` itself and calls `contract_reference`'s own `references` and
+`pins`, so no copy of them can sit on the path either sweep takes. That is narrower than
+what an earlier draft of this fragment claimed. It said identity meant "a second copy
+cannot be reintroduced at all without the test failing", and that was false as written:
+the assertion was on `fci.references.__globals__["USES_RE"]`, which reads
+`contract_reference`'s module dict only while `fci.references` *is* the shared function.
+A behaviourally identical private copy reintroduced into `fleet-contract-inventory.py`
+made the lookup read that module's globals instead — where `USES_RE` is still the shared
+import — and survived the whole suite. Measured, then fixed: the assertions now name the
+functions, and that identical copy dies on them.
 
 Six pre-existing inventory tests moved from `USES_RE.finditer(...).group("sha")` to
 `pins()`, which is where the narrowing now lives. Their inputs and expected outcomes are
@@ -98,13 +106,17 @@ count is what a single-instance fixture cannot assert. On the widening side, a r
 carrying `.`, `-` and `+` — `@v2.2.0-rc.1+build` — must still survive whole, so an edit
 that over-narrows the class by one more character reddens.
 
-Measured on this repository's own tracked corpus rather than on the fleet: 1388 tracked
-files carry 134 `uses:` references under the previous pattern. **12** of them ended in an
-absorbed backtick before the backtick fix, in `NEXT/` fragments, two ADRs,
-`docs/reusable-workflow-versioning.md`, and the scan's own sources and tests; 3 of those 12
-are prose this branch itself adds. Every one of the 12 carries `main`, `v1`, `v2.2.0`, or a
-`<sha>`/`<40-hex>` placeholder, so #1483 stays latent on this corpus exactly as filed — it
-bites when a doc or a consumer fixture first quotes a real contract SHA in inline code.
+Measured on this repository's own tracked corpus rather than on the fleet, over the 1388
+tracked files the scan actually reads: they carry 136 `uses:` references under the
+previous pattern and 140 under this one. **13** of the 136 ended in an absorbed backtick
+before the backtick fix, in `NEXT/` fragments, two ADRs,
+`docs/reusable-workflow-versioning.md`, and the scan's own sources and tests; 3 of the 13
+are prose this branch itself adds. An earlier draft said 12 and listed the refs they carry
+as `main`, `v1`, `v2.2.0` or a `<sha>`/`<40-hex>` placeholder; at the shipped tree it is 13
+and one of them carries `v2`, which that list omits. The property that actually matters
+survives the correction and was re-measured: **none of the 13 is a 40-hex SHA**, so #1483
+stays latent on this corpus exactly as filed — it bites when a doc or a consumer fixture
+first quotes a real contract SHA in inline code.
 
 That is a measurement of one repository. The live fleet was swept separately, over the
 `.github/workflows` listing the inventory actually reads: **96** repositories, 0
@@ -116,7 +128,7 @@ tracked file, as `references()` reads them, rather than the workflow listing —
 not run, because it means fetching whole trees for 96 repositories.
 
 On this repository's own tracked corpus at the tree this fragment ships with, the previous
-pattern reads 134 references and the shipped one 138. The four the previous pattern cannot
+pattern reads 136 references and the shipped one 140. The four the previous pattern cannot
 see are the flow-style fixtures and prose this branch itself adds — the shapes being fixed,
 appearing in the fix's own sources. The count that carries a verdict is the 40-hex one: 18
 before and **21** after. Those three are pre-existing source-string fixtures in
@@ -147,31 +159,56 @@ Two independent causes sat on the one line, and both are fixed. The delimiter cl
 not admit `{`, so a key opening a flow mapping was not a key at all; it now admits `{`,
 `[` and `,`, which is where YAML begins a key rather than where it ends a value. And the
 ref class did not stop at `}`, so the ref overran; the ref now matches a 40-hex run as a
-whole alternative closing on `(?![\w./+-])`, which is the replaced pattern's boundary
+whole alternative closing on `(?![\w./+@-])`, which is the replaced pattern's boundary
 restored and widened. Widened, because `(?![0-9a-f])` alone would report a tag named
 `<40-hex>-rc1` as a pin at its first 40 characters — inventing a PIN_MISMATCH, which is
-the direction strictly worse than muting. A 40-hex run is a whole ref exactly when the
-next character cannot continue a refname, which covers `}`, `]` and `,` without naming
-any of them.
+the direction strictly worse than muting.
+
+The rationale for that lookahead was wrong in an earlier draft, and the wrong version hid
+a live case. It said a 40-hex run is a whole ref exactly when the next character cannot
+continue a refname, "which covers `}`, `]` and `,`". `git check-ref-format` accepts
+`refs/tags/<40-hex>}foo`, `]foo`, `,foo` and `{foo`, so those are precisely characters
+that *can* continue a refname; the lookahead works because they are YAML structure in the
+files this scans, which is a judgement about context rather than a fact about refnames.
+Read correctly, the lookahead enumerates the characters treated as ref-continuing — and
+`@` was missing from it. `<40-hex>@2` is a legal tag, and the scan read its first 40
+characters as a pin, inventing a PIN_MISMATCH against a SHA nobody wrote. `@` is in the
+class now and the case is closed rather than documented; a test pins `/b`, `+b`, `@2`,
+`-rc1` and `.1` all falling through to the general class.
 
 The general class still admits `{`, `}`, `,` and `]`, and that is measured rather than
-assumed: excluding them drops 25 of this repository's references outright and truncates
-8 more to `$`, because the corpus writes refs as `@${ref}` and `@{PIN}` substitutions in
-generator and fixture sources. A *non*-SHA ref in flow style is therefore still quoted
-back with its trailing `}]` attached. That is the noisy direction, not the muting one —
-an unpinned ref is reported unpinned either way — and it is left named rather than closed
-by enumerating punctuation the corpus proves is load-bearing elsewhere.
+assumed — re-measured at this tree, because the earlier figures were taken at `6d60385`
+and shipped against a larger corpus: excluding them drops 27 of this repository's 140
+references outright and truncates 10 more, 8 of those to `$`, because the corpus writes
+refs as `@${ref}` and `@{PIN}` substitutions in generator and fixture sources. A *non*-SHA
+ref in flow style is therefore still quoted back with its trailing `}]` attached. That is
+the noisy direction, not the muting one — an unpinned ref is reported unpinned either way
+— and it is left named rather than closed by enumerating punctuation the corpus proves is
+load-bearing elsewhere.
 
 The ref class also excludes a backslash now, the closing half of the `\n` the delimiter
-class already reads as an opener. On this corpus that alone corrected 30 refs that came
-back with a trailing `\` and `n`, **3** of which were 40-hex pins read as 41 characters —
-the same muting as the backtick, reached by a different character.
+class already reads as an opener. On this corpus that alone corrects 30 refs that came
+back with a trailing `\` and `n`, 28 of them ending in a literal `\n`. It recovers no pin
+at this tree, and an earlier draft's "**3** of which were 40-hex pins" is stale rather
+than wrong: the flow-style fix in this same branch made the ref stop after 40 hex
+characters, so the backslash no longer reaches a pin. Against the pattern as it stood
+before that alternative existed, the backtick and backslash exclusions together recovered
+3 pins, and that is the only pattern the figure is true of. This is the same subsumption
+that hid the backtick and single-quote exclusions from the suite.
 
-This is latent, not active. The live fleet sweep measures `gained=[] lost=[]`: no adopter
-writes a step in flow style today, which is what makes it cheap to close now and expensive
-to discover later.
+This is latent, not active, and the claim was re-scoped to what was actually measured. The
+live fleet sweep measures `gained=[] lost=[]` over the `.github/workflows` listing the
+inventory reads. But `contract-version` scans every tracked file, so the delimiter
+widening was re-measured there too: over all 1388 it gains 4 references and loses none —
+a `<40-hex>}]` placeholder in `contract_reference.py` and in this fragment, and two `{B}`
+fixture refs in the inventory's suite — and none of the 4 is a 40-hex pin. So "costs
+nothing" is a statement about this tree, not a general one. `{`, `[` and `,` also precede
+a `uses:` key inside a `--jq` body, inside `fromJSON('{...}')`, and after a comma in
+ordinary prose, and a 40-hex run in one of those would now read as a pin where it read as
+nothing before. That is the inventing direction, so it is named here rather than waved
+off: no such line is in the tree today, and the cost is latent, not absent.
 
-`scripts/ci-gate/contract-version.test.py` went from 81 tests to 86 and
+`scripts/ci-gate/contract-version.test.py` went from 81 tests to 92 and
 `scripts/ci-gate/fleet-contract-inventory.test.py` from 42 to 52, all green.
 
 One further finding came out of mutation-testing the result: the 40-hex alternative

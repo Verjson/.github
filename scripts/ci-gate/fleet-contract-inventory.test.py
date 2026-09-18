@@ -31,6 +31,13 @@ fci = _load("fleet_contract_inventory", "fleet-contract-inventory.py")
 # Loaded here so the agreement between the two sweeps can be asserted rather
 # than maintained by hand -- Verjson/.github#1482.
 cv = _load("contract_version", "contract-version.py")
+# Imported rather than path-loaded, and that matters for the identity
+# assertions below: `_load` would build a *second* module object with its own
+# function objects, and `fci.references is contract_reference.references` would
+# then fail for a reason that has nothing to do with the sweep. The inventory
+# puts `scripts/` on `sys.path` and imports this module, so a plain import here
+# binds the very object it imported from.
+import contract_reference  # noqa: E402
 
 A = "a" * 40
 B = "b" * 40
@@ -515,21 +522,38 @@ class AnAbsentDirectoryIsNotAGap(unittest.TestCase):
 
 class RecognizerAgreement(unittest.TestCase):
     """Verjson/.github#1482. Two hand-maintained copies of one pattern is the
-    condition that produced the drift, so the check is identity: the two sweeps
-    read the *same compiled object*, and a copy cannot be reintroduced without
-    this failing. Asserting equal behaviour on a fixture list would only pin the
-    shapes that list happens to name."""
+    condition that produced the drift, so the check is identity: the inventory
+    reads the *same compiled object* and calls the *same functions* as
+    `contract-version`, rather than any copy of them. Asserting equal behaviour
+    on a fixture list would only pin the shapes that list happens to name."""
 
     def test_the_two_sweeps_share_one_recognizer_object(self):
         # `contract-version` really does read this object: it calls
         # `USES_RE.finditer` on its own module global. The inventory does not --
         # its `USES_RE` is a re-export nothing in that module consumes, so
         # asserting on it alone pins a name rather than a code path. The path
-        # the inventory actually takes is `pins()` -> `references()` -> the
-        # `USES_RE` in `contract_reference`'s own globals, which is what the
-        # second assertion names. Both must be the one object.
+        # the inventory actually takes is `pins()` -> `references()`, so those
+        # two names are what the second and third assertions pin.
+        #
+        # They name the *functions*. An earlier round asserted
+        # `fci.references.__globals__["USES_RE"] is cv.USES_RE` instead, which
+        # does not say what it looks like it says: `fci.references.__globals__`
+        # is `contract_reference`'s module dict only while `fci.references` IS
+        # the shared function. Define a private copy in
+        # `fleet-contract-inventory.py` and the lookup reads *that* module's
+        # globals, where `USES_RE` is still the shared import -- so it passes.
+        # Measured: a behaviourally identical copy of `references` and `pins`
+        # reintroduced there survived this assertion and the whole suite. A
+        # *divergent* copy does die, but to the behavioural tests below, not to
+        # this one.
+        #
+        # So what this guarantees is narrower than "a second copy cannot be
+        # reintroduced", and exact: the inventory calls the shared functions
+        # themselves, so no copy -- identical or divergent -- can sit on the
+        # path either sweep takes.
         self.assertIs(fci.USES_RE, cv.USES_RE)
-        self.assertIs(fci.references.__globals__["USES_RE"], cv.USES_RE)
+        self.assertIs(fci.references, contract_reference.references)
+        self.assertIs(fci.pins, contract_reference.pins)
 
     def test_a_root_action_pin_is_a_reference_to_both_sweeps(self):
         # The divergence this issue reports: #1472 taught `contract-version` to
