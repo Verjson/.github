@@ -115,12 +115,27 @@ case "$*" in
         display_title:$title,head_branch:$branch,head_repository:{full_name:$repo},repository:{full_name:$repo},
         actor:{login:$actor},triggering_actor:{login:$actor},status:"in_progress"}' ;;
   "api --paginate --slurp repos/$TARGET_REPO/actions/workflows/ai-review-merge.yml/runs?event=workflow_dispatch&per_page=100")
+    # Verjson/.github#1480 — count the polls so a test can prove which
+    # conditions are retried and which are refused on the first look.
+    polls=1
+    if [ -n "${CORRELATED_POLLS:-}" ]; then
+      polls=$(( $(cat "$CORRELATED_POLLS" 2>/dev/null || echo 0) + 1 ))
+      printf '%s' "$polls" >"$CORRELATED_POLLS"
+    fi
+    # The run is absent until the APPEARS_AFTER-th poll: eventual consistency on
+    # GET /actions/runs, which is the race this issue is about. MISSING keeps it
+    # absent forever.
+    if [ "${MISSING_CORRELATED_RUN:-false}" = true ] ||
+       [ "$polls" -le "${CORRELATED_RUN_APPEARS_AFTER:-0}" ]; then
+      printf '[{"workflow_runs":[]}]\n'; exit 0
+    fi
     jq -nc --argjson id "$REVIEW_RUN_ID" \
       --arg title "${RUN_TITLE:-AI review authorization $AUTHORIZATION_CHECK_ID from arm $ARM_RUN_ID.$ARM_RUN_ATTEMPT}" \
       --arg repo "$TARGET_REPO" --arg branch "$DEFAULT_BRANCH" \
+      --argjson attempt "${CORRELATED_RUN_ATTEMPT:-1}" \
       --argjson duplicate "${DUPLICATE_CORRELATED_RUN:-false}" '
       [{workflow_runs: ([{
-        id:$id,run_attempt:1,event:"workflow_dispatch",path:".github/workflows/ai-review-merge.yml",
+        id:$id,run_attempt:$attempt,event:"workflow_dispatch",path:".github/workflows/ai-review-merge.yml",
         display_title:$title,head_branch:$branch,head_repository:{full_name:$repo},repository:{full_name:$repo}
       }] + (if $duplicate then [{
         id:($id + 1),run_attempt:1,event:"workflow_dispatch",path:".github/workflows/ai-review-merge.yml",
@@ -203,8 +218,39 @@ REVIEW_RUN_ATTEMPT=1 RUN_ACTOR=maintainer \
   expect_fail "manual attempt-one dispatch cannot replay retained receipt" "not trusted-arm owned" verify
 REVIEW_RUN_ATTEMPT=1 AUTHORIZATION_STATE=retained \
   expect_fail "attempt-one dispatch cannot replay a completed retained authorization" "cannot replay a retained authorization" verify
+# Verjson/.github#1480 — one message used to cover three unrelated conditions
+# ("missing or not unique"), so a not-yet-indexed run and a genuinely duplicated
+# run were indistinguishable in the log and neither could be triaged. Each
+# condition now reports distinctly, and only the eventually-consistent one is
+# retried. These assert the distinctness, not merely that each still fails.
 REVIEW_RUN_ATTEMPT=1 DUPLICATE_CORRELATED_RUN=true \
-  expect_fail "duplicate attempt-one dispatch cannot replay retained receipt" "missing or not unique" verify
+  expect_fail "duplicate attempt-one dispatch is refused as a duplicate" "dispatch is duplicated" verify
+REVIEW_RUN_ATTEMPT=1 MISSING_CORRELATED_RUN=true \
+  expect_fail "a run absent from the listing is refused as absent, not as a duplicate" \
+  "has not appeared in the workflow run listing" verify
+REVIEW_RUN_ATTEMPT=1 CORRELATED_RUN_ATTEMPT=2 \
+  expect_fail "a retried initial dispatch is refused as retried, not as a duplicate" \
+  "was retried" verify
+
+# The absent case is eventually consistent, so it is bound-retried: a run that
+# shows up on the second poll must be admitted rather than refused outright.
+polls_file="$tmp/polls"
+: >"$polls_file"
+REVIEW_RUN_ATTEMPT=1 CORRELATED_POLLS="$polls_file" CORRELATED_RUN_APPEARS_AFTER=1 \
+  expect_pass "a run that appears on a later poll is admitted" verify
+[ "$(cat "$polls_file")" -ge 2 ] \
+  && pass "the absent listing is re-polled rather than refused on the first look" \
+  || fail "the absent listing was not re-polled (polls=$(cat "$polls_file"))"
+
+# A duplicate is NOT eventually consistent — retrying it would only widen the
+# window in which a second dispatch could be accepted as the trusted one, so it
+# must be refused on the very first look.
+: >"$polls_file"
+REVIEW_RUN_ATTEMPT=1 DUPLICATE_CORRELATED_RUN=true CORRELATED_POLLS="$polls_file" \
+  expect_fail "a duplicate is refused without retrying" "dispatch is duplicated" verify
+[ "$(cat "$polls_file")" -eq 1 ] \
+  && pass "a duplicate dispatch is never re-polled" \
+  || fail "a duplicate dispatch was re-polled (polls=$(cat "$polls_file"))"
 
 
 # Execute the actual preflight and gate programs against the same failed check.

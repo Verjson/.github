@@ -83,19 +83,50 @@ if [ "$REVIEW_RUN_ATTEMPT" -eq 1 ]; then
       echo "::error::initial direct review dispatch is not trusted-arm owned"
       exit 1
     }
-  api correlated-runs "$tmp/correlated-runs.json" --paginate --slurp \
-    "repos/$TARGET_REPO/actions/workflows/ai-review-merge.yml/runs?event=workflow_dispatch&per_page=100"
+  # Verjson/.github#1480 — this predicate used to fold three unrelated
+  # conditions behind one "missing or not unique" message, so a run that had
+  # simply not been indexed yet was reported identically to a genuine duplicate
+  # dispatch and neither could be triaged from the log.
+  #
+  # They are now separated, because they call for opposite handling. An absent
+  # run is eventual consistency on GET /actions/runs and self-heals, so it is
+  # bound-retried. A duplicate never self-heals: retrying it would only widen
+  # the window in which a second dispatch could be accepted as the trusted one,
+  # so it is refused on the first look. Neither assertion is relaxed — more than
+  # one match and a non-1 run_attempt both still fail closed.
+  select_matching='[.[].workflow_runs[] | select(
+      .display_title == $title and .event == "workflow_dispatch" and
+      .path == ".github/workflows/ai-review-merge.yml" and .head_branch == $branch and
+      .head_repository.full_name == $repo and .repository.full_name == $repo
+    )]'
+  runlist_attempts=5
+  matching_count=0
+  for poll in $(seq 1 "$runlist_attempts"); do
+    api correlated-runs "$tmp/correlated-runs.json" --paginate --slurp \
+      "repos/$TARGET_REPO/actions/workflows/ai-review-merge.yml/runs?event=workflow_dispatch&per_page=100"
+    matching_count="$(jq --arg title "$expected_title" --arg branch "$DEFAULT_BRANCH" \
+      --arg repo "$TARGET_REPO" "$select_matching | length" "$tmp/correlated-runs.json")"
+    [ "$matching_count" -eq 0 ] || break
+    [ "$poll" -eq "$runlist_attempts" ] || sleep 3
+  done
+
+  if [ "$matching_count" -eq 0 ]; then
+    echo "::error::initial direct review dispatch $REVIEW_RUN_ID has not appeared in the workflow run listing after $runlist_attempts attempts"
+    exit 1
+  fi
+  if [ "$matching_count" -gt 1 ]; then
+    echo "::error::initial direct review dispatch is duplicated: $matching_count workflow runs share the authorization title \"$expected_title\""
+    exit 1
+  fi
   jq -e --argjson run "$REVIEW_RUN_ID" --arg title "$expected_title" \
-    --arg branch "$DEFAULT_BRANCH" --arg repo "$TARGET_REPO" '
-      [.[].workflow_runs[] | select(
-        .display_title == $title and .event == "workflow_dispatch" and
-        .path == ".github/workflows/ai-review-merge.yml" and .head_branch == $branch and
-        .head_repository.full_name == $repo and .repository.full_name == $repo
-      )] as $matching |
-      ($matching | length) == 1 and $matching[0].id == $run and
-      $matching[0].run_attempt == 1
-    ' "$tmp/correlated-runs.json" >/dev/null || {
-      echo "::error::initial direct review dispatch is missing or not unique"
+    --arg branch "$DEFAULT_BRANCH" --arg repo "$TARGET_REPO" \
+    "$select_matching | .[0].id == \$run" "$tmp/correlated-runs.json" >/dev/null || {
+      echo "::error::the sole correlated dispatch is not review run $REVIEW_RUN_ID"
+      exit 1
+    }
+  jq -e --arg title "$expected_title" --arg branch "$DEFAULT_BRANCH" --arg repo "$TARGET_REPO" \
+    "$select_matching | .[0].run_attempt == 1" "$tmp/correlated-runs.json" >/dev/null || {
+      echo "::error::initial direct review dispatch was retried; only run_attempt 1 may claim the initial dispatch"
       exit 1
     }
   echo "Initial trusted-arm review dispatch verified for run $REVIEW_RUN_ID."

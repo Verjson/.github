@@ -33,3 +33,25 @@ decision-bearing and fail-open — the Renovate release-age lookup, where a fail
 yields `age_pending=0` and the PR enters the normal review lane instead of deferring.
 That one is tracked separately; its blast radius is a wasted review rather than a merge
 on an unverified base.
+
+## Also: the AI review authorization race ([#1480](https://github.com/Verjson/.github/issues/1480))
+
+The same mistake in the opposite direction. `verify-zero-provider-recovery.sh` decided
+direct-review admission with one predicate over the paginated `workflow_dispatch` run
+listing, and reported its failure with one message, `initial direct review dispatch is
+missing or not unique`. That message covered three unrelated conditions: the run not yet
+appearing in the listing (eventual consistency on `GET /actions/runs`), a genuine
+duplicate dispatch, and a non-1 `run_attempt`. A not-yet-indexed run and a duplicated run
+produced byte-identical output, so a spurious red on this required check could not be
+triaged from its log.
+
+The conditions are now separated and handled according to whether they self-heal. An
+absent run is bound-retried, five polls with a 3-second gap, because it is eventually
+consistent. A duplicate is refused on the first look and never retried — retrying it
+would only widen the window in which a second dispatch could be accepted as the trusted
+one. Neither assertion is relaxed: more than one match and a non-1 `run_attempt` both
+still fail closed, and each of the four conditions now names itself.
+
+`scripts/ci-gate/zero-provider-recovery.test.sh` asserts the distinctness rather than
+merely that each case still fails, and counts the polls to pin which conditions are
+retried and which are refused immediately.
