@@ -42,7 +42,7 @@ mkdir -p "$tmp/bin"
 cat >"$tmp/bin/gh" <<'GH'
 #!/usr/bin/env bash
 if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
-  printf '%s ' "$@" | grep -q -- '--json comments' && { cat "$COMMENTS_FILE" 2>/dev/null; exit 0; }
+  printf '%s ' "$@" | grep -- '--json comments' >/dev/null && { cat "$COMMENTS_FILE" 2>/dev/null; exit 0; }
   [ "${PRVIEW_FAIL:-0}" = "1" ] && exit 1
   # After update-branch runs, return the post-update mergeable so a CONFLICTING
   # branch whose conflict was mere base drift reads as cleared on the re-check.

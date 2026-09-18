@@ -25,9 +25,9 @@ check_contract() {
   grep -qF "steps.reserve_1.outputs.allowed == 'true'" "$candidate" || return 1
   grep -qF "steps.reserve_2.outputs.allowed == 'true'" "$candidate" || return 1
   reservation_token=$(awk '/id: reservation-app-token$/{found=1} found&&/^      - name:/{exit} found{print}' "$candidate")
-  printf '%s' "$reservation_token" | grep -qF 'uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1' || return 1
-  printf '%s' "$reservation_token" | grep -qF 'permission-pull-requests: write' || return 1
-  printf '%s' "$reservation_token" | grep -Eq 'permission-(contents|actions|checks|issues):' && return 1
+  printf '%s' "$reservation_token" | grep -F 'uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1' >/dev/null || return 1
+  printf '%s' "$reservation_token" | grep -F 'permission-pull-requests: write' >/dev/null || return 1
+  printf '%s' "$reservation_token" | grep -E 'permission-(contents|actions|checks|issues):' >/dev/null && return 1
   grep -qF 'GH_TOKEN: ${{ steps.reservation-app-token.outputs.token }}' "$candidate" || return 1
   grep -qF 'ai-review-pass:v2:${next}/2 pr:${PR_NUMBER} check:${AUTHORIZATION_CHECK_ID} head:${EXPECTED_HEAD_SHA}' "$candidate" || return 1
   grep -qF 'ai-review-explicit:v1 pr:${PR_NUMBER} check:${AUTHORIZATION_CHECK_ID} head:${EXPECTED_HEAD_SHA}' "$candidate" || return 1
@@ -39,14 +39,14 @@ check_contract() {
   check_lookup_line=$(grep -nF 'check-runs/$marker_check' <<<"$reserve_one" | cut -d: -f1)
   [[ "$exact_head_line" =~ ^[1-9][0-9]*$ && "$check_lookup_line" =~ ^[1-9][0-9]*$ && "$exact_head_line" -lt "$check_lookup_line" ]] || return 1
   reserve_two=$(awk '/id: reserve_2$/{found=1} found{print} found&&/^      - name: DeepSeek review pass 2/{exit}' "$candidate")
-  printf '%s' "$reserve_two" | grep -qF 'consumed="${{ steps.reserve_1.outputs.count }}"' || return 1
-  ! printf '%s' "$reserve_two" | grep -qF 'pulls/$PR_NUMBER/reviews?per_page=100' || return 1
+  printf '%s' "$reserve_two" | grep -F 'consumed="${{ steps.reserve_1.outputs.count }}"' >/dev/null || return 1
+  ! printf '%s' "$reserve_two" | grep -F 'pulls/$PR_NUMBER/reviews?per_page=100' >/dev/null || return 1
   grep -qF "steps.verdict_1.outputs.usable != 'true'" "$candidate" || return 1
   grep -qF 'MODEL: ${{ needs.preflight.outputs.fallback_model }}' "$candidate" || return 1
   grep -qF 'BUDGET_USD: ${{ needs.preflight.outputs.fallback_budget_usd }}' "$candidate" || return 1
   verdict=$(awk '/id: submit$/{found=1} found&&/VERDICT:/{print; exit}' "$candidate")
-  printf '%s' "$verdict" | grep -q 'steps.verdict_1.outputs.verdict' || return 1
-  printf '%s' "$verdict" | grep -q 'steps.verdict_2.outputs.verdict' || return 1
+  printf '%s' "$verdict" | grep 'steps.verdict_1.outputs.verdict' >/dev/null || return 1
+  printf '%s' "$verdict" | grep 'steps.verdict_2.outputs.verdict' >/dev/null || return 1
 }
 
 check_contract "$workflow" \

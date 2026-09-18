@@ -671,7 +671,7 @@ if grep -Eq 'GITHUB_WORKFLOW_(REF|SHA)|github\.workflow_(ref|sha)' "$workflow" "
   echo "called workflows cannot prove their own pin through the caller-associated github workflow identity" >&2
   exit 1
 fi
-if awk '/^  pull-request-build:/{seen=1} /^  publish-base:/{seen=0} seen' "$workflow" | grep -Eq 'attestations: write|packages: write|id-token: write|docker/login-action|push: true'; then
+if awk '/^  pull-request-build:/{seen=1} /^  publish-base:/{seen=0} seen' "$workflow" | grep -E 'attestations: write|packages: write|id-token: write|docker/login-action|push: true' >/dev/null; then
   echo "pull-request build exposes a publication capability" >&2
   exit 1
 fi
