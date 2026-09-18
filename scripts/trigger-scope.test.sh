@@ -116,7 +116,7 @@ assert_scanner_covered "doc-tag-pins.sh scans workflow definitions" '.github/wor
 # tracked file — so a pin in a comment (or in prose) was invisible to the check
 # that exists to find exactly that. If the scanner's pattern changes, this fails
 # loudly rather than silently narrowing.
-pin_pattern="$(sed -nE "s/.*grep -oE '([^']+)'.*/\1/p" "$root/scripts/doc-tag-pins.sh" | head -n1)"
+IFS= read -r pin_pattern < <(sed -nE "s/.*grep -oE '([^']+)'.*/\1/p" "$root/scripts/doc-tag-pins.sh") || pin_pattern=''
 if [ -z "$pin_pattern" ]; then
   fail "could not extract the pin pattern from doc-tag-pins.sh; the coverage check below would be a guess"
   pin_carriers=""

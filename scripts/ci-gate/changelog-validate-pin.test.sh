@@ -91,8 +91,12 @@ mutable_case "refs/heads/$immutable_sha" 'a ref path that merely contains a SHA'
 # Ordering is the whole point: a guard that runs after the checkout has already
 # fetched and can already have executed nothing useful. Pin the guard step ahead
 # of both checkouts in file order.
-pin_line="$(grep -n '^        id: pin$' "$wf" | head -n1 | cut -d: -f1)"
-first_checkout_line="$(grep -n 'uses: actions/checkout@' "$wf" | head -n1 | cut -d: -f1)"
+# `read` rather than `| head -n1`: a truncated pipe kills the producer and
+# pipefail then reports a contract violation that never happened (#1445).
+IFS= read -r pin_hit < <(grep -n '^        id: pin$' "$wf") || pin_hit=''
+IFS= read -r checkout_hit < <(grep -n 'uses: actions/checkout@' "$wf") || checkout_hit=''
+pin_line="${pin_hit%%:*}"
+first_checkout_line="${checkout_hit%%:*}"
 { [ -n "$pin_line" ] && [ -n "$first_checkout_line" ] && [ "$pin_line" -lt "$first_checkout_line" ]; } \
   && pass "the pin guard runs before any checkout (guard line $pin_line < checkout line $first_checkout_line)" \
   || fail "the pin guard does not precede the first checkout (guard=${pin_line:-none} checkout=${first_checkout_line:-none})"
@@ -111,8 +115,8 @@ no_persist="$(grep -c 'persist-credentials: false' "$wf")"
 # divergence would mean an adopter's ref is a pin in one check and not the other.
 sibling="$repo_root/.github/workflows/generated-artifacts.yml"
 if [ -f "$sibling" ]; then
-  mine="$(grep -o 'ref_is_immutable() { \[\[ "\$1" =~ [^}]*}' "$wf" | head -n1)"
-  theirs="$(grep -o 'ref_is_immutable() { \[\[ "\$1" =~ [^}]*}' "$sibling" | head -n1)"
+  IFS= read -r mine < <(grep -o 'ref_is_immutable() { \[\[ "\$1" =~ [^}]*}' "$wf") || mine=''
+  IFS= read -r theirs < <(grep -o 'ref_is_immutable() { \[\[ "\$1" =~ [^}]*}' "$sibling") || theirs=''
   { [ -n "$mine" ] && [ "$mine" = "$theirs" ]; } \
     && pass "the pin predicate is identical to generated-artifacts.yml's" \
     || fail "the pin predicate has drifted from generated-artifacts.yml (mine='$mine' theirs='$theirs')"

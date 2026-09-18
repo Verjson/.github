@@ -37,7 +37,7 @@ fetch() {
   local path="$1" jq_expr="$2" out
   if ! out="$(gh api --paginate "$path" --jq "$jq_expr" 2>&1)"; then
     printf 'UNDETERMINED: GET %s failed: %s\n' \
-      "$path" "$(printf '%s' "$out" | head -3 | tr '\n' ' ')" >&2
+      "$path" "$(head -3 <<<"$out" | tr '\n' ' ')" >&2
     return 2
   fi
   printf '%s\n' "$out"
@@ -140,7 +140,7 @@ fetch_optional() {
     case "$out" in
       *404*|*"Not Found"*) return 0 ;;
       *) printf 'UNDETERMINED: GET %s failed: %s\n' \
-           "$path" "$(printf '%s' "$out" | head -3 | tr '\n' ' ')" >&2
+           "$path" "$(head -3 <<<"$out" | tr '\n' ' ')" >&2
          return 2 ;;
     esac
   fi

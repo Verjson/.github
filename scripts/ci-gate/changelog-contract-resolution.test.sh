@@ -38,7 +38,10 @@ chmod +x "$tmp/render-next.sh"
 
 digest() { sha256sum <"$1" | cut -d' ' -f1; }
 
-embedded="$(grep -oE 'CONTRACT_SHA256="[0-9a-f]{64}"' "$tmp/render-next.sh" | head -n1 | cut -d'"' -f2)"
+# Reading the first match through `read` rather than `| head -n1` keeps the
+# producer off the wrong end of a truncated pipe (#1445).
+IFS= read -r embedded_line < <(grep -oE 'CONTRACT_SHA256="[0-9a-f]{64}"' "$tmp/render-next.sh") || embedded_line=''
+embedded="$(cut -d'"' -f2 <<<"$embedded_line")"
 [ "$embedded" = "$(digest "$tmp/pinned.py")" ] \
   && pass "the generated renderer pins the digest of the engine at its ref" \
   || fail "embedded digest does not match the engine at $ref (got ${embedded:-none})"

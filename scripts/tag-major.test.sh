@@ -48,8 +48,10 @@ rc=$?
   && pass "moving major remains annotated" \
   || fail "moving major is not an annotated tag"
 
-major_target="$(git cat-file -p v2 2>/dev/null | awk '/^object /{print $2; exit}')"
-major_type="$(git cat-file -p v2 2>/dev/null | awk '/^type /{print $2; exit}')"
+# Dropping awk's `exit` and taking the first line with `read` keeps the producer
+# off a pipe its consumer abandoned (#1445); awk now reads `cat-file` to EOF.
+IFS= read -r major_target < <(git cat-file -p v2 2>/dev/null | awk '/^object /{print $2}') || major_target=''
+IFS= read -r major_type < <(git cat-file -p v2 2>/dev/null | awk '/^type /{print $2}') || major_type=''
 { [ "$major_type" = "commit" ] && [ "$major_target" = "$release_commit" ]; } \
   && pass "moving major tag object points directly at the release commit (#73)" \
   || fail "moving major points at type=$major_type object=$major_target, expected commit=$release_commit"
