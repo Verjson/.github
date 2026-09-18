@@ -200,6 +200,17 @@ consumers=0
 while IFS= read -r repository; do
   [ -n "$repository" ] || continue
   repositories_scanned=$((repositories_scanned + 1))
+  # Reset every loop-scoped variable at the top of the iteration, not the bottom: several
+  # branches below leave the iteration early, and a reset placed after them would carry one
+  # repository's state into the next repository's verdict.
+  unset metadata default_branch visibility_type has_secret \
+    caller_response caller_content caller_error caller_pins caller_contract_sha canonical_caller \
+    caller_available caller_file content_ref direct_consumer relation historical_generator \
+    historical_workflow generator_response workflow_response workflow_call_block required_check_lines \
+    caller_required_checks caller_required_checks_shell canonical_policy_lines canonical_required_checks \
+    retry_response retry_file retry_available retry_content retry_pins retry_policy_lines retry_workflow_lines \
+    retry_required_checks retry_workflow_names retry_workflow_names_shell canonical_retry \
+    historical_retry_workflow retry_workflow_response
   metadata="$(gh api "repos/$repository" --jq '[.default_branch,.visibility] | @tsv')" || {
     echo "::error title=Unreadable repository metadata::repository=$repository"
     failures=$((failures + 1))
@@ -306,16 +317,17 @@ while IFS= read -r repository; do
       sed -nE 's#^[[:space:]]+uses: Verjson/\.github/\.github/workflows/ai-privileged-merge\.yml@([0-9a-f]{40})[[:space:]]*$#\1#p' \
         <<<"$caller_content"
     )
+    caller_contract_sha="${caller_pins[0]-}"
+    # The rejected pin must not reach the queries below, but abandoning the iteration would
+    # also abandon this repository's remaining evidence. Make the pin-dependent work
+    # conditional instead, so every repository is judged on evidence of its own.
     if [ "${#caller_pins[@]}" -ne 1 ]; then
       echo "::error title=Invalid privileged merge caller pin::repository=$repository path=$CALLER_PATH reason='expected exactly one immutable canonical workflow pin'"
       failures=$((failures + 1))
+    elif ! [[ "$caller_contract_sha" =~ ^[0-9a-f]{40}$ ]]; then
+      echo "::error title=Invalid privileged merge caller pin::repository=$repository reason='pin is not a 40-hex commit SHA'"
+      failures=$((failures + 1))
     else
-      caller_contract_sha="${caller_pins[0]}"
-      [[ "$caller_contract_sha" =~ ^[0-9a-f]{40}$ ]] || {
-        echo "::error title=Invalid privileged merge caller pin::repository=$repository reason='pin is not a 40-hex commit SHA'"
-        failures=$((failures + 1))
-        continue
-      }
       relation="$(gh api "repos/$CANONICAL_REPOSITORY/compare/$caller_contract_sha...main" --jq .status)" || {
         echo "::error title=Untrusted privileged merge caller pin::repository=$repository contract_sha=$caller_contract_sha reason='pin is absent from canonical main history'"
         failures=$((failures + 1))
@@ -466,14 +478,6 @@ while IFS= read -r repository; do
       fi
     fi
   fi
-  unset caller_response caller_content caller_error caller_pins caller_contract_sha canonical_caller \
-    caller_available caller_file content_ref direct_consumer relation historical_generator \
-    historical_workflow generator_response workflow_response workflow_call_block required_check_lines \
-    caller_required_checks caller_required_checks_shell canonical_policy_lines canonical_required_checks \
-    retry_response retry_file retry_available retry_content retry_pins retry_policy_lines retry_workflow_lines \
-    retry_required_checks retry_workflow_names retry_workflow_names_shell canonical_retry \
-    historical_retry_workflow retry_workflow_response
-
   has_secret=false
   case "$visibility" in
     all) has_secret=true ;;
