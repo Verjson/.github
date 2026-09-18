@@ -77,13 +77,33 @@ STUB
 chmod +x "$stub_bin/gh"
 
 # run_case <event-name> <gh-count> <gh-fail> — returns "should-run=<v> called=<0|1>".
+# A 40-hex object name, not a short placeholder: the script constrains HEAD_SHA before
+# it reaches a `commits/<sha>` path segment (Verjson/.github#1464).
+FIXTURE_HEAD_SHA="0123456789abcdef0123456789abcdef01234567"
+
+# run_rejected_case <event-name> <head-sha> — returns "status=<n> called=<0|1>".
+# The 40-hex constraint is only worth anything if it fires BEFORE the request, so this
+# reports the stub's reachability alongside the exit status; asserting a non-zero exit
+# alone would pass just as well for a guard that ran after the URL was already built.
+run_rejected_case() {
+  local out called status
+  out="$tmp/out"; called="$tmp/called"
+  : >"$out"; rm -f "$called"
+  PATH="$stub_bin:$PATH" \
+  GITHUB_OUTPUT="$out" GITHUB_EVENT_NAME="$1" \
+  GITHUB_REPOSITORY="Verjson/example" HEAD_SHA="$2" GH_TOKEN="x" \
+  STUB_GH_COUNT="0" STUB_GH_FAIL="" STUB_GH_CALLED="$called" \
+    bash -eo pipefail "$script" >/dev/null 2>&1
+  status=$?
+  [ -f "$called" ] && echo "status=$status called=1" || echo "status=$status called=0"
+}
 run_case() {
   local out called
   out="$tmp/out"; called="$tmp/called"
   : >"$out"; rm -f "$called"
   PATH="$stub_bin:$PATH" \
   GITHUB_OUTPUT="$out" GITHUB_EVENT_NAME="$1" \
-  GITHUB_REPOSITORY="Verjson/example" HEAD_SHA="deadbeef" GH_TOKEN="x" \
+  GITHUB_REPOSITORY="Verjson/example" HEAD_SHA="$FIXTURE_HEAD_SHA" GH_TOKEN="x" \
   STUB_GH_COUNT="$2" STUB_GH_FAIL="$3" STUB_GH_CALLED="$called" \
     bash -eo pipefail "$script" >/dev/null 2>&1
   local v; v="$(grep -oE 'should-run=(true|false)' "$out" | tail -1)"
@@ -104,6 +124,38 @@ run_case() {
 [ "$(run_case pull_request 0 fail)" = "should-run=true called=1" ] \
   && pass "gh api failure fails OPEN → should-run=true" \
   || fail "gh api failure did not fail open (a real PR could be silently skipped)"
+
+# (c2) A head SHA that is not a 40-hex object name reaches a `commits/<sha>/status`
+# PATH segment, so the script refuses it. Asserting `called=0` is the point: the
+# constraint has to fire before the request, not after the URL has been addressed.
+# node-ci-protected takes this value from a caller input, so this is the only place an
+# adopter's text is checked on the way in (Verjson/.github#1464).
+eligibility_rejects_bad_head=true
+for bogus in "deadbeef" "main" "feature/branch" \
+             "0123456789abcdef0123456789abcdef0123456" \
+             "0123456789abcdef0123456789abcdef012345678" \
+             "0123456789ABCDEF0123456789abcdef01234567" \
+             "0123456789abcdef0123456789abcdef01234567/../main" ""; do
+  [ "$(run_rejected_case pull_request "$bogus")" = "status=1 called=0" ] || {
+    eligibility_rejects_bad_head=false
+    echo "     head-sha '$bogus' was not rejected before the status request: $(run_rejected_case pull_request "$bogus")"
+  }
+done
+if [ "$eligibility_rejects_bad_head" = true ]; then
+  pass "a head SHA that is not a 40-hex object name is refused before the status request"
+else
+  fail "the 40-hex head-sha constraint did not fire before the gh api call"
+fi
+
+# (c3) The constraint must not fire on the paths that never build that URL, or a
+# workflow_dispatch rerun and a trusted push would start failing on a value they do
+# not use.
+if [ "$(run_rejected_case workflow_dispatch deadbeef)" = "status=0 called=0" ] \
+  && [ "$(run_rejected_case push deadbeef)" = "status=0 called=0" ]; then
+  pass "the head-sha constraint is scoped to the path that builds the status URL"
+else
+  fail "the head-sha constraint broke workflow_dispatch or push, which never build that URL"
+fi
 
 # (d) workflow_dispatch is an explicit human override → run, without even
 # consulting the status API.
