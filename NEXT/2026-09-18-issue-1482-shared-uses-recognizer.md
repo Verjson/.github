@@ -176,16 +176,26 @@ characters as a pin, inventing a PIN_MISMATCH against a SHA nobody wrote. `@` is
 class now and **that instance** is closed rather than documented; a test pins `/b`, `+b`,
 `@2`, `-rc1` and `.1` all falling through to the general class.
 
-The class it belongs to is not closed, and saying otherwise would repeat the mistake this
-paragraph is about. Eleven further characters are legal in a tag name and reproduce the
-identical invented pin — `%`, `&`, `;`, `!`, `=`, `(`, `)`, `#`, `<`, `>` and `|`. For
-each, `git check-ref-format refs/tags/<40-hex><c>2` exits 0 while the recognizer reports a
-pin at the first 40 characters; `@` is the only one of the twelve that now returns none.
-They are named in `scripts/contract_reference.py` beside the `{`/`}`/`,`/`]` limit. The
-reason they are not closed by adding eleven more characters is that doing so approaches
-enumerating everything git permits in a refname, which is the argument for eventually
-inverting this to an allow-list of the shapes a pin may take rather than a deny-list of
-the characters that may follow one.
+The class it belongs to is not closed, and what remains open is a **complement, not a
+list** — naming a finite remainder would repeat, in one paragraph, exactly the mistake the
+paragraph is about. Because the 40-hex alternative is tried first, every character outside
+`[\w./+@-]` that git permits in a refname reproduces the identical invented pin:
+`git check-ref-format refs/tags/<40-hex><c>2` exits 0 while the recognizer reports a pin at
+the first 40 characters. `%`, `&`, `;`, `!`, `=`, `(`, `)`, `#`, `<`, `>` and `|` are
+examples of that, not the extent of it — 19 printable ASCII characters qualify, including
+`"`, `'` and a backtick, which the *general* class excludes and which therefore reach this
+alternative anyway. Outside ASCII it is not a finite set at all: all 2551 non-word,
+non-space characters tested across U+00A0–U+20FF behave identically. `@` is the one
+character the fix closed.
+
+An earlier revision of this fragment named eleven characters as though they were the
+remainder. That was wrong by 8 in ASCII alone and unboundedly wrong beyond it, and the
+reason is worth keeping: **enumerating what a deny-list still admits is itself a
+deny-list**, and inherits the same unboundedness. The limit is recorded in
+`scripts/contract_reference.py` beside the `{`/`}`/`,`/`]` limit. It is not closed by
+adding more characters, because no finite number of them closes it; the closure is
+inverting to an allow-list of the shapes a pin may take rather than a deny-list of the
+characters that may follow one.
 
 The general class still admits `{`, `}`, `,` and `]`, and that is measured rather than
 assumed — re-measured at this tree, because the earlier figures were taken at `6d60385`

@@ -104,16 +104,25 @@ import re
 # not the class. "cannot continue a refname" would have admitted `}`, `]` and
 # `,` and left `@` out, which is the inversion of what is wanted, so enumerating
 # is still the right direction -- but the enumeration is incomplete by
-# construction, and the paragraph below names what it still lets through.
-# Eleven further characters are legal in a tag name and reproduce the identical
-# invented pin, and none of them is named anywhere else: `%`, `&`, `;`, `!`,
-# `=`, `(`, `)`, `#`, `<`, `>` and `|`. For each, `git check-ref-format
-# refs/tags/<40-hex><c>2` exits 0 while this module reports one pin at the first
-# 40 characters. They are a latent limit on the same footing as the four below,
+# construction, and what it lets through is a complement, not a list.
+# The 40-hex alternative is tried first, so *every* character outside
+# `[\w./+@-]` that git permits in a refname reproduces the identical invented
+# pin: `git check-ref-format refs/tags/<40-hex><c>2` exits 0 while this module
+# reports one pin at the first 40 characters. `%`, `&`, `;`, `!`, `=`, `(`, `)`,
+# `#`, `<`, `>` and `|` are examples, not the set -- 19 printable ASCII
+# characters qualify, including `"`, `'` and a backtick, which the *general*
+# class excludes and which therefore reach this alternative anyway. Over
+# non-ASCII it is not finite at all: every one of the 2551 non-word, non-space
+# characters tested across U+00A0-U+20FF behaves identically.
+#
+# Do not read that as a list to be closed. Enumerating what a deny-list still
+# admits is itself a deny-list and inherits the same unboundedness -- an earlier
+# revision of this comment named eleven characters as though they were the
+# remainder, and was wrong by 8 in ASCII alone and unboundedly wrong outside
+# it. The only closure is inverting to an allow-list of the shapes a pin may
+# take, which is the argument for doing that; until then this is a latent limit
 # recorded so a later reader does not read the `@` fix as having closed the
-# class. Closing them by enumeration means admitting every character git permits
-# in a refname, which is the argument for eventually inverting this to an
-# allow-list of the shapes a pin may take.
+# class.
 #
 # The general class still admits `{`, `}`, `,` and `]`, and deliberately: this
 # corpus writes refs as `@{PIN}` and `@${ref}` substitutions in generator and
@@ -226,7 +235,7 @@ import re
 # direction is inventing rather than muting, which is the worse one, so it is
 # named here rather than waved off: the corpus carries no such line today, and
 # the cost is latent, not absent.
-# Five guards across this module's two patterns -- `USES_RE` below and `SHA_RE`
+# Six guards across this module's two patterns -- `USES_RE` below and `SHA_RE`
 # further down -- are deliberately unasserted, and they are named because the
 # alternative is a later reader mistaking "no test covers it" for "nobody
 # thought about it". Every character in the delimiter class and the ref class
@@ -244,6 +253,8 @@ import re
 #     `-uses:`, which is neither YAML sequence syntax nor a diff line anyone
 #     writes -- `- uses:` and `-    uses:` are what the corpus has, and both
 #     match either way.
+#   * the `\n` in the expression class `[^}\n]{0,200}`, discussed above. It
+#     sits inside `USES_RE`, so it is one of the six counted here.
 #   * the `^` in `SHA_RE`. Every call site here, in `contract-version` and in
 #     `fleet-contract-inventory` uses `.match()`, which anchors at position 0
 #     regardless; the `$` is what does the work. It stays for a later
