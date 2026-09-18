@@ -25,11 +25,11 @@ job() {
 
 step() {
   local workflow="$1" job_name="$2" step_name="$3"
-  job "$workflow" "$job_name" | awk -v wanted="$step_name" '
+  awk -v wanted="$step_name" '
     $0 == "      - name: " wanted { found=1; print; next }
     found && /^      - name:/ { exit }
     found { print }
-  '
+  ' <<<"$(job "$workflow" "$job_name")"
 }
 
 contract_errors() {

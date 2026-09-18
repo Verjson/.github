@@ -118,6 +118,14 @@ fi
 # every adopter and fails `required-checks-audit.test.sh` with
 # `generated-contract-byte-drift`. They belong to #1431's regeneration at a new
 # contract SHA, not to this flake fix.
+#
+# The multi-line buffering added for #1461 surfaces one further record in that
+# excluded file, at `emit_adr_index_test`. That one is a false positive and
+# stays out of #1431's scope: its `awk` exits from an `END` block, which runs
+# only after the input has been read to EOF, so the producer never sees EPIPE.
+# It is reported because the arm matches a literal `exit` in the program rather
+# than reasoning about when the program reaches it — the safe direction, stated
+# again below.
 
 # A trailing-pipe continuation — `producer |`, newline, `  grep -q ...` — is the
 # dominant style in this repo (62 lines across 13 scripts), and a line-at-a-time
@@ -131,13 +139,49 @@ fi
 # `grep -q pat somefile` would be reported as a reintroduced pipe-fed site, at
 # the comment's line number. Dropping them also matches bash, which skips a
 # comment between a trailing `|` and the command that continues the pipeline.
+#
+# A quoted argument written across real newlines is buffered for the same
+# reason: `printf ... | awk '` followed by a program body on the next five lines
+# is one pipeline, and a scan that sees six fragments sees neither the consumer
+# with its `exit` nor, before #1461, anything at all. The state machine tracks
+# single and double quotes across lines and only ends a record where the shell
+# would — with every quote closed. Buffered lines are joined with a space so a
+# word ending one line cannot fuse with the word starting the next and hide a
+# token (`next` + `exit` reading as `nextexit`).
+#
+# A `#` that begins a word outside quotes ends the scan of that line, so an
+# apostrophe in prose — `cat x  # doesn't truncate` — cannot open a quote and
+# buffer the rest of the file into one record. That arm is defensive rather than
+# load-bearing: removing it changes no record boundary in this tree today.
 join_continuations() {
   awk '
-    /^[[:space:]]*#/ { next }
-    { buf = buf $0 }
-    /(\||\\)[[:space:]]*$/ { if (!start) start = FNR; next }
-    { print (start ? start : FNR) ":" buf; buf = ""; start = 0 }
-    END { if (buf != "") print (start ? start : FNR) ":" buf }
+    function scan_quotes(line, state,   i, n, c) {
+      n = length(line)
+      i = 1
+      while (i <= n) {
+        c = substr(line, i, 1)
+        if (state == 0) {
+          if (c == "\\") { i += 2; continue }
+          if (c == "\047") { state = 1 }
+          else if (c == "\"") { state = 2 }
+          else if (c == "#" && (i == 1 || substr(line, i - 1, 1) ~ /[[:space:]]/)) { return 0 }
+        } else if (state == 1) {
+          if (c == "\047") { state = 0 }
+        } else {
+          if (c == "\\") { i += 2; continue }
+          if (c == "\"") { state = 0 }
+        }
+        i++
+      }
+      return state
+    }
+    quote == 0 && /^[[:space:]]*#/ { next }
+    { buf = buf (quote ? " " : "") $0; if (!start) start = FNR }
+    { quote = scan_quotes($0, quote) }
+    quote != 0 { next }
+    /(\||\\)[[:space:]]*$/ { next }
+    { print start ":" buf; buf = ""; start = 0 }
+    END { if (buf != "") print start ":" buf }
   ' "$1"
 }
 
@@ -165,25 +209,39 @@ join_continuations() {
 #     or a regex, so the arm would buy a hypothetical catch with real false
 #     positives on prose. Revisit it the first time a quitting `sed` is written
 #     on the read end of a pipe.
-#   * `awk` programs written across real newlines are not seen at all. The
-#     scan joins only lines ending in `|` or a backslash, so a multi-line
-#     single-quoted program is split before the pattern ever runs. One live
-#     site is missed this way today, in
-#     `scripts/ci-gate/changelog-caller-contract.test.sh`, so the twenty sites
-#     this guard flagged are not the whole class. Buffering multi-line quoted
-#     programs is tracked in #1461; do not read a green run here as proof
-#     that no `awk` truncation exists.
-#   * `awk` is matched on a literal `exit` in its program, so an `exit` reached
-#     only in a branch that never fires still reads as an offender. That is the
-#     safe direction to be wrong in, and the remedy is cheap either way. The
-#     same arm matches an `exit` that is data rather than a statement, such
-#     as `awk '/exit/{print}'` or a trailing `# exit` comment.
+#   * The `awk` arm reads the program as a literal quoted argument attached to
+#     `awk` — only non-quote characters may sit between them, so flags and `-v`
+#     assignments are fine. A program that arrives some other way is NOT
+#     inspected: `awk -f prog.awk`, `awk "$program"`, and a program assembled
+#     from concatenated fragments are all misses, and no tracked script writes
+#     one on the read end of a pipe today.
+#   * That attachment replaced an earlier `awk[^|]*exit`, which could not
+#     describe the multi-line case at all (#1461): an `awk` program routinely
+#     contains a `|` of its own — the live site matched `/^ *run: \|$/` — so
+#     "no pipe between `awk` and `exit`" excluded exactly the programs long
+#     enough to need joining. Bounding the search to the quoted program is both
+#     wider (it sees past an internal `|`) and narrower (a shell comment or a
+#     later command on the same record no longer supplies the `exit`).
+#   * `awk` is matched on a literal `exit` inside that program, so an `exit`
+#     reached only in a branch that never fires still reads as an offender. That
+#     is the safe direction to be wrong in, and the remedy is cheap either way.
+#     The same arm matches an `exit` that is data rather than a statement, such
+#     as `awk '/exit/{print}'` or an `# exit` comment within the program.
+#   * The joiner models quotes, not here-documents. A here-doc body is scanned
+#     as if it were code, so a `<<'PY'` block inside a `"$(...)"` capture keeps
+#     the buffer open across it. Measured across every tracked script here that
+#     produces no false offender, but it does merge neighbours: in the excluded
+#     `gen-changelog-caller.sh`, two separate `| head -1` sites are reported as
+#     one record at the first one's line number. A real offender is therefore
+#     never hidden — the text is still in the record — but the count and the
+#     line number can both understate it. Modelling here-doc delimiters is the
+#     next widening, and nothing here should be read as proof it is unnecessary.
 # Widening further speculatively would trade false negatives for false positives.
 pipe_prefix='(^|[^|])\|[[:space:]]*(![[:space:]]*)?'
 pipe_prefix="$pipe_prefix"'([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+|command[[:space:]]+|env[[:space:]]+|timeout[[:space:]]+[^[:space:]]+[[:space:]]+)*'
 early_grep='[ef]?grep([[:space:]]+-[^[:space:]]+)*[[:space:]]+(-[A-Za-z]*['"$q"'m][A-Za-z0-9]*|--('"$q"'uiet|max-count))'
 early_head='head([[:space:]]|$)'
-early_awk='awk[^|]*[^[:alnum:]_]exit([^[:alnum:]_]|$)'
+early_awk='awk([^'"'"'"]*"[^"]*")*[^'"'"'"]*('"'"'[^'"'"']*|"[^"]*)[^[:alnum:]_]exit([^[:alnum:]_]|$)'
 pipe_into_early_exit="$pipe_prefix"'('"$early_grep"'|'"$early_head"'|'"$early_awk"')'
 
 scan_file() {
@@ -250,6 +308,17 @@ check_shape head-prefixed  "producer | command ${h}ead -n1"
 check_shape head-continued "$(printf 'producer |\n  %sead -n 1' "$h")"
 check_shape awk-exit       "producer | awk 'NR==1{print;${ex}it}'"
 check_shape awk-exit-match "producer | awk '/^object /{print \$2; ${ex}it}'"
+# The shape #1461 closed: the program is a single-quoted argument spanning real
+# newlines, so neither the trailing-pipe nor the backslash rule joins it, and the
+# `exit` lands several lines below the consumer. It also carries a `|` of its own
+# inside a regex, which the pre-#1461 arm treated as the end of the pipeline
+# stage — so a fixture without one would pass while the live site still did not.
+check_shape awk-multiline    "$(printf 'producer | awk %s\n  /^ *run: \\|$/ { in_run = 1; next }\n  in_run { %sit }\n%s' "'" "$ex" "'")"
+# `awk -v wanted="$x"` puts a double-quoted value between the command and its
+# program, and the second live site #1461 surfaced is written that way. A bridge
+# that refused to cross any quote would have left it unseen while the shape above
+# still passed.
+check_shape awk-assign-arg   "$(printf 'producer | awk -v wanted="$x" %s\n  $0 == wanted { %sit }\n%s' "'" "$ex" "'")"
 if [ -z "$missed" ]; then
   pass "the scan detects every offending shape it claims to cover"
 else
@@ -271,6 +340,7 @@ check_safe head-file     "${h}ead -n1 somefile"
 check_safe head-heredoc  "head -3 <<<\"\$out\""
 check_safe head-redirect "head -n1 <\"\$tmp/out\""
 check_safe awk-no-exit   "producer | awk '{print \$2}'"
+check_safe awk-multiline-no-exit "$(printf 'producer | awk %s\n  /^ *run: \\|$/ { in_run = 1; next }\n  in_run { print }\n%s' "'" "'")"
 check_safe grep-m-file   "grep -${m}1 pat somefile"
 check_safe exit-elsewhere "producer | cat; exit 1"
 if [ -z "$caught" ]; then
