@@ -3028,6 +3028,16 @@ arm_findings_shared_remedy="$(grep -c 'generated_set_note .*\$remedy"$' <<<"$gen
 # to be recognised. Exactly one of each composition is required: a second copy
 # of one would keep any count-balancing pin happy while changing what an arm
 # below it emits.
+#
+# The reach of this pin is the NAME, and that bound is real. The filter below
+# selects lines containing the substring `remedy`, so a write that never spells
+# the name escapes it entirely -- assembling the variable name in another
+# parameter and writing through `printf -v`, `eval`, `declare -g`, or a
+# `local -n` alias. Such a line is not merely unclassified, it is never
+# examined. Closing that would mean interpreting the body rather than reading
+# it, which is a different kind of check; it is recorded here as a known limit
+# so a later reader does not mistake "every form is caught" for what this
+# asserts. Every form that does name $remedy is caught and fails closed.
 remedy_decls=0
 remedy_from_mode=0
 remedy_from_declared=0

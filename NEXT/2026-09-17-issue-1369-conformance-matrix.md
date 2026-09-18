@@ -250,6 +250,15 @@ each of which leaves equal the two counts the previous form compared. Stating
 the one acceptable shape fails closed; enumerating the ways to leave it fails
 open on the first way nobody listed, which is what happened here.
 
+That closure is bounded by the **name**, and the bound is worth stating rather
+than discovering. The pin selects lines containing `remedy`, so a write that
+never spells the name — building the variable name in another parameter and
+writing through `printf -v`, `eval`, `declare -g`, or a `local -n` alias — is
+never examined at all, and such a poisoned remedy still ships green. Catching
+that would mean interpreting the function body rather than reading it, which is
+a different check; it is recorded as a known limit. Every form that does name
+`$remedy` is caught and fails closed.
+
 Separately, the accumulated remedy scan was seeded from whatever the preceding
 statement had left in `run.out`, which coupled it to statement
 order while being the input to an `eval`; it now runs its own adopter. And a

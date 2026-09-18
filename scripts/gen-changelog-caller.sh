@@ -2333,8 +2333,12 @@ generated_set_remedy() { # generated_set_remedy <one-mode|alternation> <rel> <fl
 # scripts/ci-gate/changelog-caller-contract.test.sh: $remedy is assigned only by
 # the two generated_set_remedy compositions below, and the remedy-runnability
 # cases drive one arm per member rather than every arm, standing in for the rest
-# only while that holds. Touching $remedy anywhere else in here -- a third
-# composition, an append, a rewrite -- reddens that pin.
+# only while that holds. Any line here that *names* $remedy and is not one of
+# those two compositions reddens that pin -- a third composition, an append, a
+# rewrite at a use site. Its reach is the name: an indirect write that never
+# spells `remedy` (building the variable name in another parameter and using
+# `printf -v`, `eval`, `declare -g` or a `local -n` alias) is classified as a
+# read and passes. That is a known limit, not a guarantee.
 generated_set_check() { # generated_set_check <relative-path> <required|optional> <pin-pattern> <remedy-mode> <accepted-modes|''> [generator-flags] [remedy-note]
   local rel="$1" required="$2" pattern="$3" mode="$4" accepted="$5" flags="${6:-}" note="${7:-}"
   local abs="$root/$rel" claims claim count remedy modes mode_count declared
