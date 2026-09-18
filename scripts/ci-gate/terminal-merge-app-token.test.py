@@ -81,7 +81,10 @@ def validate(document: dict, raw: str) -> list[str]:
     terminal_run = TERMINAL.read_text(encoding="utf-8")
     for required in (
         'repos/$TARGET_REPO/pulls/$PR_NUMBER',
-        'repos/$TARGET_REPO/git/ref/heads/$DEFAULT_BRANCH',
+        # The live-base read is a PATH segment, so $DEFAULT_BRANCH reaches it only through
+        # the @uri encoder -- without the query-value gsub, which would restore "/".
+        '''branch_path="$(jq -rn --arg branch "$DEFAULT_BRANCH" '$branch | @uri')"''',
+        'repos/$TARGET_REPO/git/ref/heads/$branch_path',
         '.base.ref == $branch and .base.sha == $base',
         'current_base_sha" = "$AUTHORIZED_BASE_SHA',
         'gh pr merge "$PR_NUMBER"',

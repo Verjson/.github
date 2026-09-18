@@ -302,6 +302,15 @@ jobs:
           all_checks="$(gh api --paginate "repos/$TARGET_REPO/commits/$EXPECTED_HEAD_SHA/check-runs?per_page=100" | jq -s '[.[].check_runs[]]')"
           default_branch="$(gh api "repos/$TARGET_REPO" --jq '.default_branch // ""')"
           [[ "$default_branch" =~ ^[A-Za-z0-9._/-]+$ ]] || exit 1
+          # The adopter's default branch is adopter-controlled text, and the guard above is a
+          # general-purpose input check that sits far from the reads below. Encode it here so
+          # relaxing that guard cannot re-arm an injection. Two encodings, not one:
+          # $branch_ref for a query VALUE, where "/" is an ordinary character the API wants
+          # literal; $branch_path for a PATH segment, where a literal "/" re-addresses the
+          # resource -- heads/../../x would leave the endpoint entirely -- so the
+          # slash-restoring gsub is deliberately absent there.
+          branch_ref="$(jq -rn --arg branch "$default_branch" '$branch | @uri | gsub("%2F"; "/")')"
+          branch_path="$(jq -rn --arg branch "$default_branch" '$branch | @uri')"
           while IFS= read -r required; do
             name="$(jq -r .name <<<"$required")"
             expected_app_id="$(jq -r .app_id <<<"$required")"
@@ -387,7 +396,7 @@ jobs:
               echo "::error::required check $name is not backed by the trusted exact-head workflow run"; exit 1;
             }
             head_workflow_blob="$(gh api "repos/$TARGET_REPO/contents/$workflow_path?ref=$EXPECTED_HEAD_SHA" --jq '.sha // ""')"
-            trusted_workflow_blob="$(gh api "repos/$TARGET_REPO/contents/$workflow_path?ref=$default_branch" --jq '.sha // ""')"
+            trusted_workflow_blob="$(gh api "repos/$TARGET_REPO/contents/$workflow_path?ref=$branch_ref" --jq '.sha // ""')"
             [[ "$head_workflow_blob" =~ ^[0-9a-f]{40}$ ]] && [ "$head_workflow_blob" = "$trusted_workflow_blob" ] || {
               echo "::error::required check $name executed a workflow revision not equal to the trusted default branch"; exit 1;
             }
@@ -407,7 +416,7 @@ jobs:
           [[ "$authorized_base_sha" =~ ^[0-9a-f]{40}$ ]] || {
             echo "::error::pull request base OID is missing or malformed"; exit 1;
           }
-          current_base_sha="$(gh api "repos/$TARGET_REPO/git/ref/heads/$default_branch" \
+          current_base_sha="$(gh api "repos/$TARGET_REPO/git/ref/heads/$branch_path" \
             --jq 'select(.object.type == "commit") | .object.sha // ""')"
           [[ "$current_base_sha" =~ ^[0-9a-f]{40}$ ]] && [ "$current_base_sha" = "$authorized_base_sha" ] || {
             echo "::error::pull request base is stale or the trusted default-branch ref moved during authorization"; exit 1;

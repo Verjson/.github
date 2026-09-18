@@ -206,10 +206,23 @@ jobs:
           explicit_ai_review=false
           hold_removed=false
           select_compatible_review_policy() {
-            local policy_json="$1" caller_file caller_sha256 selected_json
+            local policy_json="$1" caller_file caller_sha256 selected_json branch_ref
+            # $DEFAULT_BRANCH is adopter-controlled text reaching a query string in
+            # hub-privileged automation, so percent-encode it here; "/" stays literal, as in
+            # ai-review-required-workflow-audit.py's quote(branch, safe="/"). Preserving "/"
+            # is correct for a query VALUE only, where it is an ordinary character. A path
+            # segment must not restore it: with a literal "/" a branch name re-addresses the
+            # resource, so path sites encode with @uri alone (ai-privileged-merge.yml's
+            # branch_path, terminal-merge.sh, post-merge-reconcile.sh). The
+            # ^[A-Za-z0-9._/-]+$ guard at the top of this step makes the encoding redundant
+            # today. Keep it anyway: that guard is a general-purpose input check far from
+            # this use, and relaxing it to the broader set of branch names GitHub actually
+            # permits would otherwise silently re-arm this interpolation. Inlined per block
+            # because the ci-gate tests extract each block on its own.
+            branch_ref="$(jq -rn --arg branch "$DEFAULT_BRANCH" '$branch | @uri | gsub("%2F"; "/")')"
             caller_file="$(mktemp "${RUNNER_TEMP:-/tmp}/ai-review-caller.XXXXXX")"
             if ! GH_TOKEN="$ACTIONS_TOKEN" gh api \
-              "repos/$TARGET_REPO/contents/.github/workflows/ai-review-merge.yml?ref=$DEFAULT_BRANCH" \
+              "repos/$TARGET_REPO/contents/.github/workflows/ai-review-merge.yml?ref=$branch_ref" \
               -H 'Accept: application/vnd.github.raw+json' >"$caller_file"; then
               rm -f "$caller_file"
               echo "::error::could not read the protected default-branch review caller" >&2
@@ -403,10 +416,14 @@ jobs:
                   .external_id == $external and .details_url == $url and .app_id == $app and .app_slug == $slug
                 ' "$receipt_dir/receipt.json" >/dev/null || { rm -rf "$receipt_dir"; return 1; }
               if [ "$(jq -r .path <<<"$source_run")" = .github/workflows/ai-review-label-rearm.yml ]; then
-                local receipt_workflow_sha protected_blob receipt_blob
+                local receipt_workflow_sha protected_blob receipt_blob branch_ref
                 receipt_workflow_sha="$(jq -er '.workflow_sha' "$receipt_dir/receipt.json")" || { rm -rf "$receipt_dir"; return 1; }
                 [[ "$receipt_workflow_sha" =~ ^[0-9a-f]{40}$ ]] || { rm -rf "$receipt_dir"; return 1; }
-                protected_blob="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/contents/.github/workflows/ai-review-label-rearm.yml?ref=$DEFAULT_BRANCH" --jq '.sha')" || { rm -rf "$receipt_dir"; return 1; }
+                # The same query-value encoding, for the same reason, as
+                # select_compatible_review_policy above; restated inline rather than shared
+                # because the ci-gate test extracts and executes each block on its own.
+                branch_ref="$(jq -rn --arg branch "$DEFAULT_BRANCH" '$branch | @uri | gsub("%2F"; "/")')"
+                protected_blob="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/contents/.github/workflows/ai-review-label-rearm.yml?ref=$branch_ref" --jq '.sha')" || { rm -rf "$receipt_dir"; return 1; }
                 receipt_blob="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/contents/.github/workflows/ai-review-label-rearm.yml?ref=$receipt_workflow_sha" --jq '.sha')" || { rm -rf "$receipt_dir"; return 1; }
                 if ! [[ "$protected_blob" =~ ^[0-9a-f]{40}$ ]] || [ "$protected_blob" != "$receipt_blob" ]; then
                   rm -rf "$receipt_dir"

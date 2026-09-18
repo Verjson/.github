@@ -41,11 +41,13 @@ jq -e \
 
 default_branch="$(gh api "repos/$ORG/.github" 2>/dev/null | jq -er .default_branch)" ||
   fault authorization default-branch-unreadable
+# Percent-encode before the name reaches a query VALUE, where "/" stays literal.
+branch_ref="$(jq -rn --arg branch "$default_branch" '$branch | @uri | gsub("%2F"; "/")')"
 for binding in \
   ".github/required-check-contract.json:$contract" \
   "scripts/required-checks-rollback.sh:$(readlink -f "$0")"; do
   remote_path="${binding%%:*}"; local_path="${binding#*:}"
-  gh api "repos/$ORG/.github/contents/$remote_path?ref=$default_branch" \
+  gh api "repos/$ORG/.github/contents/$remote_path?ref=$branch_ref" \
     -H 'Accept: application/vnd.github.raw+json' >"$remote_copy" 2>/dev/null ||
     fault authorization canonical-file-unreadable "path=$remote_path"
   cmp -s "$local_path" "$remote_copy" ||

@@ -173,7 +173,10 @@ case "$1 $2" in
   "issue list") printf '%s\n' "${EXISTING:-0}" ;;
   "issue create") printf 'create %s\n' "$*" >>"$GH_LOG" ;;
   "api repos/"*) printf '%s\n' "${LIVE_SHA:-}" ;;
-  "api --method") printf 'delete %s\n' "$*" >>"$GH_LOG"; exit "${DELETE_RC:-0}" ;;
+  "api --method")
+    printf 'delete %s\n' "$*" >>"$GH_LOG"
+    [ -z "${DELETE_ERR:-}" ] || printf '%s\n' "$DELETE_ERR" >&2
+    exit "${DELETE_RC:-0}" ;;
   *) exit 2 ;;
 esac
 STUB
@@ -209,8 +212,20 @@ EXISTING=1 HEAD_REF=release BASE_REF=release DEFAULT_BRANCH=main LIVE_SHA="$MERG
 # PR would be merged and the reconcile red, which is what #458 reported. The
 # notice must be emitted and the exit status must stay 0.
 : >"$GH_LOG"
-DELETE_RC=1 EXISTING=1 bash "$script" >"$tmp/cleanup.out" 2>&1
-grep -q '^delete ' "$GH_LOG"
-grep -q '::notice::merged head ref already absent or protected' "$tmp/cleanup.out"
+DELETE_RC=1 DELETE_ERR='gh: Reference does not exist (HTTP 404)' EXISTING=1 \
+  bash "$script" >"$tmp/cleanup.out" 2>&1
+grep '^delete ' "$GH_LOG" >/dev/null
+grep '::notice::merged head ref already absent or protected' "$tmp/cleanup.out" >/dev/null
+
+# ...but only a 404 is that race. The read on the line above the DELETE returned the
+# expected sha, so any other failure means a cleanup path that is not working, and
+# reporting it as "already absent" was a guess about a result the step never read.
+# It stays exit 0 for the same #458 reason, and now says what actually happened.
+: >"$GH_LOG"
+DELETE_RC=1 DELETE_ERR='gh: Resource not accessible by integration (HTTP 403)' EXISTING=1 \
+  bash "$script" >"$tmp/cleanup.out" 2>&1
+grep '^delete ' "$GH_LOG" >/dev/null
+grep '::warning::could not delete the merged head ref: .*HTTP 403' "$tmp/cleanup.out" >/dev/null
+! grep 'already absent or protected' "$tmp/cleanup.out" >/dev/null
 
 echo "All tests passed."

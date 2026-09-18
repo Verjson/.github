@@ -62,6 +62,8 @@ trap 'rm -rf "$tmp"' EXIT
 if [ "$APPLY" = true ]; then
   default_branch="$(gh api "repos/$ORG/.github" 2>/dev/null | jq -er .default_branch)" ||
     fault authorization default-branch-unreadable "repo=$ORG/.github"
+  # Percent-encode before the name reaches a query VALUE, where "/" stays literal.
+  branch_ref="$(jq -rn --arg branch "$default_branch" '$branch | @uri | gsub("%2F"; "/")')"
   for binding in \
     ".github/required-check-contract.json:$CONTRACT_FILE" \
     "scripts/required-checks-audit.sh:$AUDIT_SCRIPT" \
@@ -70,7 +72,7 @@ if [ "$APPLY" = true ]; then
     remote_path="${binding%%:*}"
     local_path="${binding#*:}"
     remote_file="$tmp/remote-${remote_path//\//-}"
-    gh api "repos/$ORG/.github/contents/$remote_path?ref=$default_branch" \
+    gh api "repos/$ORG/.github/contents/$remote_path?ref=$branch_ref" \
       -H 'Accept: application/vnd.github.raw+json' >"$remote_file" 2>/dev/null ||
       fault authorization canonical-file-unreadable "path=$remote_path branch=$default_branch"
     cmp -s "$local_path" "$remote_file" ||
