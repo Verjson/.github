@@ -244,21 +244,18 @@ for shadow_kind in tag branch; do
   fi
 done
 
-# (h) The gate itself is not a `*.test.sh`, so the actions-ci orphan detector in
-# `actions-ci-groups.test.sh` does not cover it: deregistering it would leave
-# every assertion above passing locally while nothing ran in Actions. That is
-# precisely how the nine tests in #1320 rotted, so the registration is asserted
-# here, where the gate's own contract lives.
-manifest="$repo_root/scripts/actions-ci-groups.tsv"
-registered="$(awk -F '\t' '
-  $1 == "platform" && $2 == "bash scripts/ci-gate/hub-changelog-validate.sh" { count++ }
-  END { print count + 0 }
-' "$manifest")"
-if [ "$registered" -eq 1 ]; then
-  pass "the hub gate is registered exactly once in the platform actions-ci group"
-else
-  fail "the hub gate is registered $registered time(s) in the platform group, so it does not run in Actions"
-fi
+# (h) This gate is not a `*.test.sh`, and until #1450 the actions-ci orphan
+# detector found its candidates by that suffix, so it could not see this file:
+# deregistering it would have left every assertion above passing locally while
+# nothing ran in Actions. The registration was therefore pinned here.
+#
+# It is no longer pinned here. `actions-ci-groups.test.sh` now requires every
+# tracked `*.sh`/`*.py` under `scripts/ci-gate/` to be reachable in Actions or
+# declared a library module, so this gate is covered by the same rule as every
+# other one -- and so is the next non-test gate, which is the part a per-file pin
+# could never give. The one thing the pin also asserted, that the registration
+# sits in the `platform` group, moved to that file's load-bearing command list,
+# which is where group assignment is owned.
 
 if [ "$fails" -ne 0 ]; then
   printf '%d test(s) failed.\n' "$fails" >&2
