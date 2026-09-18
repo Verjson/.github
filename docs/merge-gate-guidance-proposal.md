@@ -34,7 +34,17 @@ merge-time assertion, not a watcher). The one-liner returns `true` for it whenev
 entries that *do* exist are passing. That difference is the whole point of the replacement
 and it currently reaches nobody.
 
-## Current text (verbatim, `rules/workflow.md` lines 200–206)
+## Current text (verbatim, `rules/workflow.md`, `## Pull Requests`)
+
+Anchored on the bullet's own first line of text, **not** on a line number — the numbering
+rots the moment anything above it in that file changes. The bullet to replace is the one
+beginning:
+
+```markdown
+- **Before an `--admin` merge, assert every check's conclusion programmatically — don't
+```
+
+It is six lines long, and it is reproduced here in full and byte-for-byte:
 
 ```markdown
 - **Before an `--admin` merge, assert every check's conclusion programmatically — don't
@@ -74,10 +84,20 @@ and it currently reaches nobody.
 
 ## The change as a patch
 
-Replace lines 200–206 of `rules/workflow.md` (the "Current text" block above, in full)
-with the "Proposed replacement" block above, in full. Both are reproduced verbatim, so
-the substitution is mechanical; no surrounding bullet in `## Pull Requests` changes, and
-no other file in that repository is touched.
+In `rules/workflow.md`, replace **exactly** the bullet quoted in "Current text" above — the
+one whose first line of text is ``- **Before an `--admin` merge, assert every check's
+conclusion programmatically — don't`` and which ends with ``and only merge if that
+command's output is literally `true`.`` — with the "Proposed replacement" block above, in
+full.
+
+Match on that text, never on a line number. The bullet immediately above it ends with
+"CI, never a way around a *failing* check — and it does not waive the hold-list below",
+which is a distinct piece of merge-gate guidance about `--admin` bypass and must survive
+untouched; an earlier draft of this proposal gave a line range that began one line too
+early, and applying it mechanically would have deleted that line and left the preceding
+bullet malformed. Both blocks are reproduced verbatim, so the substitution is mechanical
+**once the bullet is located by its text**; no surrounding bullet in `## Pull Requests`
+changes, and no other file in that repository is touched.
 
 ## What the proposal deliberately does NOT change
 
@@ -116,7 +136,22 @@ no other file in that repository is touched.
 
 ## Filing status
 
-Not yet filed against the guidance repository. #1421's third acceptance criterion — "the
-proposal is filed against the guidance repository and linked from this issue" — remains
-open, and is why the pull request carrying this file says `Part of #1421` rather than
-closing it.
+**Not yet filed** against the guidance repository. #1421's third acceptance criterion —
+"the proposal is filed against the guidance repository and linked from this issue" —
+remains open, and is why the pull request carrying this file says `Part of #1421` rather
+than closing it.
+
+**Update this line when that changes, and retire the file when it lands.** Nothing in this
+repository references this document, so it has no other retirement trigger: left alone
+after filing it becomes a stale second copy of guidance whose authoritative text lives
+elsewhere, and a later reader cannot tell which one is current. So:
+
+1. **When it is filed** — replace the paragraph above with `Filed as <PR URL>`, and link
+   that pull request from #1421.
+2. **When it merges** — delete this file in the same pull request that records the
+   adoption, with a `NEXT/` fragment saying the proposal landed upstream and naming the
+   merged pull request. The durable record is then the guidance repository's own history
+   plus ADR 0184; this file exists only to carry the diff across an ownership boundary and
+   has no purpose once it is across.
+3. **If it is rejected or superseded** — delete it the same way and record the outcome on
+   #1421. A rejected proposal is not kept here as a record; the issue is the record.
