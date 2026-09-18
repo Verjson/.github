@@ -1,7 +1,6 @@
 ---
 date: 2026-09-18
 issue: 1425
-impact: patch
 title: Run the published changelog contract on the hub's own pull requests
 ---
 
