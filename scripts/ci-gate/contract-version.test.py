@@ -869,9 +869,15 @@ class UsesShapeCoverage(unittest.TestCase):
         # `.`, `-` and `+` must all survive. Truncating it would quote a ref
         # back at the reader that nobody wrote, which is the complaint that
         # produced the `${{ ... }}` branch alongside it.
-        line = "  uses: Verjson/.github/.github/workflows/node-ci.yml@v2.2.0-rc.1+build"
+        # Assembled rather than written literally: doc-tag-pins.sh greps every
+        # tracked file for `workflows/<name>.yml@v<ref>` and checks that ref
+        # against this repository's tag list, so a literal fixture here would
+        # read as a documented pin to a tag that was never cut. Splitting the
+        # string at the `@` keeps the fixture a fixture.
+        ref = "v2.2.0-rc.1+build"
+        line = "  uses: Verjson/.github/.github/workflows/node-ci.yml@" + ref
         self.assertEqual([m.group("ref") for m in cv.USES_RE.finditer(line)],
-                         ["v2.2.0-rc.1+build"])
+                         [ref])
 
     def test_an_expression_ref_stops_at_its_own_closing_braces(self):
         # Discriminates lazy from greedy, which the first version of this test
