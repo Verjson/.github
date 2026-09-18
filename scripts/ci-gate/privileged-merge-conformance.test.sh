@@ -661,9 +661,21 @@ class Excision:
         just past its closing quote. The region must close on its own quote character; a
         region that runs off the end of the loop body is reported rather than absorbed."""
         quote = self.text[index]
-        close = self.text.find(quote, index + 1)
-        assert close >= 0, f"an embedded program region opened with {quote} and never closed"
-        return close + 1
+        cursor = index + 1
+        while cursor < len(self.text):
+            char = self.text[cursor]
+            # A backslash escapes the next character inside a double-quoted region, so
+            # `awk "a\"b"` does not close at the escaped quote. Single quotes have no
+            # escape at all, so there the first apostrophe really is the close.
+            if quote == '"' and char == "\\":
+                cursor += 2
+                continue
+            if char == quote:
+                return cursor + 1
+            cursor += 1
+        raise AssertionError(
+            f"an embedded program region opened with {quote} and never closed"
+        )
 
     def run(self):
         text, index = self.text, 0
@@ -769,6 +781,11 @@ class Excision:
             frame["word"] += char
             self.emit(char)
             index += 1
+        if self.frame["kind"] == "comment":
+            # A comment on the body's last line is terminated by the end of the body rather
+            # than by a newline. Without this an ordinary trailing comment on the loop's
+            # final line is reported as an unterminated region.
+            self.stack.pop()
         self.end_command()
         assert len(self.stack) == 1 and self.stack[0]["kind"] == "cmd", (
             "the loop body ends inside an unterminated quote, command substitution, or "
@@ -789,7 +806,15 @@ parse = subprocess.run(
     capture_output=True,
     text=True,
 )
-assert parse.returncode == 0, f"the excised loop body no longer parses as bash: {parse.stderr.strip()}"
+# The membership findings are reported before this parse failure, because a real drift is
+# the finding this contract exists for and a parse error would otherwise mask it behind a
+# diagnosis about quoting. A parse failure does mean the excision cut wrong, so a membership
+# finding raised alongside one may be an artifact; both are reported together rather than
+# either hiding the other.
+parse_note = "" if parse.returncode == 0 else (
+    f" (the excised loop body also no longer parses as bash: {parse.stderr.strip()}"
+    " -- so this finding may be an artifact of a mis-cut excision)"
+)
 
 # Whole-line comments are prose: neither a `continue` nor an `unset` written in one is
 # control flow. Trailing comments are dropped by the tokenizer below.
@@ -818,7 +843,9 @@ LEADIN = re.compile(r"""^(?:
     | [{}]
     | \[\[?
     | \]\]?
-    | \(?[^()\s|=]+\)                                       # a case arm label, `(x)` too
+    | \(?[^()\s|]+\)              # a case arm label, `(x)` and `a=1)` too: an arm label is
+                                #  a pattern, never an assignment, and excluding `=` here
+                                #  let `case $x in a=1)` forge the name `a`
   )""", re.X)
 
 # Options that consume the following word, per command. Getting this right is what keeps
@@ -833,8 +860,12 @@ NAMES_ITS_ARG = {"read": set("a")}
 DECLARATORS = ("declare", "typeset", "export", "readonly", "local")
 NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 LET_TARGET = re.compile(r"^[\"']?([A-Za-z_][A-Za-z0-9_]*)\s*(?:\+\+|--|[-+*/%&|^]?=)")
-# `${name:=default}` and `${name=default}` assign wherever they are expanded, including
-# inside double quotes, so they are found on the whole line rather than per word.
+# `${name:=default}` and `${name=default}` assign wherever bash *expands* them -- unquoted
+# and inside double quotes alike -- and nowhere else. Matched over the raw line this forged
+# names bash never assigns: `echo '${ghost:=1}'` and a trailing `# ${ghost:=1}` were both
+# collected, and a forged name is the silent direction, because it keeps a dead reset entry
+# green. It is applied per word by `expansion_names` below instead, over the words
+# `segments()` yields, which has already dropped a trailing comment and tracked the quoting.
 ASSIGN_EXPANSION = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*):?=")
 # Arithmetic assigns through `=`, every compound operator, and pre/post increment.
 ARITH_TARGET = re.compile(
@@ -935,6 +966,39 @@ def arithmetic_names(word):
     return found
 
 
+def expansion_names(word):
+    """Names assigned by a `${name:=…}` or `${name=…}` expansion inside one word.
+
+    A single-quoted span is literal text, so an expansion written in one assigns nothing;
+    a double-quoted span still expands, as does unquoted text."""
+    found, index, quote = set(), 0, None
+    while index < len(word):
+        char = word[index]
+        if quote == "'":
+            if char == "'":
+                quote = None
+            index += 1
+            continue
+        if quote == '"' and char == "\\":
+            index += 2
+            continue
+        if quote is None and char == "'":
+            quote = "'"
+            index += 1
+            continue
+        if char == '"':
+            quote = None if quote == '"' else '"'
+            index += 1
+            continue
+        match = ASSIGN_EXPANSION.match(word, index)
+        if match:
+            found.add(match.group(1))
+            index = match.end()
+            continue
+        index += 1
+    return found
+
+
 def names_from_command(words):
     """Variables named by a command rather than by a bare `name=` assignment."""
     command, rest = words[0], words[1:]
@@ -1003,10 +1067,10 @@ def names_from_command(words):
 assigned = set()
 ifs_sites = []
 for line in uncommented:
-    assigned |= set(ASSIGN_EXPANSION.findall(line))
     for words in segments(line):
         for word in words:
             assigned |= arithmetic_names(word)
+            assigned |= expansion_names(word)
         # `case "$x" in` is scaffolding before the first arm label; on a single-line `case`
         # the arm and its assignment follow on the same segment, and a `case` nested inside
         # such an arm puts a second header in front of the assignment. Strip headers and
@@ -1049,9 +1113,12 @@ for site, is_prefix in ifs_sites:
 assert not ({"visibility", "selected_repositories"} & assigned), "fleet-wide state moved into the loop body"
 
 forgotten = assigned - reset - carried
-assert not forgotten, f"assigned per repository but never reset: {sorted(forgotten)}"
+assert not forgotten, f"assigned per repository but never reset: {sorted(forgotten)}{parse_note}"
 dead = reset - assigned
-assert not dead, f"reset but never assigned in the loop: {sorted(dead)}"
+assert not dead, f"reset but never assigned in the loop: {sorted(dead)}{parse_note}"
+
+# Last, so a membership finding is never masked by it.
+assert parse.returncode == 0, f"the excised loop body no longer parses as bash: {parse.stderr.strip()}"
 RESET_CONTRACT
 
 if python3 "$collector" "$audit"; then
@@ -1160,6 +1227,21 @@ absorbed() {
     pass "injection is excised, not read as loop state: $name"
   else
     fail "injection '$name' leaked into the assignment walk: $(tail -1 <<<"$output")"
+  fi
+}
+
+# boundary <name> <mutation> [:: <mutation>...] -- a documented miss, pinned in the
+# direction it is silent in, so the fragment's boundary list cannot drift from the code.
+boundary() {
+  local name="$1" output
+  shift
+  injection_cases=$((injection_cases + 1))
+  if ! output="$(python3 "$mutator" "$audit" "$mutated" "$@" 2>&1)"; then
+    fail "injection fixture '$name' could not be built: $output"
+  elif output="$(python3 "$collector" "$mutated" 2>&1)"; then
+    pass "documented boundary, pinned as a known miss: $name"
+  else
+    fail "documented boundary '$name' now reddens; correct the recorded boundary: $(tail -1 <<<"$output")"
   fi
 }
 
@@ -1290,13 +1372,59 @@ reddens 'a dead reset entry spelled only in gh --jq program text' \
   "reset but never assigned in the loop: ['forged_by_option']" \
   sub '  unset metadata' '  unset forged_by_option metadata' \
   :: insert before-done "  gh api x --jq '" '    forged_by_option=1' "  ' >/dev/null || :"
-# A heredoc body is parsed as bash, so it forges a name. That is a documented boundary and
-# it fails loudly -- a nuisance for whoever adds a heredoc, never a silent pass.
-reddens 'a heredoc body, which is a documented loud miss' \
+# `${name:=…}` assigns only where bash *expands* it. Matched over the raw line rather than
+# over the tokenizer's words it forged names from text bash expands nowhere -- single-quoted
+# text and a trailing comment -- and a forged name is the silent direction, because it is
+# what keeps a dead reset entry green. Both directions are pinned for each surface.
+absorbed 'an assigning expansion inside single quotes' \
+  insert before-done "  echo '\${forged_by_single_quote:=1}'"
+reddens 'a dead reset entry spelled only inside single quotes' \
+  "reset but never assigned in the loop: ['forged_by_single_quote']" \
+  sub '  unset metadata' '  unset forged_by_single_quote metadata' \
+  :: insert before-done "  echo '\${forged_by_single_quote:=1}'"
+absorbed 'an assigning expansion in a trailing comment' \
+  insert before-done '  metadata=2  # see ${forged_by_comment:=1}'
+reddens 'a dead reset entry spelled only in a trailing comment' \
+  "reset but never assigned in the loop: ['forged_by_comment']" \
+  sub '  unset metadata' '  unset forged_by_comment metadata' \
+  :: insert before-done '  metadata=2  # see ${forged_by_comment:=1}'
+
+# The excision's own load-bearing case. Every multi-line `absorbed` row above is absorbed by
+# the newline collapse, which is a separate mechanism: disabling the excision entirely left
+# all of them green. An assigning expansion inside a single-line double-quoted program is
+# text the per-word walk would otherwise read, so only the excision can absorb it.
+absorbed 'a double-quoted sed program body containing an assigning expansion' \
+  insert before-done '  sed -nE "s/a/${forged_by_sed_expansion:=1}/" /dev/null || :'
+# An escaped quote does not close a double-quoted region. Getting this wrong never forged
+# and never swallowed, but it misreported a valid program as unparseable bash.
+absorbed 'a double-quoted awk program containing an escaped quote' \
+  insert before-done '  awk "BEGIN { print \"x\" }" </dev/null || :'
+
+# A `case` arm label is a pattern, not an assignment, even when it spells one. This forged
+# in both directions for the same reason the two expansion surfaces above did.
+absorbed 'a case arm label that spells an assignment' \
+  insert before-done '  case "$relation" in forged_by_arm_label=1) : ;; *) : ;; esac'
+reddens 'a dead reset entry spelled only by a case arm label' \
+  "reset but never assigned in the loop: ['forged_by_arm_label']" \
+  sub '  unset metadata' '  unset forged_by_arm_label metadata' \
+  :: insert before-done '  case "$relation" in forged_by_arm_label=1) : ;; *) : ;; esac'
+
+# A heredoc body is parsed as bash, so it forges a name. That is a documented boundary, and
+# it is silent in one direction and loud in the other: a name the reset does not list
+# reddens as forgotten, while a name the reset *does* list is kept green by the forgery.
+# Both directions are pinned so the recorded boundary cannot drift from the code.
+reddens 'a heredoc body, which forges loudly in the forgotten direction' \
   "assigned per repository but never reset: ['forged_by_heredoc']" \
   insert before-done "  cat <<'EOT' >/dev/null" 'forged_by_heredoc=1' 'EOT'
+boundary 'a heredoc body keeping a dead reset entry green, the silent direction of the same miss' \
+  sub '  unset metadata' '  unset forged_by_heredoc metadata' \
+  :: insert before-done "  cat <<'EOT' >/dev/null" 'forged_by_heredoc=1' 'EOT'
 
-pass "the reset contract was exercised against $injection_cases injected mutations"
+# The corpus size is asserted, not merely reported: a case deleted or skipped would
+# otherwise shrink it silently, which is the failure mode this whole contract exists for.
+[ "$injection_cases" -eq 73 ] \
+  && pass "the reset contract was exercised against all $injection_cases injected mutations" \
+  || fail "the injection corpus has changed size: expected 73 cases, ran $injection_cases"
 
 GH_TOKEN='' run_audit \
   && fail "missing audit credential reported green" \
