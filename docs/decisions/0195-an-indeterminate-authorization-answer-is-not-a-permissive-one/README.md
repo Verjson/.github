@@ -3,7 +3,7 @@
 - **Date:** 2026-09-18
 - **Status:** Accepted
 - **Related:** [ADR 0184](../0184-merge-gates-assert-execution-not-absence-of-red/README.md), [ADR 0193](../0193-every-ci-gate-script-is-a-gate-unless-declared-a-library/README.md)
-- **Issues:** [#1476](https://github.com/Verjson/.github/issues/1476), [#1480](https://github.com/Verjson/.github/issues/1480)
+- **Issues:** [#1476](https://github.com/Verjson/.github/issues/1476), [#1480](https://github.com/Verjson/.github/issues/1480), [#1496](https://github.com/Verjson/.github/issues/1496)
 
 ## Context
 
@@ -46,9 +46,13 @@ as a value that a downstream comparison can read as permissive.**
 
 That is the rule adopted, and it is stated as a rule rather than as a description of the
 whole fleet. It now holds for both indeterminacy paths in the freshness step — the PR
-metadata read and the compare lookup. One known site does not yet comply: the Renovate
-release-age lookup (#1495), which still swallows a failed request into `age_pending=0`.
-It is named here so this ADR is not read as certifying it. Concretely:
+metadata read and the compare lookup. Two known classes do not yet comply. The Renovate
+release-age lookup (#1495) still swallows a failed request into `age_pending=0`. And the
+audit that enforces this rule matches a literal `2>/dev/null ||`, so it cannot see a
+swallow reached through a helper function: three mergeability reads default an unreadable
+answer to `UNKNOWN`, which is then read as not-conflicting (#1505). Neither is a merge
+authorization bypass, because the compare guard enforces staleness independently, but
+both are named here so this ADR is not read as certifying them. Concretely:
 
 1. **Only a well-formed answer counts as an answer.** The compare lookup is now
    `compare_behind()`, which returns non-zero when the request fails, returns nothing, or
@@ -56,14 +60,17 @@ It is named here so this ADR is not read as certifying it. Concretely:
    success/failure distinction. This is positive evidence of an answer, rather than the
    absence of an error.
 
-2. **Transience is absorbed by a bounded retry, not by a default.** Both sites retry —
-   the compare lookup three times, the run listing five times with a 3-second gap. A
-   single blip self-heals without any weakening of the predicate.
+2. **Transience is absorbed by a bounded retry, not by a default.** All three retrying
+   sites do this — the PR metadata read (`pr_json`) three times delay-free, the compare
+   lookup three times delay-free, and the run listing five times with a 3-second gap. A
+   single blip self-heals without any weakening of the predicate. Delay-free retries buy
+   little against rate limiting, which is the dominant failure mode; the remedy is event
+   re-arming rather than holding a runner, and it is not implemented here.
 
 3. **Persistent indeterminacy holds, loudly.** After the retries, the freshness step emits
    `::error::` naming the condition and exits 1. It does not emit `proceed=true`, and it
    does not stall silently. This covers both ways the step can end up unable to answer:
-   an unreadable PR metadata read (`:407-411`) and an unanswerable compare (`:507-523`).
+   an unreadable PR metadata read (`:407-411`) and an unanswerable compare (`:507-525`).
    Neither writes `proceed=true`; both exit non-zero. The metadata read matters
    disproportionately because it runs first — while it failed open, a total outage never
    reached the compare guard at all, so that guard was unreachable on the one path it was
