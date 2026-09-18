@@ -32,8 +32,11 @@ pathless form read `- Uses: Verjson/.github@<sha>` out of an English list item a
 exists to prevent. The key is also anchored, to a *delimiter* rather than to the line
 start: a pin this scan must read sits at the start of its line, after the quote or
 backtick opening it as a string or inline-code value, after the `#` of a commented-out
-pin, or after a literal `\n` escape inside a source-string fixture, and English never
-puts one of those immediately before `uses:` mid-sentence.
+pin, or after a literal `\n` escape inside a source-string fixture. The delimiter need
+not be adjacent to the key — `[ \t]*` and an optional `- ` bullet may sit between them, so
+a quote followed by a space is admissible — and what separates a key from prose is
+therefore not that a delimiter can never precede a mid-sentence `uses:`, but that one
+which does must still be followed by a literal `Verjson/.github@<ref>` on the same line.
 
 An earlier round of this change rejected anchoring outright, on a justification that was
 wrong by a factor of twenty: line anchoring was measured at 181 lost references and
@@ -48,20 +51,34 @@ span-exclusion double-count has *zero* instances among them: all 9 carry a non-S
 written inside a string, which is most of what the fleet has — and "therefore accept the
 residual" did not follow, because delimiter anchoring was never in the set.
 
-Delimiter anchoring costs 5 references on the 95-repository corpus and adds none: four
+Delimiter anchoring costs 5 references on the 96-repository corpus and adds none: four
 `+    uses: …@main` diff fragments quoted inside frozen ADR records and one
-`jobs.<job>.uses: …@<placeholder>` documentation template, none of them a live pin.
-Adding `+` to the delimiter class would recover the four and was rejected — `+` is a diff
-marker, not a string or comment opener, and Markdown also accepts `+` as a list bullet,
-which would reopen the `- Uses:`-shaped prose hazard on the one side the case-sensitivity
-scoping does not cover. In exchange, the lowercase mid-sentence `uses:` is now rejected in
+`jobs.<job>.uses: …@<placeholder>` documentation template, none of them a live pin. Three
+of the five are ADR records in the hub itself, which nothing runs this scan against, so
+the cost borne by consumers is 2 — one each in `agents` and `verjson-agents`. Adding `+`
+to the delimiter class would recover the four and was rejected. The class does accept
+`- `, which carries the identical lowercase residual, so the asymmetry needs its own
+reason rather than the bullet hazard alone: `- ` is YAML sequence syntax, and a
+composite-action step writes a live pin as `- uses: …`, so the scan must read it; `+`
+opens no YAML node — it is only a diff marker or a Markdown list bullet — so admitting it
+would buy documentation illustrations and nothing else, while reopening the
+`- Uses:`-shaped prose hazard on the one side the case-sensitivity scoping does not cover.
+In exchange, the lowercase mid-sentence `uses:` is now rejected in
 *both* the pathless and the path shape, so the pathless form is strictly better than the
 path form the scan has always had rather than merely no worse. Each alternative in the
 class is load-bearing and separately pinned: deleting the quote drops 122 references
 (105 of them `.sh` assertions), the backtick 24, the `\n` escape 22, the `#` 8, and the
-list-item dash 4. The delimiter also subsumes the lookbehind that rejected a longer key
-ending in `uses` such as `statuses:`, which could no longer fail and was removed rather
-than left as an assertion no test can kill.
+list-item dash 4. The delimiter also makes the lookbehind that rejected a longer key
+ending in `uses`, such as `statuses:`, redundant for that case — every position the class
+admits puts a delimiter, a space or tab, or a `- ` bullet before the key, and `statuses:`
+offers an `s` — and it was removed with it. That removal is measured, not proved: the
+lookbehind is unexercised by this corpus, not unreachable. The corpus reads 632 references
+with it and 632 without, so no line in the measured fleet reaches it. One shape would: the
+`\n` alternative ends on the literal `n`, a word character, so a source-string fixture
+writing that escape with no indentation after it — `"on: push\nuses: Verjson/.github@<sha>"`
+— matches under the shipped pattern and does not under the lookbehind variant. The
+lookbehind goes because nothing in the fleet distinguishes the two and an assertion no test
+can kill is worse than none, not because it could not fail.
 
 The expression class is also length-bounded rather than an unbounded lazy `.*?`, which
 re-scanned the line tail from every `$` and cost O(n^2) on a line dense with
@@ -76,10 +93,19 @@ segment turns the root-action pin back into `UNRESOLVED_REFERENCE`, and the narr
 class restores the `'${{'` detail string. Re-measured end to end
 through `references()` and `verify()` over 96 cloned organization repositories, the count
 moves 769 → 764 with zero finding differences in any repository; the 5 are exactly the
-documentation illustrations named above, in three repositories. On the hub's own working
-tree the count is unchanged at 118 — it drops the same 3 ADR illustrations and gains 5
-from the fixtures and prose this change itself adds — and its one finding is unchanged.
-Nothing runs this scan against the hub.
+documentation illustrations named above, in three repositories. The hub's own tree needs
+its two axes stated separately, because the pattern and the tree both moved, and a single
+"unchanged" figure hid that. Holding the tree fixed at this branch's, the pattern alone
+reads 118 under the old form, 121 under the unanchored form and 119 under the shipped
+delimiter form: the widened value side adds 3 net — 5 new matches, of which 2 merely
+re-quote a `${{` the old form truncated on the same line — and delimiter anchoring then
+drops the 3 ADR illustrations and adds 1, this fragment's own `\n` example above, which
+the unanchored form's lookbehind rejects. Holding the tree fixed at `origin/main` instead,
+the same three forms read 116, 116 and 113. The genuine before/after crosses both axes:
+116 at the base tree under the old pattern, 119 here under the shipped one — the 6
+reference-bearing lines this change's own fixtures and prose add, less the 3 ADR
+illustrations it drops. Its one finding, an absent `.github/verjson-contract.json`, is
+unchanged. Nothing runs this scan against the hub.
 
 Seven tests pin the boundary: `Verjson/.github-mirror@<sha>` is never read as a hub pin;
 `- Uses:` and `statuses:` are never read as keys and lowercase prose is rejected, each

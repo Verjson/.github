@@ -209,11 +209,14 @@ DECLARATION_KEY = "contract_version"
 # `USES_KEY_RE` below exists to prevent.
 # The key is anchored to a *delimiter* rather than to the line start. A pin this
 # scan must read is written in one of four positions: at the start of its line,
-# directly after a quote or backtick that opens it as a string or inline-code
-# value, after the `#` of a commented-out pin, or after a literal `\n` escape
-# inside a source-string fixture such as `f"jobs:\n  ci:\n    uses: ..."`. That
-# alternation is what separates a key from prose, because English never puts one
-# of those characters immediately before `uses:` mid-sentence.
+# after a quote or backtick that opens it as a string or inline-code value,
+# after the `#` of a commented-out pin, or after a literal `\n` escape inside a
+# source-string fixture such as `f"jobs:\n  ci:\n    uses: ..."`. The delimiter
+# need not be adjacent to the key: `[ \t]*` and an optional `- ` bullet may sit
+# between them, so a quote followed by a space is admissible too. What separates
+# a key from prose is therefore not that a delimiter can never precede a
+# mid-sentence `uses:` -- it can -- but that one which does must still be
+# followed by a literal `Verjson/.github@<ref>` on the same line.
 # Anchoring to the line start instead -- `^\s*(?:-\s+)?` -- is far too blunt, and
 # the earlier rationale for rejecting it was wrong about why. It drops 181
 # references across the measured fleet, but classifying those 181 lines gives 108
@@ -228,22 +231,37 @@ DECLARATION_KEY = "contract_version"
 # it cannot read a value written inside a string, which is most of what the fleet
 # has.
 # The delimiter form drops 5 references against the unanchored form on the same
-# 95-repository corpus and adds none: four `+    uses: ...@main` diff fragments
+# 96-repository corpus and adds none: four `+    uses: ...@main` diff fragments
 # quoted inside frozen ADR records, and one `jobs.<job>.uses: ...@<placeholder>`
-# documentation template. None is a live pin, so dropping them is a gain. Adding
-# `+` to the delimiter class would recover the four and was rejected: `+` is a
-# diff marker, not a string or comment opener, and Markdown also accepts `+` as a
-# list bullet, which would reopen the `- Uses:`-shaped prose hazard on the one
-# side the case-sensitivity scoping does not cover.
+# documentation template. None is a live pin, so dropping them is a gain -- and
+# 3 of the 5 are ADR records in this repository, which nothing runs this scan
+# against, so the cost borne by consumers is 2, one each in `agents` and
+# `verjson-agents`. Adding `+` to the delimiter class would recover the four and
+# was rejected. The class does accept `- `, which carries the identical
+# lowercase residual, so the asymmetry needs its own reason rather than the
+# bullet hazard alone: `- ` is YAML sequence syntax, and a composite-action step
+# writes a live pin as `- uses: ...`, so the scan must read it. `+` opens no
+# YAML node -- it is only a diff marker or a Markdown list bullet -- so admitting
+# it would buy documentation illustrations and nothing else, while reopening the
+# `- Uses:`-shaped prose hazard on the one side the case-sensitivity scoping
+# does not cover.
 # Delimiter anchoring is what closes the residual the pathless form would
 # otherwise have inherited: a lowercase `uses:` mid-sentence is now rejected in
 # *both* shapes, pathless and path, so the new form is strictly better than the
-# one the scan has always had rather than merely no worse. It also subsumes the
+# one the scan has always had rather than merely no worse. It also makes the
 # lookbehind that previously rejected a longer key ending in `uses`, such as
-# `statuses:`: the character immediately before the key is now always the line
-# start, a delimiter, or whitespace, and never a word character, so a lookbehind
-# asserting exactly that could not fail and was removed rather than left as an
-# assertion no test can kill.
+# `statuses:`, redundant for that case: every position this class admits puts a
+# delimiter, a space or tab, or a `- ` bullet before the key, and `statuses:`
+# offers an `s`. The lookbehind was removed with it -- but that removal is
+# measured, not proved. `(?<![\w-])` is unexercised by this corpus, not
+# unreachable: the corpus reads 632 references with it and 632 without, so no
+# line in the measured fleet reaches it. One shape would: the `\n` alternative
+# ends on the literal `n`, a word character, so a source-string fixture writing
+# that escape with no indentation after it -- `"on: push\nuses: Verjson/.github@
+# <sha>"` -- matches under this pattern and does not under the lookbehind
+# variant. The lookbehind goes because nothing in the fleet distinguishes the
+# two and an assertion no test can kill is worse than none, not because it could
+# not fail.
 USES_RE = re.compile(
     r"(?:^|[\"'`#]|\\n)[ \t]*(?:-[ \t]+)?"
     r"(?-i:(?:uses|\"uses\"|'uses'))\s*:\s*[\"']?Verjson/\.github"
