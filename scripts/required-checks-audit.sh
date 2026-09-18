@@ -208,6 +208,15 @@ generated_contract_identity_for_repo() ( # $1 = repo, $2 = audited head or empty
         echo "::error::phase=audit repo=$repo result=generated-contract-artifact-unreadable path=$path"
         return 1
       }
+    # `base64 --decode` exits 0 on an empty stream, so a fetch that returned
+    # nothing lands here as a zero-byte file that every check downstream reads
+    # as content. The byte comparison then reports drift, and the parameter
+    # extraction reports invalid parameters, for an artifact that was never
+    # retrieved. An empty artifact is a fetch fault, named as one.
+    [ -s "$tmp/actual/$name" ] || {
+      echo "::error::phase=audit repo=$repo result=generated-contract-artifact-empty path=$path"
+      return 1
+    }
   done
 
   read -r mode pin < <(sed -nE \
@@ -364,6 +373,17 @@ source_contract_for_repo() { # $1 = repo, $2 = stack
     [ -n "$path" ] || continue
     source="$(gh api "repos/$ORG/$repo/contents/$path$ref_query" --jq .content 2>/dev/null |
       tr -d '\n' | base64 --decode 2>/dev/null)" || {
+      source_fault=1
+      break
+    }
+    # Same fail-open as the generated-artifact fetch above: `base64 --decode`
+    # exits 0 on an empty stream, so a contents fetch that returned nothing
+    # lands as an empty `$source`. The inspector then reports absent changelog
+    # wiring and no path filter -- indistinguishable from an adopter that wires
+    # nothing -- and the caller scan finds no job, so the repository is reported
+    # NONCONFORMANT for a workflow that was never retrieved. The fetch is the
+    # only place that can tell those apart, so it fails closed here.
+    [ -n "$source" ] || {
       source_fault=1
       break
     }
