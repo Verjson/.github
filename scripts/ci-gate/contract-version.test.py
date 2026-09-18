@@ -572,9 +572,13 @@ class CommandLine(unittest.TestCase):
                     self.addCleanup(os.environ.pop, "TZ", None)
                 else:
                     self.addCleanup(os.environ.__setitem__, "TZ", previous)
-                self.assertEqual(
-                    cv.today_utc(),
-                    datetime.datetime.now(datetime.timezone.utc).date().isoformat())
+                # Bracketed rather than compared against one freshly computed
+                # date: midnight UTC landing between the two calls is a
+                # failure of the clock, not of the function under test.
+                before = datetime.datetime.now(datetime.timezone.utc).date()
+                observed = cv.today_utc()
+                after = datetime.datetime.now(datetime.timezone.utc).date()
+                self.assertIn(observed, {before.isoformat(), after.isoformat()})
 
     def test_a_target_that_is_not_a_repository_is_a_usage_failure_not_a_verdict(self):
         # The scan enumerates the index, so a target with no index was never
