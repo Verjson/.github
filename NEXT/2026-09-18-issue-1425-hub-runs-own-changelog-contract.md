@@ -7,9 +7,10 @@ title: Run the published changelog contract on the hub's own pull requests
 
 `Verjson/.github` now validates its own `NEXT/` fragments against the contract it
 publishes, from `scripts/ci-gate/hub-changelog-validate.sh` in the `platform`
-actions-ci group. A fragment the pull request adds without `impact:`, or a second
-fragment claiming an identity another fragment already holds, now reddens the
-hub's own checks.
+actions-ci group. A fragment the pull request adds without `impact:` now reddens
+the hub's own checks. Only `validate --base` evaluates that field, and nothing on
+the hub was passing it a base; a duplicate fragment identity was already caught,
+by the base-less `validate` the `changelog-release` group has always run.
 
 The hub carries `verjson-stack=actions` and `verjson-core-checks=enforced`, so it
 sits in the `core-checks-actions` ruleset cohort and not in

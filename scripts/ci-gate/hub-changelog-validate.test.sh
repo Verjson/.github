@@ -216,6 +216,34 @@ else
   fail "the gate exited $status with an unrelated base; output: $output"
 fi
 
+# (i) A tag or branch literally named `origin/main` shadows the real base under
+# git's short-name disambiguation, which prefers `refs/tags/` and `refs/heads/`
+# over `refs/remotes/`. `actions-ci.yml` checks out with `fetch-tags: true`, so
+# such a tag is present in the job. Resolved short, every check in the gate
+# succeeds against the wrong object and the contract validates an empty diff at
+# exit 0 -- compared-nothing reading as clean, which is the whole defect this
+# gate exists to remove. The gate uses the full refname; assert that it still
+# reddens with each shadowing ref present.
+for shadow_kind in tag branch; do
+  shadowed="$tmp/shadowed-$shadow_kind"
+  new_fixture "$shadowed"
+  write_fragment "$shadowed" 2026-09-18-issue-1009-no-impact.md 1009 "No impact"
+  commit_branch "$shadowed"
+  if [ "$shadow_kind" = tag ]; then
+    git -C "$shadowed" tag origin/main HEAD
+  else
+    git -C "$shadowed" branch origin/main HEAD
+  fi
+
+  status=0
+  output="$(cd "$shadowed" && bash "$gate" . 2>&1)" || status=$?
+  if [ "$status" -ne 0 ] && printf '%s\n' "$output" | grep 'impact is required' >/dev/null; then
+    pass "a $shadow_kind named origin/main cannot shadow the base and mute the gate"
+  else
+    fail "a $shadow_kind named origin/main muted the gate: exit $status; output: $output"
+  fi
+done
+
 # (h) The gate itself is not a `*.test.sh`, so the actions-ci orphan detector in
 # `actions-ci-groups.test.sh` does not cover it: deregistering it would leave
 # every assertion above passing locally while nothing ran in Actions. That is

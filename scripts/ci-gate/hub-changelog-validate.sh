@@ -22,12 +22,14 @@ set -uo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 engine="$here/../changelog.py"
-repo_root="$(cd "${1:-$here/../..}" && pwd)"
-
 die() {
   printf 'hub-changelog-validate: %s\n' "$1" >&2
   exit 1
 }
+
+repo_root="$(cd "${1:-$here/../..}" && pwd)" \
+  || die "cannot enter the repository root ${1:-$here/../..}"
+[ -n "$repo_root" ] || die "the repository root resolved to an empty path"
 
 git_repo() { git -C "$repo_root" "$@"; }
 
@@ -35,7 +37,15 @@ git_repo() { git -C "$repo_root" "$@"; }
 # generated consumer caller reads from the pull-request event. Outside a pull
 # request — a push to main, or a local run — `main` is the only base there is.
 base_branch="${GITHUB_BASE_REF:-main}"
-base="origin/$base_branch"
+# The FULL refname, never the short `origin/$base_branch`. Git's disambiguation
+# resolves `refs/tags/origin/main` and `refs/heads/origin/main` ahead of
+# `refs/remotes/origin/main`, and `actions-ci.yml` checks out with `fetch-tags: true`,
+# so a tag by that name is present in the job. Under the short name such a ref
+# shadows the real base, every check below succeeds against the wrong object, and the
+# gate validates an empty diff at exit 0 -- the exact "compared nothing is
+# indistinguishable from clean" outcome this script exists to remove. A full refname
+# cannot be shadowed, which closes the class rather than the instance.
+base="refs/remotes/origin/$base_branch"
 
 fetch_base_branch() {
   git_repo fetch --no-tags --quiet origin \
@@ -59,8 +69,9 @@ git_repo rev-parse --verify --quiet "$base^{commit}" >/dev/null \
 git_repo rev-parse --verify --quiet "$base^{commit}" >/dev/null \
   || die "cannot resolve the base revision $base even after fetching it"
 
-# A base with no common ancestor would make the contract diff nothing and report
-# success, which is the failure mode this gate exists to remove. Say so instead.
+# A base with no common ancestor does not silently pass -- `git diff a...b` errors
+# with `no merge base` and the engine exits 1. The guard is here to replace that
+# opaque engine-level message with one that names the cause at the gate.
 git_repo merge-base "$base" HEAD >/dev/null 2>&1 \
   || die "$base and HEAD share no common ancestor, so the contract would validate an empty diff"
 
