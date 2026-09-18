@@ -88,7 +88,9 @@ fi
 # `.github/workflows` is deliberately out of scope: the same shape lives in
 # generated `run:` blocks that reach ~95 adopters through the generated set, so
 # changing them is a release-train change tracked separately (#1431). The frozen
-# conformance regression fixtures must not be edited at all.
+# conformance regression fixtures must not be edited at all. That arm is
+# forward-proofing rather than load-bearing today — no tracked file under
+# `scripts/ci-gate/conformance/` currently ends in `.sh`.
 #
 # `scripts/gen-changelog-caller.sh` is excluded for the same reason, and the
 # exclusion is load-bearing rather than cosmetic: three of its occurrences are
@@ -103,8 +105,16 @@ fi
 # pattern cannot see it: the pipe and the consumer are never on one line. Joining
 # continuations first is what makes the scan describe the hazard rather than one
 # of its spellings. A trailing backslash is joined for the same reason.
+#
+# Comment lines are dropped rather than buffered. Without that, a comment ending
+# in `|` splices onto the following line and manufactures an offender out of
+# prose — a tracked file whose comment reads `# see foo |` above a perfectly safe
+# `grep -q pat somefile` would be reported as a reintroduced pipe-fed site, at
+# the comment's line number. Dropping them also matches bash, which skips a
+# comment between a trailing `|` and the command that continues the pipeline.
 join_continuations() {
   awk '
+    /^[[:space:]]*#/ { next }
     { buf = buf $0 }
     /(\||\\)[[:space:]]*$/ { if (!start) start = FNR; next }
     { print (start ? start : FNR) ":" buf; buf = ""; start = 0 }
@@ -117,6 +127,12 @@ join_continuations() {
 # `command grep -q`, `timeout 5 grep -q`) all close the pipe exactly the same way,
 # so the pattern matches any early-exiting grep on the read end of a pipe.
 # It is assembled from "$q" so this file need not exempt itself from its own scan.
+#
+# The ceiling is deliberate and worth stating: `[ef]?grep` declines to match
+# `zgrep`, `rg`, or a longer identifier ending in `grep`, and only the three
+# command prefixes above are recognized, so `xargs grep -q` and `sudo grep -q`
+# are misses. Those are outside #1430's measured scope; widening the pattern
+# speculatively would trade false negatives for false positives on prose.
 pipe_prefix='(^|[^|])\|[[:space:]]*(![[:space:]]*)?'
 pipe_prefix="$pipe_prefix"'([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+|command[[:space:]]+|env[[:space:]]+|timeout[[:space:]]+[^[:space:]]+[[:space:]]+)*'
 pipe_into_grep="$pipe_prefix"'[ef]?grep([[:space:]]+-[^[:space:]]+)*[[:space:]]+(-[A-Za-z]*'"$q"'[A-Za-z]*|--'"$q"'uiet)'
