@@ -138,6 +138,47 @@ not do:
   wherever they occur, not within a leading window: `gen-changelog-caller.sh`
   stamps `CONTRACT_REF` on line 13 of one generated file and emits the release
   caller's header below `concurrency:`.
+- **The edges of that boundary are decided here, not left to whatever `open()`
+  happens to raise.** Each one is the difference between a gap an adopter can act
+  on and either a permanent exit 1 or a silent PASS.
+  - *Submodule content is out of scope.* A submodule is an index entry of mode
+    `160000` whose path is a directory, so reading it raises `IsADirectoryError`
+    and it became an `UNSCANNED` finding no adopter could ever clear — the muted
+    check this section already refuses. `actions/checkout` does not fetch
+    submodules by default, so that content is not what the enforcing run
+    executes, and the `160000` entry is skipped explicitly rather than failed on.
+    A submodule that *is* checked out in a workflow is verified by running this
+    check in the repository that owns it.
+  - *A sparse checkout is refused, path by path.* Every skip-worktree path
+    absent from the work tree stays an `UNSCANNED` gap. Skipping them instead
+    would let a local sparse run report a PASS the enforcing run — which checks
+    out the whole tree — cannot reproduce, and this check fails closed. What the
+    gap now says is *why*: the file is exactly where git left it and the
+    checkout is what is partial, rather than a missing-file error that reads as
+    a broken tree.
+  - *UTF-16 without a byte-order mark is a gap, not a decode and not a drop.* It
+    is as full of NUL bytes as the declared form, so the binary heuristic
+    dropped it with no finding and no gap — a clean PASS on a file whose `uses:`
+    line is sitting there in its own encoding. A BOM is a claim and is decoded;
+    an undeclared encoding is a guess, so the alternating-NUL shape of UTF-16
+    text raises a gap to resolve by hand instead of a verdict computed from a
+    guess. The shape, not a trial `decode("utf-16")`, is the discriminator:
+    nearly every binary decodes as UTF-16, and a gap on every image is the noise
+    that gets a check muted.
+  - *A tree with no work tree is a refusal, not an empty scan.* `git ls-files`
+    in a bare repository exits 0 with no output, so the sweep scanned zero
+    files, found zero references and reported PASS — the "scanned nothing, found
+    nothing" degradation that is indistinguishable from conformance in an exit
+    code. A bare repository, and a `.git` directory handed in as the root, raise
+    the same refusal as an absent git. An index that is genuinely empty is the
+    opposite case and stays a legitimate empty scan: that tree really was read
+    end to end.
+  - *A repository with no declaration and no reference is silent only when the
+    scan finished.* That silence is what keeps this check from firing on every
+    repository in the organization, but it is a statement about a completed
+    scan, so a tree that also carries gaps reports them rather than passing
+    clean. It reports the gaps alone: whether the repository owes a declaration
+    is precisely what the unread files might have answered.
 - **A generated header is read as a claim, never as an instruction.** Headers
   remain human traceability per [ADR 0185](../0185-org-contract-distribution/README.md)'s
   sixth point; here a header disagreeing with the declaration is an *alarm*, and

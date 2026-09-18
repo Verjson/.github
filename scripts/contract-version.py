@@ -184,6 +184,11 @@ MAX_SCAN_BYTES = 1 << 20
 # file this scan calls binary is a file git calls binary.
 SNIFF_BYTES = 8000
 UTF16_BOMS = (b"\xff\xfe", b"\xfe\xff")
+# `\xff\xfe` also opens the UTF-32LE BOM, so a UTF-32 or binary file that
+# starts with it is not a UTF-16 file: without this it escaped the binary
+# heuristic and then failed to decode, becoming a gap on a file that holds
+# no text at all.
+UTF32_BOMS = (b"\xff\xfe\x00\x00", b"\x00\x00\xfe\xff")
 
 
 class TreeNotEnumerable(Exception):
@@ -196,8 +201,23 @@ class Finding:
     detail: str
 
 
+def _git(root, *args):
+    """Run one read-only git command in `root`, or refuse the whole tree."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), *args],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except OSError as error:
+        raise TreeNotEnumerable(f"{root}: git could not be run ({error})") from error
+    if result.returncode != 0:
+        raise TreeNotEnumerable(
+            f"{root}: git {args[0]} failed "
+            f"({result.stderr.decode('utf-8', 'replace').strip()})")
+    return result
+
+
 def _tracked_paths(root):
-    """Every path in the repository index, sorted, as posix-relative strings.
+    """`(relative, is_sparse)` for every path in the index, sorted.
 
     The index -- not a walk of the directory -- is the boundary, because the
     index is what Actions checks out and executes. A walk reads whatever the
@@ -213,19 +233,68 @@ def _tracked_paths(root):
     index and is scanned, and `.git` needs no special case because git's own
     object storage is never indexed.
     """
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(root), "ls-files", "-z"],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    except OSError as error:
-        raise TreeNotEnumerable(f"{root}: git could not be run ({error})") from error
-    if result.returncode != 0:
-        raise TreeNotEnumerable(
-            f"{root}: git ls-files failed ({result.stderr.decode('utf-8', 'replace').strip()})")
+    # A bare repository has an index command that exits 0 with no output, so
+    # without this the sweep scanned zero files, found zero references and
+    # reported PASS -- the "scanned nothing, found nothing" fail-open that is
+    # indistinguishable from a conformant tree. There is no work tree to
+    # compare, so the honest answer is a refusal, not a verdict.
+    if _git(root, "rev-parse", "--is-bare-repository").stdout.strip() == b"true":
+        raise TreeNotEnumerable(f"{root}: is a bare repository, so it has no work tree to scan")
+    # `--show-toplevel` fails in a git directory handed in as the root, where
+    # `ls-files` still enumerates the index and every path it names resolves
+    # against `.git/` and exists nowhere -- a tree of gaps that reads as
+    # unreadable content rather than as the wrong root.
+    _git(root, "rev-parse", "--show-toplevel")
+    result = _git(root, "ls-files", "-s", "-v", "-z")
+    paths = []
     # `-z` emits raw bytes with no quoting, so a non-UTF-8 path survives the
-    # round trip instead of becoming an unopenable escaped name.
-    return sorted(entry.decode("utf-8", "surrogateescape")
-                  for entry in result.stdout.split(b"\x00") if entry)
+    # round trip instead of becoming an unopenable escaped name. `-s -v`
+    # prefixes `<tag> <mode> <object> <stage>\t`, and both halves are read:
+    #
+    # `<mode>` tells a gitlink from a file. A submodule is an index entry whose
+    # path is a *directory*, so opening it raises IsADirectoryError and the
+    # path becomes an UNSCANNED finding no adopter can clear -- the permanent
+    # exit 1 this function was written to remove. `actions/checkout` does not
+    # fetch submodule content by default, so that content is not in the tree
+    # this check compares.
+    #
+    # `<tag>` of `S` (or lowercase, which adds assume-unchanged) is
+    # skip-worktree: a sparse checkout left the path out of the work tree. That
+    # path is still repository content the enforcing checkout materializes in
+    # full, so it stays a gap rather than becoming a skip -- but the gap says
+    # so, instead of reporting a missing file as if the tree were broken.
+    for entry in result.stdout.split(b"\x00"):
+        if not entry:
+            continue
+        head, _, path = entry.partition(b"\t")
+        fields = head.split(b" ")
+        tag, mode = fields[0], fields[1]
+        if mode == b"160000":
+            continue
+        paths.append((path.decode("utf-8", "surrogateescape"), tag.upper() == b"S"))
+    return sorted(paths)
+
+
+def _declares_utf16(raw: bytes) -> bool:
+    """Whether these bytes open with a UTF-16 byte-order mark and not a UTF-32 one."""
+    return raw.startswith(UTF16_BOMS) and not raw.startswith(UTF32_BOMS)
+
+
+def _utf16_shaped(prefix: bytes) -> bool:
+    """Whether these bytes carry the alternating-NUL structure of UTF-16 text.
+
+    Trying `bytes.decode("utf-16")` instead would call almost every binary
+    UTF-16: any even-length byte string decodes unless it happens to hold an
+    unpaired surrogate, so the gap would fire on every image in the tree and
+    get muted. The structure is the discriminator -- one half of the byte
+    offsets all NUL while the other half is not -- and it is what a UTF-16
+    `uses:` line actually looks like.
+    """
+    body = prefix[:len(prefix) - len(prefix) % 2]
+    if len(body) < 4:
+        return False
+    low, high = body[1::2], body[0::2]
+    return (not any(low) and any(high)) or (not any(high) and any(low))
 
 
 def _scan_files(root):
@@ -239,8 +308,12 @@ def _scan_files(root):
     so exactly one of `text` and `unscanned_reason` is ever None.
     """
     root = pathlib.Path(root)
-    for relative in _tracked_paths(root):
+    for relative, is_sparse in _tracked_paths(root):
         path = root / relative
+        if is_sparse and not path.exists():
+            yield relative, None, ("is marked skip-worktree and absent, so this sparse "
+                                   "checkout never materialized it")
+            continue
         if path.is_symlink():
             # A symlink is tracked as its target *path*, which is never a
             # `uses:` line, and following it would read either a file that is
@@ -258,7 +331,17 @@ def _scan_files(root):
         except OSError as error:
             yield relative, None, f"could not be read ({error.strerror or error})"
             continue
-        if not prefix.startswith(UTF16_BOMS) and b"\x00" in prefix:
+        if not _declares_utf16(prefix) and b"\x00" in prefix:
+            if _utf16_shaped(prefix):
+                # UTF-16 without a BOM is as full of NUL bytes as UTF-16 with
+                # one, so the binary heuristic dropped it with no finding and
+                # no gap -- a clean PASS on a file whose `uses:` line is
+                # sitting there in its own encoding. An undeclared encoding is
+                # a guess rather than the BOM's claim, so this is reported as
+                # a gap to resolve by hand instead of decoded into a verdict.
+                yield relative, None, ("holds UTF-16-shaped text but declares no "
+                                       "byte-order mark")
+                continue
             # The binary heuristic speaks before the size limit, not after it.
             # Running the limit first meant every binary over 1 MiB -- a large
             # image, an archive, a compiled artifact -- became an UNSCANNED
@@ -274,7 +357,7 @@ def _scan_files(root):
         except OSError as error:
             yield relative, None, f"could not be read ({error.strerror or error})"
             continue
-        if raw[:2] in UTF16_BOMS:
+        if _declares_utf16(raw):
             # A UTF-16 BOM is checked before the NUL heuristic below, because
             # that heuristic's premise is true while the conclusion previously
             # drawn from it was not: a file with a NUL byte holds no *UTF-8*
@@ -363,6 +446,9 @@ def verify(root, releases, today: str):
     """
     version, finding = read_declaration(root)
     found, unscanned = references(root)
+    gaps = [Finding("UNSCANNED", f"{relative} {problem}, so it cannot be shown to carry "
+                                 "no contract reference")
+            for relative, problem in unscanned]
     if finding is not None and finding.kind == "DECLARATION_MISSING" and not found:
         # No declaration and no reference is a repository that does not consume
         # the contract, not a defect. Reporting it would fire on every repository
@@ -370,11 +456,14 @@ def verify(root, releases, today: str):
         # which is how the previous invalid drift test survived. A declaration
         # that exists and cannot be read is the other thing entirely: it is a
         # defect whether or not the tree happens to carry a reference, so it is
-        # deliberately outside this guard.
-        return []
-    gaps = [Finding("UNSCANNED", f"{relative} {problem}, so it cannot be shown to carry "
-                                 "no contract reference")
-            for relative, problem in unscanned]
+        # deliberately outside this guard. So is a tree with gaps in it: "no
+        # reference" is a statement about a scan that finished, and a scan that
+        # could not read part of the tree has not established it, so the gaps
+        # are returned on their own. DECLARATION_MISSING is deliberately not
+        # among them: whether this repository owes a declaration is exactly
+        # what the unread files might have answered, and asserting it here
+        # would fire on every repository with one oversized asset.
+        return gaps
     if finding is not None:
         return [finding] + gaps
     verdict = classify(version, releases, today)

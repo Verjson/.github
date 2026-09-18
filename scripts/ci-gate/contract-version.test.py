@@ -437,6 +437,70 @@ class ScanTotality(unittest.TestCase):
         self.assertEqual([f.kind for f in findings], ["PIN_MISMATCH"])
         self.assertIn("utf16.yml", findings[0].detail)
 
+    def test_a_utf_16_file_without_a_bom_is_a_gap_rather_than_a_silent_drop(self):
+        # The BOM repair only covered the declared case. UTF-16 without a BOM
+        # is still full of NUL bytes, so the binary heuristic dropped it with
+        # no finding and no gap: a real skew read as a clean PASS. Undeclared
+        # encoding is a guess rather than a claim, so the honest report is a
+        # gap someone resolves by hand, not a decoded verdict.
+        root = self.repo()
+        (root / ".github" / "workflows" / "utf16-nobom.yml").write_bytes(
+            ("jobs:\n  ci:\n    uses: Verjson/.github/.github/workflows/node-ci.yml@"
+             + "b" * 40 + "\n").encode("utf-16-le"))
+        track(root)
+        findings = self.verify(root)
+        self.assertEqual([f.kind for f in findings], ["UNSCANNED"])
+        self.assertIn("utf16-nobom.yml", findings[0].detail)
+
+    def test_a_tree_with_no_declaration_still_names_the_files_it_could_not_read(self):
+        # "No declaration and no reference" is only a repository that does not
+        # consume the contract when the scan that found no reference was
+        # total. The early return dropped `gaps`, so a tree whose files are
+        # all unscannable -- where nothing is known about what they reference
+        # -- returned the same clean PASS as a tree that was read end to end.
+        root = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        init_repo(root)
+        (root / "latin.txt").write_bytes("caf\u00e9 pins\n".encode("latin-1"))
+        track(root)
+        findings = cv.verify(root, [rel("v3.2.0")], today="2026-02-02")
+        self.assertEqual([f.kind for f in findings], ["UNSCANNED"])
+        self.assertIn("latin.txt", findings[0].detail)
+
+    def test_a_binary_that_opens_with_a_utf_32_bom_is_not_a_utf_16_file(self):
+        # `\xff\xfe` is the UTF-16LE BOM and also the first two bytes of the
+        # UTF-32LE one, so every binary opening that way was exempted from the
+        # binary heuristic and then failed to decode as UTF-16 -- a gap on a
+        # file that carries no text at all, which is the noise that gets a
+        # check muted rather than read.
+        root = self.repo()
+        (root / "asset.bin").write_bytes(
+            b"\xff\xfe\x00\x00" + bytes(range(256)) * 4)
+        track(root)
+        self.assertEqual(self.verify(root), [])
+
+    def test_a_sparse_checkout_gap_names_sparse_checkout_as_its_cause(self):
+        # A sparse checkout marks the paths it left out skip-worktree and
+        # deletes them from the work tree, so the scan refuses every one of
+        # them. That refusal is kept rather than skipped: those paths are
+        # repository content that `actions/checkout` does check out in full,
+        # and skipping them would let a local sparse run report a PASS the
+        # enforcing run cannot reproduce. What was wrong is the diagnosis --
+        # "could not be sized (No such file or directory)" reads as a broken
+        # tree, when the file is exactly where git put it and the checkout is
+        # what is partial.
+        root = self.repo()
+        sparse = root / ".github" / "workflows" / "sparse.yml"
+        sparse.write_text("jobs: {}\n")
+        track(root)
+        git(root, "update-index", "--skip-worktree",
+            ".github/workflows/sparse.yml")
+        sparse.unlink()
+        findings = self.verify(root)
+        self.assertEqual([f.kind for f in findings], ["UNSCANNED"])
+        self.assertIn("sparse.yml", findings[0].detail)
+        self.assertIn("skip-worktree", findings[0].detail)
+
     def test_a_tracked_symlink_is_its_target_path_not_its_target_content(self):
         # git tracks a symlink as a blob holding the target path, which is never
         # a `uses:` line. Following it would read something outside the tree
@@ -466,6 +530,66 @@ class ScanTotality(unittest.TestCase):
         self.addCleanup(os.environ.__setitem__, "PATH", previous or "")
         with self.assertRaises(cv.TreeNotEnumerable):
             cv.verify(root, [rel("v3.2.0")], today="2026-02-02")
+
+    def test_a_submodule_gitlink_is_not_an_unscannable_file(self):
+        # A submodule is an index entry of mode 160000 whose path is a
+        # directory, so opening it raises IsADirectoryError and the path
+        # becomes an UNSCANNED finding no adopter can clear -- a permanent
+        # exit 1, the muted-check shape ADR 0191 sec.3 cites as the reason the
+        # walk was abandoned. actions/checkout does not fetch submodule content
+        # by default, so that content is not the tree this check compares.
+        root = self.repo()
+        inner = root / "vendor"
+        inner.mkdir()
+        git(inner, "init", "-q", "-b", "main")
+        (inner / "ci.yml").write_text("jobs: {}\n")
+        git(inner, "add", "ci.yml")
+        git(inner, "-c", "user.email=fixture@example.invalid", "-c", "user.name=fixture",
+            "commit", "-qm", "inner")
+        git(root, "add", "vendor")
+        self.assertEqual(
+            git(root, "ls-files", "-s", "vendor").stdout.split()[0], "160000")
+        self.assertEqual(self.verify(root), [])
+
+    def test_a_bare_repository_is_a_refusal_rather_than_an_empty_scan(self):
+        # `git ls-files` in a bare repository exits 0 with no output, so the
+        # enumerator returned an empty list and the sweep reported zero files
+        # scanned, zero references found, PASS. "Scanned nothing, found
+        # nothing" is the fail-open degradation this check exists to close, and
+        # it is indistinguishable from a conformant tree in the exit code.
+        root = self.repo()
+        bare = pathlib.Path(tempfile.mkdtemp()) / "mirror.git"
+        self.addCleanup(shutil.rmtree, bare.parent, ignore_errors=True)
+        git(root, "-c", "user.email=fixture@example.invalid", "-c", "user.name=fixture",
+            "commit", "-qm", "fixture")
+        git(root, "clone", "-q", "--bare", str(root), str(bare))
+        self.assertEqual(git(bare, "rev-parse", "--is-bare-repository").stdout.strip(),
+                         "true")
+        with self.assertRaises(cv.TreeNotEnumerable):
+            cv.verify(bare, [rel("v3.2.0")], today="2026-02-02")
+
+    def test_a_git_directory_handed_in_as_the_root_is_a_refusal(self):
+        # The other shape of "there is no work tree here": `git -C <repo>/.git
+        # ls-files` enumerates the index happily, but every path it names is
+        # resolved against `.git/` and so exists nowhere. Reported one gap at a
+        # time that reads as a tree full of unreadable files rather than as the
+        # wrong root, which is the diagnosis a refusal states outright.
+        root = self.repo()
+        with self.assertRaises(cv.TreeNotEnumerable):
+            cv.verify(root / ".git", [rel("v3.2.0")], today="2026-02-02")
+
+    def test_an_empty_index_is_an_empty_scan_rather_than_a_refusal(self):
+        # The counterweight to the bare-repository refusal, and the reason the
+        # two cannot share one rule: a repository that tracks nothing yet is a
+        # work tree whose whole content really was scanned, and it declares no
+        # contract version, so it is a repository that does not consume the
+        # contract. Refusing it would fire exit 2 on every new repository in
+        # the organization, which is the muted check ADR 0191 sec.3 warns about.
+        root = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        init_repo(root)
+        self.assertEqual(git(root, "ls-files").stdout, "")
+        self.assertEqual(cv.verify(root, [rel("v3.2.0")], today="2026-02-02"), [])
 
     def test_the_git_directory_is_not_repository_content(self):
         # The one skip that is correct rather than a hole: `.git` is git's own
