@@ -114,8 +114,8 @@ checkout_with="$(awk '
   in_checkout && /^[[:space:]]*-[[:space:]]/ { exit }
   in_checkout { print }
 ' "$actions_ci")"
-{ printf '%s\n' "$checkout_with" | grep -qE '^[[:space:]]*fetch-tags:[[:space:]]*true[[:space:]]*$' \
-  || printf '%s\n' "$checkout_with" | grep -qE '^[[:space:]]*fetch-depth:[[:space:]]*0[[:space:]]*$'; } \
+{ printf '%s\n' "$checkout_with" | grep -E '^[[:space:]]*fetch-tags:[[:space:]]*true[[:space:]]*$' >/dev/null \
+  || printf '%s\n' "$checkout_with" | grep -E '^[[:space:]]*fetch-depth:[[:space:]]*0[[:space:]]*$' >/dev/null; } \
   && pass "actions-ci checks out the tags this lookup reads (#234)" \
   || fail "actions-ci checks out without tags, so every documented pin would fail closed"
 

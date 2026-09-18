@@ -37,7 +37,7 @@ grep -q '^  receipt:$' "$canary" \
   && pass "credentialless control job authors the bound receipt" \
   || fail "candidate can influence the authoritative receipt"
 receipt_line="$(grep -n '^  receipt:$' "$canary" | cut -d: -f1)"
-if tail -n "+$receipt_line" "$canary" | grep -q 'npm run'; then
+if tail -n "+$receipt_line" "$canary" | grep 'npm run' >/dev/null; then
   fail "receipt control job executes candidate code"
 else
   pass "receipt control job never executes candidate code"

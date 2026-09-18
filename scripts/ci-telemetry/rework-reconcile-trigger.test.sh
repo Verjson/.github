@@ -27,8 +27,8 @@ grep -Eq '^\s*workflow_dispatch:' "$wf" && pass "supports manual dispatch" || fa
 code() { grep -Ev '^\s*#' "$1"; }
 grep -Eq '^\s*issues:\s*write' "$wf" && pass "grants issues: write (to open the report)" || fail "missing issues: write"
 grep -Eq '^\s*contents:\s*read' "$wf" && pass "grants contents: read" || fail "missing contents: read"
-code "$wf" | grep -Eq 'pull-requests:\s*write' && fail "MUST NOT grant pull-requests: write" || pass "no pull-requests: write grant"
-code "$wf" | grep -Eq 'contents:\s*write' && fail "MUST NOT grant contents: write" || pass "no contents: write grant"
+code "$wf" | grep -E 'pull-requests:\s*write' >/dev/null && fail "MUST NOT grant pull-requests: write" || pass "no pull-requests: write grant"
+code "$wf" | grep -E 'contents:\s*write' >/dev/null && fail "MUST NOT grant contents: write" || pass "no contents: write grant"
 
 # --- self-hosted pool (no Docker socket; matches the repo's other workflows) ---
 # Was `runs-on: [self-hosted, ...]`. Lanes are selected by intent now, so a

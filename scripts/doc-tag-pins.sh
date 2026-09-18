@@ -43,7 +43,7 @@ missing=0
 while IFS="$(printf '\t')" read -r file pin; do
   [ -n "${pin:-}" ] || continue
   ref="${pin#*@}"
-  if printf '%s\n' "$tags" | grep -qxF "$ref"; then
+  if printf '%s\n' "$tags" | grep -xF "$ref" >/dev/null; then
     continue
   fi
   printf 'doc-tag-pins: %s pins @%s, which is not a tag of this repository\n' "$file" "$ref" >&2

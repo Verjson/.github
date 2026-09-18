@@ -45,7 +45,7 @@ for kind in code security ai; do
   grep -qF "environment: runner-deploy-$kind-review-publisher" "$trusted"
 done
 test "$(grep -c 'private-key:' "$trusted")" = 3
-! sed -n '/^  analyze:/,/^  publish-code:/p' "$trusted" | grep -q 'private-key:\|APP_PRIVATE_KEY'
+! sed -n '/^  analyze:/,/^  publish-code:/p' "$trusted" | grep 'private-key:\|APP_PRIVATE_KEY' >/dev/null
 
 ! grep -Eq 'RUNNER_DEPLOY_(CODE|SECURITY|AI)_REVIEW_(APP_ID|CHECK|WORKFLOW)' \
   "$root/.github/workflows/container-deployment.yml"

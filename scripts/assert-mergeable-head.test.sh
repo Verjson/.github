@@ -28,7 +28,21 @@ case "$args" in
     [ "${FAIL_PR_VIEW:-0}" -eq 0 ] || { echo "gh: some transient API error (HTTP 502)" >&2; exit 1; }
     printf '%s\n' "$PR_JSON_FIXTURE" ;;
   *"/rules/branches/"*)
+    # `--paginate` walks several requests through one invocation, so stderr can carry
+    # earlier lines before the one that ended the walk. This models that: a note emitted
+    # ahead of whatever the request itself does, success or failure.
+    [ -z "${RULES_STDERR_NOTE:-}" ] || printf '%s\n' "$RULES_STDERR_NOTE" >&2
     [ "${FAIL_RULES:-0}" -eq 0 ] || { echo "gh: some transient API error (HTTP 502)" >&2; exit 1; }
+    # Real `gh api` reports an authorization refusal on stderr in this shape and
+    # exits 1 -- the same exit as a 502, which is why the script has to read the
+    # status rather than the exit code to tell the two causes apart.
+    [ -z "${FAIL_RULES_HTTP:-}" ] || {
+      case "$FAIL_RULES_HTTP" in
+        401) echo "gh: Bad credentials (HTTP 401)" >&2 ;;
+        403) echo "gh: Resource not accessible by integration (HTTP 403)" >&2 ;;
+        *) echo "gh: Not Found (HTTP $FAIL_RULES_HTTP)" >&2 ;;
+      esac
+      exit 1; }
     printf '%s\n' "$RULES_FIXTURE" ;;
   *"/check-runs?per_page"*)
     [ "${FAIL_CHECK_RUNS:-0}" -eq 0 ] || { echo "gh: some transient API error (HTTP 502)" >&2; exit 1; }
@@ -94,7 +108,8 @@ expect_true_unbound() { # label
 }
 
 reset_env() {
-  unset FAIL_PR_VIEW FAIL_RULES FAIL_CHECK_RUNS FAIL_STATUS FAIL_ANNOTATIONS
+  unset FAIL_PR_VIEW FAIL_RULES FAIL_RULES_HTTP RULES_STDERR_NOTE \
+    FAIL_CHECK_RUNS FAIL_STATUS FAIL_ANNOTATIONS
   export RULES_FIXTURE="$rules_bound"
   export PR_JSON_FIXTURE
   PR_JSON_FIXTURE="$(printf '{"headRefOid":"%s","baseRefName":"main"}' "$HEAD_SHA")"
@@ -236,6 +251,77 @@ expect "a pull-request metadata failure is a fault, not a pass" 1 "failed to fet
 
 reset_env; FAIL_RULES=1 run
 expect "an unreadable ruleset is a fault: the required set must never be inferred from the head" 1 "cannot establish the required-check set"
+
+# Gate A is evaluable ONLY from the base ref's ruleset, so a caller whose token
+# cannot read that endpoint has not failed a gate -- it has failed to acquire
+# the gate's input. `gh api` exits 1 for an authorization refusal and for a 502
+# alike, so an implementation that reads only the exit code cannot tell an
+# operator whether to retry or to fix a token. Each authorization status must
+# name the permission as the cause and state what the caller needs.
+for code in 401 403; do
+  reset_env
+  FAIL_RULES_HTTP="$code" run
+  expect "an HTTP $code on the ruleset read names the token permission as the cause, not a generic API failure" \
+    1 "the token presented cannot read it"
+  expect "an HTTP $code on the ruleset read states the read access Gate A requires" \
+    1 "Metadata (read)"
+done
+
+# GitHub masks an unauthorized read of a private repository as 404, so a 404
+# must not be reported as a definitively missing ref: an operator who trusts
+# that goes looking for a deleted branch instead of at their token.
+reset_env
+FAIL_RULES_HTTP=404 run
+expect "an HTTP 404 on the ruleset read says it may be a masked authorization failure" \
+  1 "the token presented cannot read it"
+
+# The discrimination that makes the above worth having: a genuinely transient
+# failure must NOT be reported as a permission problem, or the new message is
+# just the old opaque one with more words.
+reset_env; FAIL_RULES=1 run
+if [ "$RC" -eq 1 ] && ! grep -qF -- "the token presented cannot read it" <<<"$OUT"; then
+  pass "a transient ruleset API failure is not misreported as a permission failure"
+else
+  fail "a transient ruleset API failure is not misreported as a permission failure (rc=$RC, output: $OUT)"
+fi
+
+# ...and on that transient path the replayed `gh` text is the ONLY thing that separates a
+# 502 from a 500 from a connection reset: the script's own message is identical for all
+# three, and the status is deliberately not matched. Asserting the literal diagnostic is
+# what makes dropping the replay a visible regression rather than a silent one.
+reset_env; FAIL_RULES=1 run
+expect "a transient ruleset failure replays gh's own diagnostic, the only thing distinguishing a 502 from a 500" \
+  1 "gh: some transient API error (HTTP 502)"
+
+# A `--paginate` walk emits one stderr line per request it makes, so the refusal that
+# ENDED the walk is the last status in the stream, not the first. A note from an earlier
+# page carrying its own status must not be mistaken for the fault: reading the first one
+# here would see the 301 and report the generic transient message, sending an operator to
+# retry a request their token will never be allowed to make.
+reset_env
+export RULES_STDERR_NOTE='gh: warning: repos/Verjson/verjson-ci/rules/branches/main was redirected (HTTP 301); following'
+FAIL_RULES_HTTP=403 run
+expect "the LAST status in a multi-line paginated stderr stream is the one that explains the refusal" \
+  1 "the token presented cannot read it"
+# Needled on the script's OWN message rather than on `(HTTP 403)` alone, which the
+# replayed stderr would satisfy by itself and so would assert nothing about the match.
+expect "a multi-line paginated stderr stream reports the refusing status, not an earlier page's" \
+  1 "(HTTP 403): the token presented cannot read it"
+
+# Capturing the ruleset read's stderr to a file redirects it away from the caller on the
+# SUCCESS path too, not only on the failure path that inspects it. A 200 that carries a
+# rate-limit or deprecation warning is exactly the signal an operator needs BEFORE the
+# limit is reached, and it reached them before the capture existed. Replaying it has to be
+# unconditional on the file being non-empty, not a consequence of having failed.
+reset_env
+export RULES_STDERR_NOTE='gh: warning: API rate limit remaining 12 of 5000'
+run
+if [ "$RC" -eq 0 ] \
+  && grep -q '^true$' <<<"$OUT" \
+  && grep -qF -- 'gh: warning: API rate limit remaining 12 of 5000' <<<"$OUT"
+then pass "a warning on a SUCCESSFUL ruleset read still reaches the caller rather than being swallowed by the capture"
+else fail "a warning on a SUCCESSFUL ruleset read still reaches the caller rather than being swallowed by the capture (rc=$RC, output: $OUT)"
+fi
 
 # A page walk that returns fewer runs than the endpoint claims exist leaves the
 # gate reasoning over a short inventory -- the same shape as a `failure` the

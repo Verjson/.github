@@ -380,7 +380,7 @@ if [ -f "$caller_gen" ]; then
     && pass "privileged-merge caller pins the selected immutable contract SHA" \
     || fail "privileged-merge caller lost its canonical immutable pin: '$caller_ref'"
 
-  printf '%s\n' "$caller_ref" | grep -qE '@[0-9a-f]{40}$' \
+  printf '%s\n' "$caller_ref" | grep -E '@[0-9a-f]{40}$' >/dev/null \
     && pass "privileged-merge caller is SHA-pinned" \
     || fail "privileged-merge caller is not pinned to immutable content"
 

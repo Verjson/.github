@@ -75,7 +75,7 @@ awk '
   $0 == "      runner_labels:" { cap = 1; next }
   cap && /^      [A-Za-z]/ { exit }   # next input key ends this input block
   cap { print }
-' <<<"$wc_block" | grep -qE '^        required: false' \
+' <<<"$wc_block" | grep -E '^        required: false' >/dev/null \
   && pass "runner_labels is optional under workflow_call (an omitted fleet routes by lane, #405)" \
   || fail "runner_labels is required — every consumer must then name a fleet label the org cannot relabel (#405)"
 
