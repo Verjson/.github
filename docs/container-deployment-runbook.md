@@ -188,11 +188,14 @@ the same immutable pin as the other deployment artifacts; the generated contract
 checks its exact bytes. It is a parent-owned operation, not an arbitrary child
 adapter or a replacement for complete fleet evidence.
 
-Full controller integration remains blocked by
-[verjson-cli-cloud#504](https://github.com/Verjson/verjson-cli-cloud/issues/504):
-the pinned CLI inventory command mutates host transaction locks, and neither it
-nor the current attester supplies the complete read-only evidence contract. The
-broker explicitly rejects `host-export` before acquiring any credential. Do not
+Full controller integration is outstanding, but no longer blocked upstream:
+[verjson-cli-cloud#504](https://github.com/Verjson/verjson-cli-cloud/issues/504) is
+closed and `@verjson/cli-cloud@1.0.0` ships its `runner-host-evidence` export API. What
+remains is local — routing a complete request, including the command's required
+`--read-only-ssh-private-key`, and regenerating the consumer. Until then the broker
+still explicitly rejects `host-export` before acquiring any credential, because the
+pinned CLI inventory command mutates host transaction locks and neither it nor the
+current attester supplies the complete read-only evidence contract. Do not
 call mutating inventory in dry-run or fabricate missing health, drain, release
 identity or capacity facts. Once the export is released, adopt its exact dependency,
 wire the parent broker into the controller's full requests and retained state, and

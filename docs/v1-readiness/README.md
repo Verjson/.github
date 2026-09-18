@@ -240,8 +240,8 @@ package's fresh dependent inventory must replace:
 | **`@verjson/authn` 1.0.3** | `@verjson/identity-contracts@^0.2.2` | runtime | `package.json:67` |
 | **`@verjson/observability` 1.1.0** | `@verjson/identity-contracts@^0.2.1` | runtime | `package.json:160` |
 | **`@verjson/payments` 2.1.1** | `@verjson/identity-contracts@^0.3.0` | runtime | `package.json:72` |
-| `@verjson/cli` | `@verjson/cli-cloud@^0.28.1`, `@verjson/cli-projects@^0.8.0` | runtime | `package.json` |
-| `@verjson/cli-cloud` | `@verjson/infra@^0.19.1` | runtime | `package.json` |
+| `@verjson/cli` | `@verjson/cli-cloud@>=0.29.1 <1 \|\| ^1.0.0`, `@verjson/cli-projects@^0.8.0` | runtime | `package.json` |
+| `@verjson/cli-cloud` | `@verjson/infra@>=0.19.1 <0.20.0 \|\| ^1.0.0 \|\| ^0.20.0` | runtime | `package.json` |
 
 Two things this table makes visible that the per-repository view does not:
 
