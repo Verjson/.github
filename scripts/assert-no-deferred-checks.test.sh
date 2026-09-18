@@ -28,7 +28,7 @@ case "$args" in
     printf '%s\n' "$CHECK_RUNS_FIXTURE" ;;
   *"/annotations?per_page"*)
     [ "${FAIL_ANNOTATIONS:-0}" -eq 0 ] || { echo "gh: some transient API error (HTTP 502)" >&2; exit 1; }
-    IFS= read -r hit < <(grep -oE 'check-runs/[0-9]+' <<<"$args") || hit=''
+    IFS= read -r hit < <(grep -oE 'check-runs/[0-9]+' <<<"$args") || true
     id="${hit#*/}"
     jq -c --arg id "$id" '.[$id] // []' <<<"$ANNOTATIONS_MAP"
     ;;

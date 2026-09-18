@@ -165,9 +165,19 @@ join_continuations() {
 #     or a regex, so the arm would buy a hypothetical catch with real false
 #     positives on prose. Revisit it the first time a quitting `sed` is written
 #     on the read end of a pipe.
+#   * `awk` programs written across real newlines are not seen at all. The
+#     scan joins only lines ending in `|` or a backslash, so a multi-line
+#     single-quoted program is split before the pattern ever runs. One live
+#     site is missed this way today, in
+#     `scripts/ci-gate/changelog-caller-contract.test.sh`, so the twenty sites
+#     this guard flagged are not the whole class. Buffering multi-line quoted
+#     programs is tracked in #1461; do not read a green run here as proof
+#     that no `awk` truncation exists.
 #   * `awk` is matched on a literal `exit` in its program, so an `exit` reached
 #     only in a branch that never fires still reads as an offender. That is the
-#     safe direction to be wrong in, and the remedy is cheap either way.
+#     safe direction to be wrong in, and the remedy is cheap either way. The
+#     same arm matches an `exit` that is data rather than a statement, such
+#     as `awk '/exit/{print}'` or a trailing `# exit` comment.
 # Widening further speculatively would trade false negatives for false positives.
 pipe_prefix='(^|[^|])\|[[:space:]]*(![[:space:]]*)?'
 pipe_prefix="$pipe_prefix"'([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+|command[[:space:]]+|env[[:space:]]+|timeout[[:space:]]+[^[:space:]]+[[:space:]]+)*'

@@ -93,8 +93,8 @@ mutable_case "refs/heads/$immutable_sha" 'a ref path that merely contains a SHA'
 # of both checkouts in file order.
 # `read` rather than `| head -n1`: a truncated pipe kills the producer and
 # pipefail then reports a contract violation that never happened (#1445).
-IFS= read -r pin_hit < <(grep -n '^        id: pin$' "$wf") || pin_hit=''
-IFS= read -r checkout_hit < <(grep -n 'uses: actions/checkout@' "$wf") || checkout_hit=''
+IFS= read -r pin_hit < <(grep -n '^        id: pin$' "$wf") || true
+IFS= read -r checkout_hit < <(grep -n 'uses: actions/checkout@' "$wf") || true
 pin_line="${pin_hit%%:*}"
 first_checkout_line="${checkout_hit%%:*}"
 { [ -n "$pin_line" ] && [ -n "$first_checkout_line" ] && [ "$pin_line" -lt "$first_checkout_line" ]; } \
@@ -115,8 +115,8 @@ no_persist="$(grep -c 'persist-credentials: false' "$wf")"
 # divergence would mean an adopter's ref is a pin in one check and not the other.
 sibling="$repo_root/.github/workflows/generated-artifacts.yml"
 if [ -f "$sibling" ]; then
-  IFS= read -r mine < <(grep -o 'ref_is_immutable() { \[\[ "\$1" =~ [^}]*}' "$wf") || mine=''
-  IFS= read -r theirs < <(grep -o 'ref_is_immutable() { \[\[ "\$1" =~ [^}]*}' "$sibling") || theirs=''
+  IFS= read -r mine < <(grep -o 'ref_is_immutable() { \[\[ "\$1" =~ [^}]*}' "$wf") || true
+  IFS= read -r theirs < <(grep -o 'ref_is_immutable() { \[\[ "\$1" =~ [^}]*}' "$sibling") || true
   { [ -n "$mine" ] && [ "$mine" = "$theirs" ]; } \
     && pass "the pin predicate is identical to generated-artifacts.yml's" \
     || fail "the pin predicate has drifted from generated-artifacts.yml (mine='$mine' theirs='$theirs')"

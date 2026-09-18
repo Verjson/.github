@@ -346,7 +346,7 @@ rc="$(run_watchdog)"
 busy_pool >"$RUNNERS_FILE"
 
 workflows_dir="$here/../.github/workflows"
-IFS= read -r default_hit < <(grep -o 'WATCHDOG_POLL_WORKFLOWS:-[^}]*' "$script") || default_hit=''
+IFS= read -r default_hit < <(grep -o 'WATCHDOG_POLL_WORKFLOWS:-[^}]*' "$script") || true
 default_workflows="${default_hit#*-}"
 [ "$default_workflows" = __no_poll_workflows__ ] \
   && grep -q 'POLL_STEPS="${WATCHDOG_POLL_STEPS:-}"' "$script" \

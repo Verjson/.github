@@ -166,14 +166,14 @@ run_db_step() {
 # The container name the step actually used, read back from the docker stub log.
 container_name_of() {
   local name
-  IFS= read -r name < <(sed -n 's/.*--name \([^ ]*\).*/\1/p' "$tmp/$1/docker.log") || name=''
+  IFS= read -r name < <(sed -n 's/.*--name \([^ ]*\).*/\1/p' "$tmp/$1/docker.log") || true
   printf '%s\n' "$name"
 }
 
 # The handle the step published for teardown to consume.
 published_handle_of() {
   local handle
-  IFS= read -r handle < <(sed -n 's/^container-id=//p' "$tmp/$1/github_output") || handle=''
+  IFS= read -r handle < <(sed -n 's/^container-id=//p' "$tmp/$1/github_output") || true
   printf '%s\n' "$handle"
 }
 
@@ -182,7 +182,7 @@ published_handle_of() {
 # helpers all took `| head -n1` before that.
 published_port_flag_of() {
   local flag
-  IFS= read -r flag < <(grep -o -- '-p [^ ]*' "$tmp/$1/docker.log") || flag=''
+  IFS= read -r flag < <(grep -o -- '-p [^ ]*' "$tmp/$1/docker.log") || true
   printf '%s\n' "$flag"
 }
 

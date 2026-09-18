@@ -137,7 +137,7 @@ IFS= read -r readme_path < <(
   git -C "$root" ls-tree "$ref" 2>/dev/null \
     | awk '$2 == "blob" { sub(/^[^\t]*\t/, ""); print }' \
     | grep -iE '^readme(\.md|\.markdown)?$'
-) || readme_path=''
+) || true
 
 readme=''
 if [ -n "$readme_path" ]; then

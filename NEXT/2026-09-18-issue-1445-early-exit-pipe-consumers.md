@@ -30,3 +30,19 @@ a hypothetical catch with real false positives. Generated `run:` blocks under
 
 Tracked as #1445, part of the #1430 family. (The closing keyword lives in the
 pull request, not here: a fragment's prose can reach a release commit message.)
+
+Two corrections from the independent review, before merge:
+
+- The `|| var=''` fallback on each rewritten site discarded data rather than only
+  absorbing a status. `read` returns 1 at EOF *while still assigning* the partial final
+  line, so a producer emitting `abc` with no trailing newline yielded `abc` under the old
+  `| head -n1` and an empty string under the replacement. Measured directly; every site
+  now uses `|| true`. This was latent only because today's producers are `grep`/`awk` or
+  GNU `sed` over newline-terminated files — a property of the inputs, not of the code,
+  which is the reasoning this issue exists to reject.
+- The `awk` arm cannot see a program written across real newlines, because
+  `join_continuations` joins only lines ending in `|` or a backslash. One live site is
+  missed today, so the twenty sites here are not the whole class. The ceiling is now
+  stated in the guard and tracked in #1461, rather than left for a reader to infer from a
+  green run. The same arm also matches an `exit` that is data rather than a statement;
+  that direction is safe and is now stated too.
