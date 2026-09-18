@@ -112,44 +112,96 @@ merge-gate behavior for every PR, so it is separate work, tracked as
 encoding route into the fail-open path, not the path itself.
 
 **The guard pin is a command-level anchor, and it allow-lists failure, not swallowing.**
-This claim has now been corrected twice, which is itself the lesson: the first version said
-a cited guard "still fails", the second narrowed that to "does not swallow its own failure
-on that line", and an independent re-review showed the second was still false. The anchor
-carried a denylist of four swallowing literals (`|| true`, `|| :`, `||true`, `or True`), and
-against the cited guard at `.github/workflows/gate-rearm.yml:168` six further forms —
-`||:`, `|| { :; }`, `|| echo skipped`, `| cat`, a trailing `&`, and `|| exit 0` — all kept
-the gate green. A line-level anchor also could not see the shape this PR itself introduced,
-where `node-ci.yml` writes the guard on one line and its `|| { …; exit 1; }` on the next:
-replacing that continuation with `|| true` left nothing on the pinned line to notice.
+This claim has now been corrected three times, which is itself the lesson. The first version
+said a cited guard "still fails"; the second narrowed that to "does not swallow its own
+failure on that line"; the third replaced the denylist with an allow-list and claimed
+"enumerating the one acceptable shape fails closed, so a swallowing form nobody has written
+yet reddens rather than passing". Each was falsified by an independent re-review.
 
-So the anchor is no longer a denylist and no longer line-level. It joins continuations — a
-trailing `\`, a trailing `&&`/`||`/`|`, and a multi-line `|| { … }` branch are one command —
-and then requires the tail following the pinned text to match an **allow-list of shapes that
-leave the guard**: `|| exit N`, `|| return N`, `|| continue`, `|| break`,
-`|| fail|fault|die|abort …`, a `|| { … }` whose body contains one of those, or an empty
-tail, which under `set -euo pipefail` means the guard's own status is the command's.
-Enumerating swallows is a losing game; enumerating the one acceptable shape fails closed, so
-a swallowing form nobody has written yet reddens rather than passing. All eight forms above,
-plus the continuation-line `|| true`, are permanent regression cases in
-`scripts/ci-gate/default-branch-uri-encoding.test.sh`, alongside the accepted shapes.
+The first two failed because a denylist of four swallowing literals (`|| true`, `|| :`,
+`||true`, `or True`) let six further forms — `||:`, `|| { :; }`, `|| echo skipped`, `| cat`,
+a trailing `&`, and `|| exit 0` — keep the gate green against `gate-rearm.yml:168`, and
+because a line-level anchor could not see the shape this PR itself introduced, where
+`node-ci.yml` writes the guard on one line and its `|| { …; exit 1; }` on the next.
 
-**What the corrected claim still does NOT cover.** Two things, stated plainly rather than
-implied away:
+The third failed for a more interesting reason, and it is the reason this paragraph is now
+written the way it is. The allow-list's brace alternative matched the fatal action as a
+**substring of the brace body**, with no notion of command position — which is a denylist
+wearing an allow-list's clothes. Mutating the real guard at `node-ci.yml:437`, the control
+`|| true` reddened, and seven forms did not:
+
+| tail | why it swallows |
+| --- | --- |
+| `\|\| { echo "would exit 1 here"; }` | `exit 1` matched inside a string, never executed |
+| `\|\| { ( exit 1 ); }` | exits the subshell only |
+| `\|\| { false && exit 1; }` | unreachable |
+| `\|\| { cat <<EOF` / `exit 1` / `EOF` / `}` | printed by a here-document, never run |
+| `\|\| exit 256` | wraps to a 0 wait status |
+| `\|\| return 256` | wraps to a 0 wait status |
+| `\|\| continue` / `\|\| break` with no enclosing loop | bash warns; execution carries on |
+
+So the anchor now reasons about command position rather than substring presence. It joins
+continuations — a trailing `\`, a trailing `&&`/`||`/`|`, and a multi-line `|| { … }` branch
+are one command, with the branch closed by brace **depth** so a closer carrying a tail
+(`} >&2`) cannot buffer the rest of the file into one line. It then blanks quoted spans,
+`#` comments, `${…}`, `$(…)` and `(…)` subshells, and requires what follows the final
+`&&`/`||` to be one of: `exit N`/`return N` for N in **1–255**; `fail`/`fault`/`die`/`abort
+…`; `continue`/`break` **inside a loop**, established by a lexical `do`/`done` count that
+must hold together or else report zero everywhere; a `{ … }` whose body is **flat** (no
+nested group, no redirection operator) and one of whose top-level statements is **exactly**
+one of those actions; or an empty tail, which under `set -euo pipefail` means the guard's own
+status is the command's. Every form in the table above, the six pre-existing swallows, the
+continuation-line `|| true`, and the accepted shapes are permanent regression cases in
+`scripts/ci-gate/default-branch-uri-encoding.test.sh`, and the six new ones were each
+verified by mutating `node-ci.yml:437` in a real worktree and observing exit 1.
+
+**What the corrected claim still does NOT cover.** Stated plainly rather than implied away,
+and split by which direction the error runs.
+
+*Fail-closed* — these read a live guard as disarmed, so they cost false positives, never
+coverage:
+
+- `exit 300` does leave the guard (status 44) but is rejected; the 1–255 bound is easier to
+  state and to trust than "any N that is not a multiple of 256".
+- A nested command group, or a redirection operator, in a brace body is not flattened.
+- An action reached only through a `&&`/`||` chain inside the body is not unconditionally
+  reached. This anchor does not evaluate conditions: it cannot tell `{ false && exit 1; }`
+  from `{ [ -n "$x" ] && exit 1; }`, and reads both as disarmed.
+- The structural pass is a lexical scan, not a shell parser. It models quotes, backticks,
+  backslashes, `${…}`, `$(…)` and word-position `#` — not here-documents, `case` patterns,
+  or quoting nested inside `$(…)`. Where it is unsure it blanks, which reads as not fatal.
+- The `do`/`done` count is lexical too, and `do` must additionally be loop-shaped: the prose
+  at `node-ci.yml:345` ("…not masked secrets; do not put credentials") otherwise raised the
+  loop depth for that entire file, which is how the out-of-loop `|| continue` bypass was
+  found. An unbalanced or negative count reports depth 0 everywhere.
+
+*Fail-open* — these satisfy the pin while the guard no longer guards, and are the honest
+ceiling of a command-level anchor:
 
 - **Python guards get the comment check and nothing more.** Every cited Python guard is a
   sub-expression of an `if … is None:` test or a `require(…)` call, and there is no single
   tail shape that means "this raises" without parsing the file. Five of the eleven allowlist
   entries are in this weaker class, as is the shell-shaped proof that is really a pinned
-  assertion *string* inside a `.py` list. For those, read the pin as "the cited check is
-  still written" — not "still fails".
-- **It is a command-level anchor, not reachability analysis.** A guard *moved* into a branch
-  that never executes, one made vacuous by changing the value it tests rather than the test
-  itself, and a `fault` helper redefined as a no-op all still satisfy the pin. The
-  terminating helper names are allow-listed by name, not by any proof that they terminate.
+  assertion *string* inside a `.py` list. For those the pin means only "the cited check is
+  still written". It does not mean the check still rejects anything, and a green run must
+  not be read as though it did. The `or True` denylist entry that used to be here was
+  dropped rather than kept, because a one-entry denylist reads like protection while
+  catching nothing adjacent to it (`or 1`, `or (lambda: True)()`, a `require` redefined
+  above); the gap is stated instead of papered over.
+- **A guard moved into a branch that never executes** still satisfies the pin. This is
+  reachability analysis, which the anchor does not do.
+- **A guard made vacuous** by changing the value it tests, rather than the test itself.
+- **A terminating word redefined as a no-op.** The helper names are allow-listed by name
+  with no proof that they terminate, and bash lets `exit` and `return` be shadowed by a
+  function too — so this covers the whole allow-list, not just `fault`.
+- **The pinned literal matched inside a string.** The literal search runs over raw text, so
+  deleting a guard and leaving its text in an `echo` satisfies the pin.
 
-The test header states the same boundary in the same words. A pin that overstated its own
-reach would be the defect this ADR is about, one level up — which is exactly what the first
-two versions of this paragraph were.
+Read the shell pin as "the cited text is still written outside a comment, and the
+continuation immediately following it is one of the shapes above". Do not read it as "the
+guard still fails". The test header states the same boundary in the same words. A pin that
+overstates its own reach is the defect this ADR is about, one level up — which is what all
+three earlier versions of this paragraph were.
 
 **The gate can still be outgrown.** The stated ceiling is the honest boundary: it says what
 this scan recognizes, not that every ref in the repository is covered. It now names

@@ -63,14 +63,46 @@
 #       - shell (a workflow `run:` block or a `.sh` script): continuations are joined
 #         first -- a trailing `\`, a trailing `&&`/`||`/`|`, and a multi-line `|| { … }`
 #         branch are one command -- and the tail that follows the pinned text must match
-#         an ALLOW-LIST of shapes that leave the guard (`|| exit N`, `|| return N`,
-#         `|| continue`, `|| break`, `|| fail|fault|die|abort …`, or a `|| { … }` whose
-#         body contains one of those), or be empty, which under `set -euo pipefail` means
-#         the guard's own status is the command's. Anything else -- `|| true`, `|| :`,
-#         `||:`, `|| { :; }`, `|| echo skipped`, `| cat`, a trailing `&`, `|| exit 0`, a
-#         bare `&&` chain with no `||` -- is not on the list and reads as disarmed. The
-#         allow-list direction is the point: the denylist this replaced named four
-#         literals and six other swallows walked straight past it (#1464 re-review).
+#         an ALLOW-LIST of shapes that leave the guard. Anything else -- `|| true`,
+#         `|| :`, `||:`, `|| { :; }`, `|| echo skipped`, `| cat`, a trailing `&`,
+#         `|| exit 0`, a bare `&&` chain with no `||` -- reads as disarmed. The allow-list
+#         direction is the point: the denylist this replaced named four literals and six
+#         other swallows walked straight past it (#1464 re-review).
+#
+#         The shapes are, exactly: an empty tail, which under `set -euo pipefail` means the
+#         guard's own status is the command's; or, immediately after the final `&&`/`||`,
+#         `exit N`/`return N` for N in 1-255, `fail`/`fault`/`die`/`abort …`, `continue`
+#         or `break` inside a loop, or a `{ … }` whose body is FLAT and one of whose
+#         top-level statements is exactly one of those actions. "Exactly one of those
+#         statements" is the part that matters, and it is the second thing this pin got
+#         wrong: matching the action as a SUBSTRING of the brace body is a denylist wearing
+#         an allow-list's clothes, and `|| { echo "would exit 1 here"; }`,
+#         `|| { ( exit 1 ); }`, `|| { false && exit 1; }`, `|| { cat <<EOF` / `exit 1`,
+#         `|| exit 256`, `|| return 256`, and an out-of-loop `|| continue` / `|| break`
+#         all matched it and all leave the guard standing (third #1464 re-review).
+#         Quoted spans, `#` comments, `${…}`, `$(…)` and `(…)` subshells are blanked by
+#         `shell_structure` before the split, so none of them can supply the action.
+#
+#         What that costs, all of it fail-CLOSED -- a live guard can read as disarmed here,
+#         and none of these lets a swallow through:
+#           · `exit 300` really does leave the guard (44), but the status is bounded to
+#             1-255 because that bound is easier to state than "not a multiple of 256".
+#           · a nested command group, or a redirection operator, in the brace body is not
+#             flattened and reads as disarmed.
+#           · an action reached only through a `&&`/`||` chain inside the body is not
+#             unconditionally reached. This anchor does not evaluate conditions, so it
+#             cannot tell `{ false && exit 1; }` from `{ [ -n "$x" ] && exit 1; }`; both
+#             read as disarmed.
+#           · `shell_structure` is a lexical scan, not a shell parser. It models quotes,
+#             backticks, backslashes, `${…}`, `$(…)` and word-position `#`, and nothing
+#             else -- not here-documents, not `case` patterns, not quoting nested inside
+#             `$(…)`. Where it is unsure it blanks, which reads as NOT fatal.
+#           · `continue`/`break` need loop context, which is a lexical `do`/`done` count
+#             over statements in command position, with `do` also required to be
+#             loop-shaped -- node-ci.yml:345's prose "…not masked secrets; do not put
+#             credentials" otherwise raised the depth for that whole file. If the count
+#             does not hold together (unbalanced over a whole file, or ever negative),
+#             every depth is reported as 0 and both actions read as disarmed everywhere.
 #       - Python: the comment check and NOTHING MORE. Every cited Python guard is a
 #         sub-expression of an `if … is None:` or `require(…)`, and there is no single
 #         tail shape that means "this raises" without parsing the file. `SHA.fullmatch(x)`
@@ -80,11 +112,23 @@
 #         Python-shaped denylist literal that used to be here, `or True`, was dropped
 #         rather than kept: see `py_guard_is_live` for why a one-entry denylist is worse
 #         than an honest gap.
-#     Even at its strongest this is a COMMAND-level anchor, not reachability analysis: a
-#     guard MOVED into a branch that never runs, one made vacuous by editing the value it
-#     tests rather than the test itself, and a `fault` redefined as a no-op all still
-#     satisfy the pin. Read the shell pin as "the cited check is still written and still
-#     fails", and the Python pin as "the cited check is still written".
+#     Even at its strongest this is a COMMAND-level anchor, not reachability analysis, and
+#     these are the ways a pin is satisfied by something that no longer guards:
+#       · a guard MOVED into a branch that never runs;
+#       · a guard made vacuous by editing the value it tests rather than the test itself;
+#       · a terminating word redefined as a no-op. The helper names are allow-listed BY
+#         NAME with no proof that they terminate, and bash lets `exit` and `return` be
+#         shadowed by a function too, so this covers the whole allow-list, not just
+#         `fault`.
+#       · the pinned literal matched inside a STRING rather than as a command. The literal
+#         search runs over raw text, so deleting a guard and leaving its text in an `echo`
+#         or a heredoc satisfies the pin. (In `.py` files one allowlist entry is honestly
+#         a pinned assertion string; in shell it is a residual, not a design.)
+#     So read the shell pin as "the cited text is still written outside a comment, and the
+#     continuation immediately following it is one of the shapes listed above" -- NOT as
+#     "the guard still fails", which is what the first three versions of this sentence
+#     claimed and could not support. Read the Python pin as "the cited check is still
+#     written", and nothing beyond that.
 # The recognized-site count is pinned in RECOGNIZED_REF_SITES for the same reason the
 # allowlist is explicit: moving an interpolation out of a recognized shape is a way to
 # lose coverage without losing a green run.
@@ -287,58 +331,258 @@ block_slice() {
   fi
 }
 
-# Bash runs a command, not a source line. A guard split with a trailing `\`, or chained
-# with a trailing `&&`/`||`/`|`, carries its failure handling on a LATER line: the anchor
-# below would read the pinned text on one line and never see the `|| true` on the next.
-# That is the hole that let node-ci's continuation-form head-sha guard be neutered while
-# this test stayed green (#1464 re-review), and it is strictly worse than commenting the
-# guard out, because nothing on the pinned line changes. Join continuations first, then
-# judge the whole command.
-logical_lines() { # reads text on stdin, emits one line per command
-  awk '
-    { line = $0; sub(/[[:space:]]+$/, "", line) }
-    # `|| {` opens a multi-line failure branch; it is one command until its closing brace.
+# Bash runs a command, not a source line, and a command is not a run of characters either.
+# Three separate things have to be established before a tail can be judged:
+#
+#   1. Which physical lines make up one command. A guard split with a trailing `\`, or
+#      chained with a trailing `&&`/`||`/`|`, or opening a `|| { … }` branch, carries its
+#      failure handling on a LATER line: a per-line anchor reads the pinned text on one
+#      line and never sees the `|| true` on the next. That is the hole that let node-ci's
+#      continuation-form head-sha guard be neutered while this test stayed green (#1464).
+#   2. Which characters of that command are shell STRUCTURE and which are data. `exit 1`
+#      inside a double-quoted `echo` argument is not a command; neither is one inside a
+#      `$(…)`, a `${…}`, or a comment. `shell_structure` blanks those spans, so every
+#      structural decision below reads command text only.
+#   3. Whether the guard sits inside a loop, because `continue`/`break` leave the guard
+#      only there. Outside one, bash warns and execution carries straight on.
+#
+# `shell_structure` is a lexical scan, not a shell parser: it tracks quotes, `${…}`,
+# `$(…)`, backticks, backslashes, and word-position `#`, and nothing else. Where it is
+# unsure it blanks, which makes an unrecognized construct read as NOT fatal.
+SHELL_STRUCTURE_AWK='
+function shell_structure(s,   out, i, n, c, q, d) {
+  n = length(s); out = ""; q = ""
+  for (i = 1; i <= n; i++) {
+    c = substr(s, i, 1)
+    if (q != "") { if (c == q) q = ""; out = out " "; continue }
+    if (c == "\x27" || c == "\"" || c == "`") { q = c; out = out " "; continue }
+    # A backslash escapes the next character -- unless it is the last one on the line,
+    # where it is the continuation marker the joiner below looks for.
+    if (c == "\\") { if (i < n) { out = out "  "; i++ } else { out = out "\\" }; continue }
+    # `${…}` and `$(…)`/`$((…))` are data, and their braces and parens are not grouping.
+    if (c == "$" && i < n && substr(s, i + 1, 1) == "{") {
+      d = 0
+      for (; i <= n; i++) {
+        if (substr(s, i, 1) == "{") d++
+        else if (substr(s, i, 1) == "}") { d--; if (d == 0) break }
+      }
+      out = out " "; continue
+    }
+    if (c == "$" && i < n && substr(s, i + 1, 1) == "(") {
+      d = 0
+      for (; i <= n; i++) {
+        if (substr(s, i, 1) == "(") d++
+        else if (substr(s, i, 1) == ")") { d--; if (d == 0) break }
+      }
+      out = out " "; continue
+    }
+    # `#` opens a comment only in word position. A `#` inside a word (`release#1`) does
+    # not, and neither does one inside quotes, which the branch above already consumed.
+    if (c == "#" && (out == "" || substr(out, length(out), 1) ~ /[[:space:];&|()]/)) break
+    out = out c
+  }
+  return out
+}
+function brace_delta(st,   i, n, c, d) {
+  d = 0; n = length(st)
+  for (i = 1; i <= n; i++) { c = substr(st, i, 1); if (c == "{") d++; else if (c == "}") d-- }
+  return d
+}
+# `do` and `done` are reserved words only in COMMAND position, so split the structural
+# form on its separators and look at the first word of each statement. `echo do`,
+# `do_thing`, and a `do)` case pattern are all correctly not loop keywords.
+#
+# Command position is NOT enough on its own, because these files are YAML and English
+# prose obeys the same lexical rules: node-ci.yml:345 reads "... not masked secrets; do
+# not put credentials", whose second statement begins with the word `do`. That one line
+# raised the loop depth for the whole file and made an out-of-loop `|| continue` at
+# node-ci.yml:437 read as fatal -- a fail-OPEN found by mutating the real guard. So `do`
+# also has to be loop-SHAPED: either the statement is a bare `do`, or the same logical
+# line opens a `for`/`while`/`until` in command position. The prose above is neither.
+# The depths are held back and flushed at END, because a loop count that does not hold
+# together is not trustworthy anywhere in the input: one stray `do` this lexer mis-reads
+# would silently license `continue`/`break` for every line after it. When it does not hold
+# together every depth is reported as 0, so `continue`/`break` read as disarmed throughout
+# -- fail-closed. `whole` requires the count to BALANCE, since a complete file closes every
+# loop it opens. A `slice` is cut mid-file by construction (the conformance loop at
+# privileged-merge-conformance.sh:200 is still open at the :319 use), so it requires only
+# that the count never went NEGATIVE: a slice may leave loops open, never close more than
+# it opened. An unterminated brace branch only drops its own buffer; the lines already
+# emitted before it keep their depths, because a slice routinely ends on a `|| {` opener
+# (privileged-merge-conformance.sh:319 is exactly that line).
+function emit(d, text) { pend_d[++pend_n] = d; pend_t[pend_n] = text }
+function flush(trustworthy,   i) {
+  for (i = 1; i <= pend_n; i++) print ((trustworthy && pend_d[i] > 0) ? pend_d[i] + 0 : 0) "\t" pend_t[i]
+}
+function loop_opener(st,   parts, i, n, w) {
+  gsub(/&&|\|\|/, ";", st); gsub(/[|&]/, ";", st)
+  n = split(st, parts, ";")
+  for (i = 1; i <= n; i++) {
+    w = parts[i]; sub(/^[[:space:]]+/, "", w); sub(/[[:space:]].*$/, "", w)
+    if (w == "for" || w == "while" || w == "until") return 1
+  }
+  return 0
+}
+function loop_delta(st,   parts, i, n, w, d, opens) {
+  d = 0; opens = loop_opener(st)
+  gsub(/&&|\|\|/, ";", st); gsub(/[|&]/, ";", st)
+  n = split(st, parts, ";")
+  for (i = 1; i <= n; i++) {
+    w = parts[i]; sub(/^[[:space:]]+/, "", w); sub(/[[:space:]]+$/, "", w)
+    if (w == "do") d++
+    else { sub(/[[:space:]].*$/, "", w); if (w == "do" && opens) d++; else if (w == "done") d-- }
+  }
+  return d
+}
+'
+
+shell_structure() { # $1 = shell text -> the same text with data spans blanked
+  awk "$SHELL_STRUCTURE_AWK"'{ print shell_structure($0) }' <<<"$1"
+}
+
+# Emits "<loop depth>\t<logical line>" per command. The depth is the enclosing loop
+# nesting at the START of that command, which is what decides whether `continue`/`break`
+# leave a guard. A brace branch is closed by BRACE DEPTH, not by a bare `}` line: a
+# closer carrying a tail (`} >&2`, `} || true`) used to leave the state machine open and
+# buffer the whole remainder of the file into a single line, and a nested `}` used to
+# close the body early -- both fail-closed, but both turn an unrelated edit above a guard
+# into an inscrutable false positive (#1464 re-review).
+#
+# An unterminated branch at end of input drops the buffer -- fail-closed either way, but
+# it must not be emitted as a joined line, because that line's "tail" is the rest of the
+# file. `whole` (the default) also reports it on stderr; `slice` does not, because a block
+# slice legitimately cuts a file mid-branch and that is not a defect in the file.
+logical_lines() { # $1 = whole|slice; reads text on stdin, emits one logical line per command
+  awk -v mode="${1:-whole}" "$SHELL_STRUCTURE_AWK"'
+    { line = $0; sub(/[[:space:]]+$/, "", line); st = shell_structure(line) }
     brace {
-      buf = buf " " line
-      if (line ~ /^[[:space:]]*[}][[:space:]]*;?$/) { print buf; buf = ""; brace = 0 }
+      # Inside a brace body a newline IS a statement separator, unless the previous line
+      # ended on an operator. Joining with a space would fuse `>&2` and `exit 1` into one
+      # statement and hide the fatal one from the allow-list below.
+      if (prevst ~ /(\\|&&|\|\||\||&|;|\{|\()[[:space:]]*$/) buf = buf " " line
+      else buf = buf "; " line
+      prevst = st
+      pending += loop_delta(st)
+      bdepth += brace_delta(st)
+      if (bdepth <= 0) {
+        emit(depth, buf); buf = ""; brace = 0
+        depth += pending; pending = 0; if (depth < 0) went_negative = 1
+      }
       next
     }
     # A YAML block-scalar introducer (`run: |`) ends in "|" without continuing a command.
-    line ~ /:[[:space:]]*\|[-+0-9]*$/ { print buf line; buf = ""; next }
-    line ~ /(\|\||&&)[[:space:]]*[{]$/ { buf = buf line; brace = 1; next }
-    line ~ /\\$/ { sub(/\\$/, "", line); buf = buf line; next }
-    line ~ /(&&|\|\|)$/ || line ~ /(^|[^|])\|$/ { buf = buf line " "; next }
-    { print buf line; buf = "" }
-    END { if (buf != "") print buf }
+    st ~ /:[[:space:]]*\|[-+0-9]*$/ {
+      emit(depth, buf line); buf = ""
+      depth += pending + loop_delta(st); pending = 0; if (depth < 0) went_negative = 1
+      next
+    }
+    st ~ /(\|\||&&)[[:space:]]*\{$/ {
+      buf = buf line; prevst = st; brace = 1; bdepth = brace_delta(st)
+      pending += loop_delta(st); next
+    }
+    st ~ /\\$/ { sub(/\\$/, "", line); buf = buf line; pending += loop_delta(st); next }
+    st ~ /(&&|\|\|)$/ || st ~ /(^|[^|])\|$/ { buf = buf line " "; pending += loop_delta(st); next }
+    {
+      emit(depth, buf line); buf = ""
+      depth += pending + loop_delta(st); pending = 0; if (depth < 0) went_negative = 1
+    }
+    END {
+      if (buf != "" && !brace) emit(depth, buf)
+      flush(!went_negative && (mode == "slice" || depth == 0))
+      if (brace) {
+        if (mode != "slice") {
+          print "logical_lines: unterminated `|| {` branch; the rest of the input was not judged" > "/dev/stderr"
+        }
+        exit 2
+      }
+    }
   '
 }
 
 # An ALLOW-LIST of what may follow a guard on its own command without disarming it. The
 # denylist this replaces named four swallowing literals and missed at least six more --
 # `||:`, `|| { :; }`, `|| echo skipped`, `| cat`, a trailing `&`, and `|| exit 0` all kept
-# a cited guard reading as live (#1464 re-review). Enumerating swallows is a losing game;
-# enumerating the shapes that still fail is not. A tail that is not on this list reads as
-# disarmed, so a swallow nobody has written yet reddens here rather than passing.
+# a cited guard reading as live (#1464 re-review). Enumerating swallows is a losing game.
+#
+# But an allow-list only fails closed if it enumerates SHAPES. Its first form matched the
+# fatal action as a SUBSTRING of the brace body, which is a denylist wearing an
+# allow-list's clothes: `|| { echo "would exit 1 here"; }`, `|| { ( exit 1 ); }`,
+# `|| { false && exit 1; }`, `|| exit 256`, `|| return 256`, and an out-of-loop
+# `|| continue` / `|| break` all matched and all leave the guard (third #1464 re-review).
+# So the action must now be a WHOLE top-level statement of a flat brace body, read off the
+# structural form, and the status must be a real non-zero wait status.
+#
 # `return N` is here alongside `exit N` because the gate-rearm receipt guards live inside
 # shell functions, where a non-zero return is how the failure leaves the guard, and
 # `continue`/`break` because a loop that skips the iteration never reaches the URL the
-# guard protects -- which is the only property this anchor claims. The four
-# named helpers are this repository's terminating idioms (`fail`, `fault`, `die`, `abort`)
-# and are allow-listed BY NAME, not by any proof that they terminate: redefining one as a
-# no-op is the same vacuous-guard ceiling the header already states, not a new hole.
-GUARD_FATAL_ACTION='((exit|return)[[:space:]]+[1-9][0-9]*|continue|break)'
+# guard protects -- which is the only property this anchor claims, and only inside a loop.
+# The four named helpers are this repository's terminating idioms (`fail`, `fault`, `die`,
+# `abort`) and are allow-listed BY NAME, not by any proof that they terminate: redefining
+# one as a no-op is the same vacuous-guard ceiling the header already states.
+#
+# The status is bounded to 1-255, the range bash reports unchanged. `exit 256` wraps to 0
+# and is a swallow; `exit 300` wraps to 44 and does leave the guard, but is rejected here
+# too. That is deliberate: nothing in this repository writes it, and the bound is easier
+# to state and to trust than "any N that is not a multiple of 256".
+GUARD_FATAL_STATUS='([1-9][0-9]?|1[0-9][0-9]|2[0-4][0-9]|25[0-5])'
+GUARD_FATAL_ACTION="(exit|return)[[:space:]]+${GUARD_FATAL_STATUS}"
+GUARD_LOOP_ACTION='(continue|break)'
 GUARD_FATAL_HELPER='(fail|fault|die|abort)[[:space:]][^|&]*'
-# Anchored at the START of the tail, not the end: a guard may sit inside a larger group
-# (`[ -z "$head" ] || { [[ … ]] || return 2; ref_query="?ref=$head"; }`), so what matters
-# is that the continuation IMMEDIATELY following it is fatal, not what trails after that.
-# A leading `&&` chain is skipped because only the element after the FINAL `&&`/`||`
-# escapes `set -e`; `[[ … ]] && foo` with no `||` is therefore NOT fatal and is rejected.
-GUARD_TAIL_FATAL="^[[:space:]]*(&&[^|]*)*\|\|[[:space:]]*(${GUARD_FATAL_ACTION}([^A-Za-z_]|\$)|${GUARD_FATAL_HELPER}|[{][^}]*[^A-Za-z_]${GUARD_FATAL_ACTION}([^A-Za-z_][^}]*)?[}])"
-guard_tail_is_fatal() { # $1 = the text following the pinned guard on its logical line
+
+guard_action_leads() { # $1 = structural text, $2 = loop depth -- does it BEGIN fatally?
+  [[ "$1" =~ ^[[:space:]]*${GUARD_FATAL_ACTION}([^A-Za-z0-9_]|$) ]] && return 0
+  [[ "$1" =~ ^[[:space:]]*${GUARD_FATAL_HELPER} ]] && return 0
+  [ "${2:-0}" -gt 0 ] || return 1
+  [[ "$1" =~ ^[[:space:]]*${GUARD_LOOP_ACTION}([^A-Za-z0-9_]|$) ]]
+}
+
+# The brace branch. A body counts only if it is FLAT -- no nested command group -- and one
+# of its top-level statements is EXACTLY a fatal action. "Exactly" is what rejects
+# `false && exit 1`: a statement reached only through a chain is not unconditionally
+# reached, and this anchor does not evaluate conditions. A subshell and a quoted literal
+# are already blanked by `shell_structure` before the split.
+brace_body_is_fatal() { # $1 = structural text starting just after the opening `{`, $2 = depth
+  local body="$1" depth="${2:-0}" out="" part c i n=${#1} d=1
+  for ((i = 0; i < n; i++)); do
+    c="${body:i:1}"
+    if [ "$c" = '{' ]; then d=$((d + 1))
+    elif [ "$c" = '}' ]; then d=$((d - 1)); [ "$d" -eq 0 ] && break
+    fi
+    out+="$c"
+  done
+  [ "$d" -eq 0 ] || return 1                      # unbalanced: read as disarmed
+  case "$out" in *'{'* | *'}'*) return 1 ;; esac  # a nested group is not a flat body
+  # `shell_structure` does not model here-documents, so a heredoc body reads as commands:
+  # `|| { cat <<EOF` / `exit 1` / `EOF` / `}` passed as fatal while printing that text.
+  # A body containing a redirection operator is not flat either -- read it as disarmed.
+  case "$out" in *'<<'*) return 1 ;; esac
+  local IFS=';'
+  for part in $out; do
+    part="${part#"${part%%[![:space:]]*}"}"; part="${part%"${part##*[![:space:]]}"}"
+    [[ "$part" =~ ^${GUARD_FATAL_ACTION}$ ]] && return 0
+    [ "$depth" -gt 0 ] && [[ "$part" =~ ^${GUARD_LOOP_ACTION}$ ]] && return 0
+  done
+  return 1
+}
+
+guard_tail_is_fatal() { # $1 = the text following the pinned guard, $2 = its loop depth
   # Nothing follows: the command's own non-zero status IS the command's status, and every
   # block this test reads runs under `set -euo pipefail`.
   [[ "$1" =~ ^[[:space:]]*\;?[[:space:]]*$ ]] && return 0
-  [[ "$1" =~ $GUARD_TAIL_FATAL ]]
+  local struct branch
+  struct="$(shell_structure "$1")"
+  # Anchored at the START of the tail, not the end: a guard may sit inside a larger group
+  # (`[ -z "$head" ] || { [[ … ]] || return 2; ref_query="?ref=$head"; }`), so what matters
+  # is that the continuation IMMEDIATELY following it is fatal, not what trails after that.
+  # A leading `&&` chain is skipped because only the element after the FINAL `&&`/`||`
+  # escapes `set -e`; `[[ … ]] && foo` with no `||` is therefore NOT fatal and is rejected.
+  [[ "$struct" =~ ^[[:space:]]*(\&\&[^\|]*)*\|\|(.*)$ ]] || return 1
+  branch="${BASH_REMATCH[2]}"
+  branch="${branch#"${branch%%[![:space:]]*}"}"
+  case "$branch" in
+    '{'*) brace_body_is_fatal "${branch#\{}" "${2:-0}" ;;
+    *) guard_action_leads "$branch" "${2:-0}" ;;
+  esac
 }
 
 # A plain literal match for a cited guard is not enough. `grep -qF` finds the text anywhere
@@ -349,29 +593,31 @@ guard_tail_is_fatal() { # $1 = the text following the pinned guard on its logica
 #
 # This is a command-level anchor, not a reachability analysis. See the ceiling note in the
 # header: a guard MOVED into a branch that never executes still satisfies this.
-guard_live_literal() { # $1 = literal proof text; reads the text on stdin
-  local line
-  while IFS= read -r line; do
+guard_live_literal() { # $1 = literal proof text, $2 = whole|slice; reads the text on stdin
+  local record depth line
+  while IFS= read -r record; do
+    depth="${record%%$'\t'*}"; line="${record#*$'\t'}"
     case "$line" in *"$1"*) ;; *) continue ;; esac
     # Anything opening a comment ahead of the pinned text disarms the whole line.
     case "${line%%"$1"*}" in *'#'*) continue ;; esac
-    guard_tail_is_fatal "${line#*"$1"}" || continue
+    guard_tail_is_fatal "${line#*"$1"}" "$depth" || continue
     return 0
     # Redirected, not pipe-fed: this loop returns on its first live match and would
     # SIGPIPE a still-writing producer (#1430, #1445).
-  done < <(logical_lines)
+  done < <(logical_lines "${2:-whole}")
   return 1
 }
 
-guard_live_re() { # $1 = ERE whose match is the proof; reads the text on stdin
-  local line match
-  while IFS= read -r line; do
+guard_live_re() { # $1 = ERE whose match is the proof, $2 = whole|slice; reads the text on stdin
+  local record depth line match
+  while IFS= read -r record; do
+    depth="${record%%$'\t'*}"; line="${record#*$'\t'}"
     [[ "$line" =~ $1 ]] || continue
     match="${BASH_REMATCH[0]}"
     case "${line%%"$match"*}" in *'#'*) continue ;; esac
-    guard_tail_is_fatal "${line#*"$match"}" || continue
+    guard_tail_is_fatal "${line#*"$match"}" "$depth" || continue
     return 0
-  done < <(logical_lines)
+  done < <(logical_lines "${2:-whole}")
   return 1
 }
 
@@ -420,14 +666,14 @@ sha_constrained() { # $1 = variable name, $2 = block slice, $3 = the file it cam
     grep -qE "^[[:space:]]*$var=\"\\\$\(jq -er .*\^\[0-9a-f\]\{40\}\\\$" <<<"$2" && return 0
     return 1
   fi
-  guard_live_literal "[[ \"\$$var\" =~ ^[0-9a-f]{40}\$ ]]" <<<"$2" && return 0
-  guard_live_re "(^|[[:space:]])$var[:=][[:space:]]*[\"']?[0-9a-f]{40}[\"']?([[:space:]]|\$)" <<<"$2" && return 0
+  guard_live_literal "[[ \"\$$var\" =~ ^[0-9a-f]{40}\$ ]]" slice <<<"$2" && return 0
+  guard_live_re "(^|[[:space:]])$var[:=][[:space:]]*[\"']?[0-9a-f]{40}[\"']?([[:space:]]|\$)" slice <<<"$2" && return 0
   # The same 40-hex constraint spelled inside the jq program that produced the value.
   # `jq -er` exits non-zero when `select` drops the value, and `set -euo pipefail` at the
   # top of every one of these blocks turns that into an abort, so the constraint is as
   # load-bearing as the `[[ … =~ ]]` form above -- provided the assignment itself is not
   # the thing that swallows, which is why the match runs to the closing `)"`.
-  guard_live_re "^[[:space:]]*$var=\"[\$][(]jq -er .*\^\[0-9a-f\][{]40[}][\$].*[)]\"" <<<"$2" && return 0
+  guard_live_re "^[[:space:]]*$var=\"[\$][(]jq -er .*\^\[0-9a-f\][{]40[}][\$].*[)]\"" slice <<<"$2" && return 0
   return 1
 }
 
@@ -542,8 +788,18 @@ guard_tail_case live 'a `|| return 2` inside a function' \
   "$HEX_GUARD"' || return 2'
 guard_tail_case live 'a guard nested in a larger group, fatal branch first' \
   '[ -z "$head_sha" ] || { '"$HEX_GUARD"' || return 2; ref_query="?ref=$head_sha"; }'
+# `continue`/`break` leave the guard only inside a loop, so the loop is part of the
+# fixture. privileged-merge-conformance.sh:314 is exactly this shape, inside the `while`
+# at :200: the `continue` skips the URL construction below it.
 guard_tail_case live 'a `|| { …; continue; }` that skips the iteration' \
-  "$HEX_GUARD"' || { echo "::error::bad pin"; failures=$((failures + 1)); continue; }'
+  'while IFS= read -r repository; do' \
+  '  '"$HEX_GUARD"' || { echo "::error::bad pin"; failures=$((failures + 1)); continue; }' \
+  '  gh api "repos/$repository/commits/$head_sha"' \
+  'done < <(printf "")'
+guard_tail_case live 'a `|| break` inside a for loop' \
+  'for repository in a b; do' \
+  '  '"$HEX_GUARD"' || break' \
+  'done'
 guard_tail_case live 'a `|| fault …` named terminating helper' \
   "$HEX_GUARD"' || fault 1 "could not resolve a head SHA"'
 guard_tail_case live 'a multi-line `|| {` failure branch' \
@@ -557,6 +813,77 @@ guard_tail_case dead 'an unlisted helper name, which nothing here proves termina
   "$HEX_GUARD"' || notice "head sha looks wrong"'
 guard_tail_case dead 'a `|| { … }` branch whose body never leaves' \
   "$HEX_GUARD"' || { echo "::warning::head sha looks wrong"; }'
+
+# The allow-list's SECOND fail-open, and the reason the brace branch is no longer a
+# substring match over the body (third #1464 re-review). Every tail below matched
+# `[{][^}]*[^A-Za-z_](exit|return)[[:space:]]+[1-9][0-9]*…[}]` and every one of them
+# leaves the guard standing. An allow-list that does not reason about command position is
+# a denylist wearing an allow-list's clothes, so these are pinned permanently.
+guard_tail_case dead 'a `exit 1` that is only ever echoed, never run' \
+  "$HEX_GUARD"' || { echo "would exit 1 here"; }'
+guard_tail_case dead 'an `exit 1` that leaves a subshell and nothing else' \
+  "$HEX_GUARD"' || { ( exit 1 ); }'
+guard_tail_case dead 'an `exit 1` that is unreachable behind a false `&&`' \
+  "$HEX_GUARD"' || { false && exit 1; }'
+guard_tail_case dead 'an `|| exit 256`, which wraps to a 0 wait status' \
+  "$HEX_GUARD"' || exit 256'
+guard_tail_case dead 'an `|| return 256`, which wraps to a 0 wait status' \
+  "$HEX_GUARD"' || return 256'
+guard_tail_case dead 'an `|| continue` with no enclosing loop, which bash only warns about' \
+  "$HEX_GUARD"' || continue'
+guard_tail_case dead 'an `|| break` with no enclosing loop, which bash only warns about' \
+  "$HEX_GUARD"' || break'
+guard_tail_case dead 'an `exit 1` that is only ever printed by a here-document' \
+  "$HEX_GUARD"' || {' \
+  '  cat <<EOF' \
+  'exit 1' \
+  'EOF' \
+  '}'
+guard_tail_case dead 'a nested group in the brace body, which this anchor does not flatten' \
+  "$HEX_GUARD"' || {' \
+  '  handler() {' \
+  '    :' \
+  '  }' \
+  '  exit 1' \
+  '}'
+
+# `logical_lines` closes a `|| {` branch by brace DEPTH. Closing on a bare `}` line alone
+# left a closer carrying a tail (`} >&2`, `} || true`) open forever -- buffering the whole
+# rest of the file into one logical line -- and let a nested `}` close the body early.
+# Both are fail-CLOSED, so neither was a bypass; both turn an unrelated edit anywhere
+# above a guard into an inscrutable false positive (#1464 re-review).
+guard_tail_case live 'a `} >&2` closer above the guard, which must not swallow the file' \
+  'maybe || {' \
+  '  echo x' \
+  '} >&2' \
+  "$HEX_GUARD"' || exit 1' \
+  'echo later'
+guard_tail_case live 'a nested `}` above the guard, which must not close the branch early' \
+  'maybe || {' \
+  '  handler() {' \
+  '    :' \
+  '  }' \
+  '  echo x' \
+  '}' \
+  "$HEX_GUARD"' || exit 1'
+# A trailing `\` inside a COMMENT is not a continuation: joining it prefixed the next
+# line with `#` and read a live guard as commented out (#1464 re-review).
+guard_tail_case live 'a comment ending in a backslash above the guard' \
+  '# the head sha is pinned below \' \
+  "$HEX_GUARD"' || exit 1'
+
+# An input that ends inside a `|| {` branch drops the buffer rather than emitting it as a
+# joined line whose "tail" is the rest of the file. Fail-closed, and in `whole` mode it
+# says so on stderr instead of reporting a silent green.
+printf '%s\n' "$HEX_GUARD"' || exit 1' 'maybe || {' '  echo x' >"$tmp/fx/guard.sh"
+guard_is_live "$tmp/fx/guard.sh" "$HEX_GUARD" 2>/dev/null \
+  || fail "a live guard above an unterminated branch was not judged"
+printf '%s\n' 'maybe || {' '  echo x' "$HEX_GUARD"' || exit 1' >"$tmp/fx/guard.sh"
+guard_is_live "$tmp/fx/guard.sh" "$HEX_GUARD" 2>/dev/null \
+  && fail "a guard inside an unterminated branch was judged live"
+grep -q 'unterminated' < <(guard_is_live "$tmp/fx/guard.sh" "$HEX_GUARD" 2>&1 >/dev/null) \
+  || fail "an unterminated branch was swallowed without saying so"
+
 
 # A command whose own non-zero status ends the step needs no continuation at all; that is
 # how the repo-hygiene entry is written. Swallowing it still has to redden.

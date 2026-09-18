@@ -82,16 +82,55 @@ Anything else reads as disarmed, so a swallow nobody has written yet reddens rat
 passing. All eight forms, the continuation-line `|| true`, and the accepted shapes are
 permanent regression cases against synthetic fixtures.
 
-Two limits are stated rather than implied away. A Python guard gets the comment check and
-nothing more — every cited Python guard is a sub-expression of an `if … is None:` or a
-`require(…)` call, with no single tail shape meaning "this raises" — so five of the eleven
-allowlist entries are pinned only as "still written". The one Python-shaped denylist
-literal that used to be there, `or True`, is dropped rather than kept: a one-entry denylist
-reads like protection while catching nothing adjacent to it, which is the same failure the
-shell side is being moved away from. And even at its strongest this is a
-command-level anchor, not reachability analysis: a guard moved into a branch that never
-runs, one made vacuous by editing the value it tests, or a `fault` helper redefined as a
-no-op all still satisfy it.
+A second re-review then falsified that allow-list too, and the correction is the more
+important one. Its brace alternative matched the fatal action as a *substring* of the
+`{ … }` body, with no notion of command position — a denylist wearing an allow-list's
+clothes. Mutating the real guard at `node-ci.yml:437`, the `|| true` control reddened while
+seven forms did not: `|| { echo "would exit 1 here"; }` (matched inside a string),
+`|| { ( exit 1 ); }` (exits the subshell only), `|| { false && exit 1; }` (unreachable),
+a `cat <<EOF` / `exit 1` here-document (printed, not run), `|| exit 256` and `|| return 256`
+(wrap to a 0 wait status), and `|| continue` / `|| break` with no enclosing loop (bash warns
+and carries on).
+
+The allow-list now reasons about command position. Quoted spans, `#` comments, `${…}`,
+`$(…)` and `(…)` subshells are blanked first; a `|| { … }` branch is closed by brace depth,
+so a closer carrying a tail (`} >&2`) no longer buffers the rest of the file into one
+logical line and a nested `}` no longer closes the body early; `exit`/`return` statuses are
+bounded to 1–255; `continue`/`break` are honored only inside a loop, established by a
+lexical `do`/`done` count over statements in command position that must hold together or
+else report zero everywhere; and a brace body counts only when it is flat and one of its
+top-level statements is *exactly* a fatal action. Finding the loop rule also required
+noticing that `node-ci.yml:345`'s prose — "…not masked secrets; do not put credentials" —
+was raising the loop depth for that entire file. Each of the seven forms is now a permanent
+regression case and each was verified by mutating the real `node-ci.yml` guard and observing
+a non-zero exit. Two fail-closed false positives are fixed in the same pass: a `}` closer
+carrying a tail, and a trailing `\` inside a comment, which joined the comment to the next
+line and read a live guard as commented out.
+
+The stated ceiling is now split by direction, because the previous version listed only three
+fail-open classes and named none of the ones above. Fail-closed: `exit 300` is rejected
+though it is fatal; a nested group or a redirection operator in a brace body is not
+flattened; an action reached only through a `&&`/`||` chain is not treated as
+unconditionally reached, because this anchor does not evaluate conditions; the structural
+pass is lexical and models neither here-documents, `case` patterns, nor quoting nested
+inside `$(…)`. Fail-open, and therefore the real ceiling: a guard moved into a branch that
+never runs, a guard made vacuous by editing the value it tests, any terminating word
+redefined as a no-op — `exit` and `return` can be shadowed by a function, so this covers the
+whole allow-list rather than just `fault` — and the pinned literal matched inside a string
+rather than as a command, since the literal search runs over raw text.
+
+A Python guard gets the comment check and nothing more. Every cited Python guard is a
+sub-expression of an `if … is None:` or a `require(…)` call, with no single tail shape
+meaning "this raises", so five of the eleven allowlist entries are pinned only as "the cited
+check is still written" — not that it still rejects anything, and a green run must not be
+read as though it did. The one Python-shaped denylist literal that used to be there,
+`or True`, is dropped rather than kept: a one-entry denylist reads like protection while
+catching nothing adjacent to it (`or 1`, `or (lambda: True)()`, a `require` redefined
+above), which is the same failure the shell side is being moved away from.
+
+Read the shell pin as "the cited text is still written outside a comment, and the
+continuation immediately following it is one of the listed shapes" — not as "the guard still
+fails". Three earlier versions of that sentence claimed more than the code could support.
 
 The scan's file set is also named in the ceiling now: it covers `.github/workflows/*.yml`,
 `scripts/*.sh` and `scripts/*.py`, and NOT `.github/actions/*/action.yml`. The
