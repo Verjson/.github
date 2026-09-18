@@ -63,7 +63,7 @@ composite-action step writes a live pin as `- uses: …`, so the scan must read 
 opens no YAML node — it is only a diff marker or a Markdown list bullet — so admitting it
 would buy documentation illustrations and nothing else, while reopening the
 `- Uses:`-shaped prose hazard on the one side the case-sensitivity scoping does not cover.
-In exchange, the lowercase mid-sentence `uses:` is now rejected in
+In exchange, the lowercase mid-sentence `uses:` with no delimiter before it is now rejected in
 *both* the pathless and the path shape, so the pathless form is strictly better than the
 path form the scan has always had rather than merely no worse. Each alternative in the
 class is load-bearing and separately pinned: deleting the quote drops 122 references

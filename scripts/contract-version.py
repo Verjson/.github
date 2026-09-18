@@ -246,8 +246,9 @@ DECLARATION_KEY = "contract_version"
 # `- Uses:`-shaped prose hazard on the one side the case-sensitivity scoping
 # does not cover.
 # Delimiter anchoring is what closes the residual the pathless form would
-# otherwise have inherited: a lowercase `uses:` mid-sentence is now rejected in
-# *both* shapes, pathless and path, so the new form is strictly better than the
+# otherwise have inherited: a lowercase `uses:` mid-sentence with no delimiter
+# before it is now rejected in *both* shapes, pathless and path, so the new
+# form is strictly better than the
 # one the scan has always had rather than merely no worse. It also makes the
 # lookbehind that previously rejected a longer key ending in `uses`, such as
 # `statuses:`, redundant for that case: every position this class admits puts a
