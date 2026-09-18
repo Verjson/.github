@@ -259,7 +259,9 @@ mkdir -p "$tmp/fx"
 recognizer_sees() { # $1 = label, $2 = filename, $3 = expected "kind<TAB>subject", $4… = lines
   local label="$1" name="$2" expected="$3"; shift 3
   printf '%s\n' "$@" >"$tmp/fx/$name"
-  ( root="$tmp/fx"; scanned=("$name"); ref_sites ) | cut -f3,4 | grep -qxF "$expected" \
+  # Redirected, not pipe-fed: `grep -q` exits on its first match and would SIGPIPE a
+  # still-writing producer (#1430, #1445).
+  grep -qxF "$expected" < <( ( root="$tmp/fx"; scanned=("$name"); ref_sites ) | cut -f3,4 ) \
     || fail "the ref scan is blind to $label"
 }
 
@@ -529,7 +531,7 @@ done < <(ref_sites)
 # moved, been renamed, or been fixed, and would quietly cover a future site that happens to
 # reuse the name. Every entry must have been consulted by a live site.
 for entry in "${REF_SITE_ALLOWLIST[@]}"; do
-  printf '%s\n' "${allowlisted_hits[@]:-}" | grep -qxF "$entry" \
+  grep -qxF "$entry" < <(printf '%s\n' "${allowlisted_hits[@]:-}") \
     || fail "stale ref-site allowlist entry, no site matched it: ${entry//$'\t'/ }"
 done
 
