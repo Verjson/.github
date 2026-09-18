@@ -180,6 +180,10 @@ HEADER_RE = re.compile(
     r"Verjson/\.github[^\n]*?\b(?P<sha>[0-9a-f]{40})(?![0-9a-f])", re.IGNORECASE)
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 MAX_SCAN_BYTES = 1 << 20
+# Git's own binary heuristic reads the first 8000 bytes; matching it means a
+# file this scan calls binary is a file git calls binary.
+SNIFF_BYTES = 8000
+UTF16_BOMS = (b"\xff\xfe", b"\xfe\xff")
 
 
 class TreeNotEnumerable(Exception):
@@ -248,13 +252,44 @@ def _scan_files(root):
         except OSError as error:
             yield relative, None, f"could not be sized ({error.strerror or error})"
             continue
+        try:
+            with open(path, "rb") as handle:
+                prefix = handle.read(SNIFF_BYTES)
+        except OSError as error:
+            yield relative, None, f"could not be read ({error.strerror or error})"
+            continue
+        if not prefix.startswith(UTF16_BOMS) and b"\x00" in prefix:
+            # The binary heuristic speaks before the size limit, not after it.
+            # Running the limit first meant every binary over 1 MiB -- a large
+            # image, an archive, a compiled artifact -- became an UNSCANNED
+            # finding, and a file does not stop being binary at 1048577 bytes.
+            # Sniffing a prefix keeps that cheap: the oversize file is never
+            # read whole either way.
+            continue
         if size > MAX_SCAN_BYTES:
             yield relative, None, f"is {size} bytes, past the {MAX_SCAN_BYTES}-byte scan limit"
             continue
         try:
-            raw = path.read_bytes()
+            raw = prefix if size <= len(prefix) else path.read_bytes()
         except OSError as error:
             yield relative, None, f"could not be read ({error.strerror or error})"
+            continue
+        if raw[:2] in UTF16_BOMS:
+            # A UTF-16 BOM is checked before the NUL heuristic below, because
+            # that heuristic's premise is true while the conclusion previously
+            # drawn from it was not: a file with a NUL byte holds no *UTF-8*
+            # `uses:` line, but every second byte of a UTF-16 file is NUL and
+            # the `uses:` line is sitting right there in its own encoding. It
+            # was reported as neither a finding nor a gap -- a clean PASS on a
+            # real skew. Decoding it rather than calling it UNSCANNED is the
+            # stronger of the two repairs the reviewer offered: a BOM is an
+            # explicit encoding declaration rather than a guess, so the skew
+            # becomes the PIN_MISMATCH it actually is instead of a gap someone
+            # has to open the file by hand to resolve.
+            try:
+                yield relative, raw.decode("utf-16"), None
+            except UnicodeDecodeError:
+                yield relative, None, "declares a UTF-16 BOM but does not decode as UTF-16"
             continue
         try:
             yield relative, raw.decode("utf-8"), None

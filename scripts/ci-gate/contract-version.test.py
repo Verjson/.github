@@ -400,6 +400,32 @@ class ScanTotality(unittest.TestCase):
         track(root)
         self.assertEqual(self.verify(root), [])
 
+    def test_a_binary_past_the_scan_limit_is_quiet_like_any_other_binary(self):
+        # The size check ran first, so the binary heuristic never got to speak
+        # for anything over 1 MiB and every large image, archive, or compiled
+        # artifact became an UNSCANNED finding. "Binary" does not become
+        # "might carry a UTF-8 `uses:` line" at 1048577 bytes.
+        root = self.repo()
+        (root / "large.png").write_bytes(
+            b"\x89PNG\r\n\x1a\n\x00" + b"\xde\xad\xbe\xef" * cv.MAX_SCAN_BYTES)
+        track(root)
+        self.assertEqual(self.verify(root), [])
+
+    def test_a_utf_16_file_carrying_a_skewed_pin_is_a_finding(self):
+        # The NUL heuristic's premise is sound -- a file with a NUL byte holds
+        # no UTF-8 `uses:` line -- but the conclusion drawn from it was not: a
+        # UTF-16 file is full of NUL bytes and holds a perfectly readable
+        # `uses:` line in its own encoding. It was dropped as neither a finding
+        # nor a gap, which is the clean PASS on a real skew.
+        root = self.repo()
+        (root / ".github" / "workflows" / "utf16.yml").write_bytes(
+            ("jobs:\n  ci:\n    uses: Verjson/.github/.github/workflows/node-ci.yml@"
+             + "b" * 40 + "\n").encode("utf-16"))
+        track(root)
+        findings = self.verify(root)
+        self.assertEqual([f.kind for f in findings], ["PIN_MISMATCH"])
+        self.assertIn("utf16.yml", findings[0].detail)
+
     def test_a_tracked_symlink_is_its_target_path_not_its_target_content(self):
         # git tracks a symlink as a blob holding the target path, which is never
         # a `uses:` line. Following it would read something outside the tree

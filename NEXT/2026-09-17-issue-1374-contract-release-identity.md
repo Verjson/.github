@@ -25,7 +25,9 @@ reach no workflow run, and scanning them only produced `UNSCANNED` findings no
 adopter could clear. A quoted `uses:` scalar, a generated header anywhere in the
 file, and a caller vendored under a tracked `node_modules` are all references,
 and a tracked file that cannot be read, decoded, or sized within the scan limit
-is reported as `UNSCANNED` rather than skipped. The releases document is validated at load — one commit per
+is reported as `UNSCANNED` rather than skipped. A file whose first 8000 bytes
+hold a NUL is binary at any size, and a declared UTF-16 BOM is decoded rather
+than mistaken for one. The releases document is validated at load — one commit per
 version, 40-hex object ids, `YYYY-MM-DD` dates — so an ambiguous or
 `target_commitish`-derived list exits 2 instead of producing a verdict from it,
 and `--today` defaults to the UTC date rather than the runner's local one.

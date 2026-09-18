@@ -127,9 +127,14 @@ not do:
   are named, so the implementation makes each one visible rather than silent: a
   tracked file that is unreadable, past the scan limit, or text in an undecodable
   encoding is an `UNSCANNED` finding, not a `continue`. A file holding a NUL byte
-  is skipped on git's own binary heuristic, because it cannot carry a UTF-8
-  `uses:` line and reporting every image in a repository is precisely the noise
-  ADR 0185 says gets a check muted. Comment lines are candidate header claims
+  in its first 8000 is skipped on git's own binary heuristic, because it cannot
+  carry a UTF-8 `uses:` line and reporting every image in a repository is
+  precisely the noise ADR 0185 says gets a check muted — and that heuristic runs
+  *before* the size limit, so a binary is quiet at any size rather than becoming
+  an `UNSCANNED` finding once it passes 1 MiB. A declared UTF-16 BOM is decoded
+  ahead of the heuristic: a UTF-16 file is full of NUL bytes and carries a
+  perfectly readable `uses:` line in its own encoding, so treating it as binary
+  dropped a real skew as neither finding nor gap. Comment lines are candidate header claims
   wherever they occur, not within a leading window: `gen-changelog-caller.sh`
   stamps `CONTRACT_REF` on line 13 of one generated file and emits the release
   caller's header below `concurrency:`.
