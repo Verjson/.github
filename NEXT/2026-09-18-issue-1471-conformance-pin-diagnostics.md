@@ -16,33 +16,46 @@ The extractor now captures whatever ref the line carries, so that guard is reach
 through the shipped script and the pin-count arm keeps its own meaning: zero canonical
 `uses:` lines, or two of them.
 
-**This is strictly stricter, not verdict-neutral.** Both extractors were read out of git
-— the old one from `origin/main`, the new one from the working file, so neither figure can
-drift from the shipped code — and run over 37 caller shapes covering conforming, mutable,
-malformed, shell-metacharacter, other-repository, and multi-`uses:` bodies. 25 shapes
-changed verdict: 18 refuse under both and only gain the accurate diagnostic, 4 move from
-accept to refuse, and 3 move from refuse to accept.
+**This is strictly stricter, not verdict-neutral.** The differential that establishes that
+is committed alongside the change, at
+`scripts/ci-gate/privileged-merge-pin-extractor-differential.test.sh`, so the figures below
+can be re-derived by anyone reading the repository rather than taken on trust. It runs 38
+caller shapes — conforming, mutable, malformed, shell-metacharacter, other-repository,
+comment-bearing and multi-`uses:` bodies — through the pre-change expression, recorded from
+`aa9d3865178a52cc2ddade774cd28716fd3ca03d` and checked against that blob where the checkout
+can reach it, and through the shipped expression, which it reads out of the audited script
+rather than transcribing. 26 shapes change verdict: 15 refuse under both and only gain the
+accurate diagnostic, 5 move from accept to refuse, 6 move from refuse to accept, and 12 are
+unchanged.
 
-The 4 newly-refused shapes are the point. A body carrying a conforming 40-hex pin *and* a
-second canonical `uses:` line — `@main`, a tag, or a second SHA with a trailing comment —
-matched exactly one capture under the old extractor and was accepted. The second line was
+The 5 newly-refused shapes are one class, not several: a body carrying a conforming 40-hex
+pin *and* a second canonical `uses:` line whose ref the old capture could not see. The
+corpus covers that second line as `@main`, as a tag, as a different SHA with a trailing
+comment, as the *same* SHA with a trailing comment, and as a shell-metacharacter ref. Each
+matched exactly one capture under the old extractor and was accepted, with the second line
 invisible to the audit. Those bodies now yield two captures and refuse on pin count. This
 closes a fail-open in the pin arm; it is not covered elsewhere, because the canonical
 content comparison that might have caught it is skipped by the conditional no-ops that
 precede it.
 
-The 3 newly-accepted shapes are a deliberate loosening decided here: a pin followed by a
-YAML comment — `@<sha> # v1.2.3`, the same separated by a tab, and a bare `#` — extracted
-zero captures under both the old and the unrefined new extractor and was refused as a
-pin-count problem. YAML treats a `#` preceded by whitespace as a comment, so those lines
-are conforming pins and are now read as such. The boundary is pinned in both directions:
-`@<sha>#v1.2.3`, with no separating space, is not a comment under YAML and still refuses
-as a non-SHA pin. A comment after a *mutable* ref gains only the accurate diagnostic and
-still refuses.
+The 6 newly-accepted shapes are a deliberate loosening decided here: a pin followed by a
+YAML comment — separated by a space, by a tab, by several spaces, a bare `#`, a comment
+that itself contains a `#`, and a comment with trailing whitespace — extracted zero
+captures under both the old and the unrefined new extractor and was refused as a pin-count
+problem. YAML treats a `#` preceded by whitespace as a comment, so those lines are
+conforming pins and are now read as such. Every one of the six captured a well-formed
+40-hex ref, which is the bound that matters: the 40-hex guard is applied to whatever the
+capture yields, so no non-SHA ref is newly accepted by widening it. The boundary is pinned
+in both directions: `@<sha>#v1.2.3`, with no separating space, is not a comment under YAML
+and still refuses as a non-SHA pin. A comment after a *mutable* ref gains only the accurate
+diagnostic and still refuses.
 
 The same narrow capture, and the same fail-open, were present in the promotion-retry pin
-extractor. It is widened to mirror the caller exactly rather than being left as a second
-instance of the fixed defect.
+extractor. Rather than widen a second copy and leave the next change to find both, the two
+sites are collapsed into one `extract_canonical_pins` helper taking the canonical workflow
+name. The duplication is what allowed the drift in the first place, so removing it is part
+of the fix; the differential asserts that the two sites extract identically on every shape,
+which is the property that had silently stopped holding.
 
 No consumer matched on either message: searching the repository for
 `expected exactly one immutable canonical workflow pin`, `pin is not a 40-hex`, and

@@ -41,6 +41,26 @@ command -v jq >/dev/null 2>&1 || {
   exit 1
 }
 
+extract_canonical_pins() { # extract_canonical_pins <canonical-workflow-basename>  (body on stdin)
+  # The privileged-merge caller and the promotion-retry caller carry the same `uses:`
+  # shape and differ only in which canonical workflow they name. Holding a copy of the
+  # expression at each site is what let them drift: the retry copy kept the narrow
+  # `([0-9a-f]{40})` capture, and the fail-open that came with it, after the caller's was
+  # widened. One expression, one argument, so a change cannot reach one site only.
+  #
+  # The capture is deliberately wide. A narrower one silently turns a present-but-mutable
+  # pin into zero captures, which the count arm then explains as a missing or duplicated
+  # `uses:` line -- the wrong diagnosis for the most likely wrong pin. The 40-hex guard
+  # downstream still judges whatever ref is captured. The optional trailing group is a
+  # YAML comment, which requires whitespace before the `#`; `@<sha>#v1` is a single ref
+  # and stays refused as a non-SHA pin.
+  #
+  # `$1` is the only interpolated value and is always one of the two literals below.
+  # Adopter text reaches sed as input on stdin and never as expression text, so no caller
+  # body can inject a delimiter or a backreference into the expression.
+  sed -nE "s%^[[:space:]]+uses: Verjson/\.github/\.github/workflows/$1\.yml@([^[:space:]]+)([[:space:]]+#.*)?[[:space:]]*\$%\1%p"
+}
+
 find_latest_completed_run() { # find_latest_completed_run <repository> <workflow-id>
   local repository="$1" workflow_id="$2" page response page_count exhausted=true
   local candidates='[]'
@@ -332,15 +352,7 @@ while IFS= read -r repository; do
     fi
   elif [ "$caller_available" = true ]; then
     consumers=$((consumers + 1))
-    # Capture whatever ref the line actually carries, not only a well-formed one. A
-    # narrower capture silently turns a present-but-mutable pin into zero captures, which
-    # the count arm below then explains as a missing or duplicated `uses:` line -- the
-    # wrong diagnosis for the most likely wrong pin. The verdict is refusal either way;
-    # only the explanation was wrong.
-    mapfile -t caller_pins < <(
-      sed -nE 's%^[[:space:]]+uses: Verjson/\.github/\.github/workflows/ai-privileged-merge\.yml@([^[:space:]]+)([[:space:]]+#.*)?[[:space:]]*$%\1%p' \
-        <<<"$caller_content"
-    )
+    mapfile -t caller_pins < <(extract_canonical_pins ai-privileged-merge <<<"$caller_content")
     caller_contract_sha="${caller_pins[0]-}"
     # The rejected pin must not reach the queries below, but abandoning the iteration would
     # also abandon this repository's remaining evidence. Make the pin-dependent work
@@ -451,13 +463,7 @@ while IFS= read -r repository; do
         fi
 
         if [ "$retry_available" = true ]; then
-          mapfile -t retry_pins < <(
-            # Mirrors the caller extractor above, and for the same reason: a narrow
-            # capture let a conformant pin alongside a mutable one read as a single
-            # matching pin and be accepted. Widened, the count arm below sees both.
-            sed -nE 's%^[[:space:]]+uses: Verjson/\.github/\.github/workflows/ai-promotion-retry\.yml@([^[:space:]]+)([[:space:]]+#.*)?[[:space:]]*$%\1%p' \
-              <<<"$retry_content"
-          )
+          mapfile -t retry_pins < <(extract_canonical_pins ai-promotion-retry <<<"$retry_content")
           if [ "${#retry_pins[@]}" -ne 1 ] || [ "${retry_pins[0]:-}" != "$caller_contract_sha" ]; then
             echo "::error title=Invalid promotion retry caller pin::repository=$repository path=$RETRY_PATH reason='retry must pin the same immutable contract SHA as privileged merge'"
             failures=$((failures + 1))
