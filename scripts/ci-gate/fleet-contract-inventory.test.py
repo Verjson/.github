@@ -10,13 +10,34 @@ import base64
 import importlib.util
 import json
 import pathlib
+import sys
 import unittest
 
 _root = pathlib.Path(__file__).resolve().parents[2]
-_spec = importlib.util.spec_from_file_location(
-    "fleet_contract_inventory", _root / "scripts" / "fleet-contract-inventory.py")
-fci = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(fci)
+
+
+def _load(name, filename):
+    spec = importlib.util.spec_from_file_location(name, _root / "scripts" / filename)
+    module = importlib.util.module_from_spec(spec)
+    # Registered before execution: a `@dataclasses.dataclass` under
+    # `from __future__ import annotations` resolves its field types through
+    # `sys.modules[cls.__module__]`, which is absent for a path-loaded module.
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+fci = _load("fleet_contract_inventory", "fleet-contract-inventory.py")
+# Loaded here so the agreement between the two sweeps can be asserted rather
+# than maintained by hand -- Verjson/.github#1482.
+cv = _load("contract_version", "contract-version.py")
+# Imported rather than path-loaded, and that matters for the identity
+# assertions below: `_load` would build a *second* module object with its own
+# function objects, and `fci.references is contract_reference.references` would
+# then fail for a reason that has nothing to do with the sweep. The inventory
+# puts `scripts/` on `sys.path` and imports this module, so a plain import here
+# binds the very object it imported from.
+import contract_reference  # noqa: E402
 
 A = "a" * 40
 B = "b" * 40
@@ -55,23 +76,26 @@ class Classify(unittest.TestCase):
 class UsesExtraction(unittest.TestCase):
     def test_extracts_path_and_pin_from_a_hub_reference(self):
         text = f"    uses: Verjson/.github/.github/workflows/node-ci.yml@{A}\n"
-        found = [(m.group("path"), m.group("sha"))
-                 for m in fci.USES_RE.finditer(text)]
-        self.assertEqual(found, [(".github/workflows/node-ci.yml", A)])
+        self.assertEqual(sorted(fci.pins(text)),
+                         [(".github/workflows/node-ci.yml", A)])
 
     def test_ignores_a_reference_to_another_owner(self):
         text = f"    uses: OtherOrg/.github/.github/workflows/node-ci.yml@{A}\n"
-        self.assertEqual(list(fci.USES_RE.finditer(text)), [])
+        self.assertEqual(sorted(fci.pins(text)), [])
 
     def test_ignores_a_moving_tag_because_it_is_not_a_pin(self):
         text = "    uses: Verjson/.github/.github/workflows/node-ci.yml@v1\n"
-        self.assertEqual(list(fci.USES_RE.finditer(text)), [])
+        # Still a *reference* -- `contract-version` reports it as an unpinned
+        # one -- but not a pin, so it is not this sweep's row. The narrowing
+        # moved from the pattern to `pins()`; what it admits did not.
+        self.assertEqual(sorted(fci.pins(text)), [])
+        self.assertEqual([m.group("ref") for m in fci.USES_RE.finditer(text)],
+                         ["v1"])
 
     def test_finds_every_distinct_pin_in_one_file(self):
         text = (f"  uses: Verjson/.github/.github/workflows/node-ci.yml@{A}\n"
                 f"  uses: Verjson/.github/.github/workflows/changelog.yml@{B}\n")
-        self.assertEqual({m.group("sha") for m in fci.USES_RE.finditer(text)},
-                         {A, B})
+        self.assertEqual({sha for _, sha in fci.pins(text)}, {A, B})
 
 
 class HeaderClaimExtraction(unittest.TestCase):
@@ -98,12 +122,90 @@ class UsesBoundaries(unittest.TestCase):
 
     def test_matches_a_lowercase_owner_because_github_is_case_insensitive(self):
         text = f"    uses: verjson/.github/.github/workflows/node-ci.yml@{A}\n"
-        self.assertEqual([m.group("sha") for m in fci.USES_RE.finditer(text)],
-                         [A])
+        self.assertEqual([sha for _, sha in fci.pins(text)], [A])
 
     def test_a_longer_hex_run_is_not_a_pin(self):
         text = f"    uses: Verjson/.github/.github/workflows/node-ci.yml@{'a' * 64}\n"
-        self.assertEqual(list(fci.USES_RE.finditer(text)), [])
+        # The boundary is now `SHA_RE`'s anchoring rather than a `(?![0-9a-f])`
+        # lookahead inside the pattern: the whole 64-hex run is the ref, and a
+        # 64-character ref is not a 40-hex commit. The reference is still seen,
+        # which is what lets `contract-version` report it.
+        self.assertEqual(sorted(fci.pins(text)), [])
+        self.assertEqual([m.group("ref") for m in fci.USES_RE.finditer(text)],
+                         ["a" * 64])
+
+
+class FlowStyleAndTrailingStructure(unittest.TestCase):
+    """Verjson/.github#1482. Unifying the two recognizers narrowed what the
+    *inventory* accepts, in the muting direction the shared module exists to
+    prevent. The pattern this sweep used before the unification required exactly
+    40 hex and closed on `(?![0-9a-f])`; the shared one read any ref out of a
+    class that ran straight through `}`, `]` and `,`, so a pin in flow-style
+    YAML came back as `<sha>}]` and failed `SHA_RE` -- a repository carrying a
+    pin looked clean. Latent, not active: no adopter in the measured fleet
+    writes a step this way, which is why it is cheap to close now.
+
+    Every fixture here carries two pins rather than one. With a single pin the
+    class that stops at the structure and the class that runs through it differ
+    only in one ref's content; written adjacently they differ in the number of
+    matches, which is the assertion a single-instance fixture cannot make.
+    """
+
+    def test_a_flow_style_mapping_carries_pins_the_sweep_must_read(self):
+        # Ordinary YAML: this parses to exactly the structure the block form
+        # does, and it is `.github/workflows/*.yml` that this sweep reads.
+        text = ("    steps: [{uses: Verjson/.github/.github/workflows/node-ci.yml@"
+                f"{A}}}, {{uses: Verjson/.github/.github/workflows/changelog.yml@{B}}}]\n")
+        self.assertEqual(sorted(fci.pins(text)),
+                         [(".github/workflows/changelog.yml", B),
+                          (".github/workflows/node-ci.yml", A)])
+
+    def test_a_single_pair_flow_sequence_entry_carries_pins(self):
+        # A flow sequence entry may be a single key/value pair with no braces
+        # at all; YAML parses it to the same mapping. `[` therefore opens a key
+        # position exactly as `{` does.
+        text = ("    steps: [ uses: Verjson/.github/.github/workflows/node-ci.yml@"
+                f"{A}, uses: Verjson/.github/.github/workflows/changelog.yml@{B} ]\n")
+        self.assertEqual(sorted(fci.pins(text)),
+                         [(".github/workflows/changelog.yml", B),
+                          (".github/workflows/node-ci.yml", A)])
+
+    def test_a_pin_is_not_muted_by_a_trailing_escape_or_comma(self):
+        # The source-string shape the delimiter class already reads on its
+        # opening side: `\n` closes the value too, and before this the ref came
+        # back 41 characters -- correct, immutable, and unable to compare equal
+        # to any release commit.
+        text = (f'    body = "uses: Verjson/.github/.github/workflows/node-ci.yml@{A}\\n"\n'
+                f'    tail = "uses: Verjson/.github/.github/workflows/changelog.yml@{B},"\n')
+        self.assertEqual(sorted(fci.pins(text)),
+                         [(".github/workflows/changelog.yml", B),
+                          (".github/workflows/node-ci.yml", A)])
+
+    def test_a_hex_run_that_continues_into_a_refname_is_not_a_pin(self):
+        # The widening side of the boundary, and the reason it is `(?![\w./+-])`
+        # rather than the `(?![0-9a-f])` it replaces. A tag named after a commit
+        # with a suffix is not that commit; reporting its first 40 characters as
+        # a pin invents a PIN_MISMATCH, which is the direction strictly worse
+        # than the muting one. Both fall through to the general class and stay
+        # whole references.
+        text = (f"    uses: Verjson/.github/.github/workflows/node-ci.yml@{A}-rc1\n"
+                f"    uses: Verjson/.github/.github/workflows/changelog.yml@{B}.1\n")
+        self.assertEqual(sorted(fci.pins(text)), [])
+        # Through `references()` rather than `USES_RE.finditer`: the fixture is
+        # two lines, and the per-line application is the API both sweeps use.
+        self.assertEqual([ref for _, ref in fci.references(text)],
+                         [f"{A}-rc1", f"{B}.1"])
+
+    def test_a_substitution_ref_keeps_its_braces(self):
+        # The reason the general class still admits `{` and `}`: this corpus
+        # writes refs as generator and fixture substitutions, and excluding
+        # those characters drops such a reference entirely rather than reporting
+        # it unpinned. Two of them, so an over-narrowed class changes the count.
+        text = ("    uses: Verjson/.github/.github/workflows/node-ci.yml@${ref}\n"
+                "    uses: Verjson/.github/.github/workflows/changelog.yml@{PIN}\n")
+        self.assertEqual(sorted(fci.pins(text)), [])
+        self.assertEqual([ref for _, ref in fci.references(text)],
+                         ["${ref}", "{PIN}"])
 
 
 class UnreachableIsNotEmpty(unittest.TestCase):
@@ -416,6 +518,78 @@ class AnAbsentDirectoryIsNotAGap(unittest.TestCase):
     def test_a_three_digit_status_is_required(self):
         self._fails_with("gh: nonsense (HTTP 4)\n")
         self.assertIsNone(fci.workflows("Verjson/example"))
+
+
+class RecognizerAgreement(unittest.TestCase):
+    """Verjson/.github#1482. Two hand-maintained copies of one pattern is the
+    condition that produced the drift, so the check is identity: the inventory
+    reads the *same compiled object* and calls the *same functions* as
+    `contract-version`, rather than any copy of them. Asserting equal behaviour
+    on a fixture list would only pin the shapes that list happens to name."""
+
+    def test_the_two_sweeps_share_one_recognizer_object(self):
+        # `contract-version` really does read this object: it calls
+        # `USES_RE.finditer` on its own module global. The inventory does not --
+        # its `USES_RE` is a re-export nothing in that module consumes, so
+        # asserting on it alone pins a name rather than a code path. The path
+        # the inventory actually takes is `pins()` -> `references()`, so those
+        # two names are what the second and third assertions pin.
+        #
+        # They name the *functions*. An earlier round asserted
+        # `fci.references.__globals__["USES_RE"] is cv.USES_RE` instead, which
+        # does not say what it looks like it says: `fci.references.__globals__`
+        # is `contract_reference`'s module dict only while `fci.references` IS
+        # the shared function. Define a private copy in
+        # `fleet-contract-inventory.py` and the lookup reads *that* module's
+        # globals, where `USES_RE` is still the shared import -- so it passes.
+        # Measured: a behaviourally identical copy of `references` and `pins`
+        # reintroduced there survived this assertion and the whole suite. A
+        # *divergent* copy does die, but to the behavioural tests below, not to
+        # this one.
+        #
+        # So what this guarantees is narrower than "a second copy cannot be
+        # reintroduced", and exact: the inventory calls the shared functions
+        # themselves, so no copy -- identical or divergent -- can sit on the
+        # path either sweep takes.
+        self.assertIs(fci.USES_RE, cv.USES_RE)
+        self.assertIs(fci.references, contract_reference.references)
+        self.assertIs(fci.pins, contract_reference.pins)
+
+    def test_a_root_action_pin_is_a_reference_to_both_sweeps(self):
+        # The divergence this issue reports: #1472 taught `contract-version` to
+        # read a pathless root-action pin, and the inventory's own copy still
+        # required a path segment, so the same line was a pin to one tool and
+        # invisible to the other -- under-reporting in the safe-looking
+        # direction.
+        text = f"    uses: Verjson/.github@{A}\n"
+        self.assertEqual([m.group("ref") for m in cv.USES_RE.finditer(text)], [A])
+        self.assertEqual(sorted(fci.pins(text)), [(None, A)])
+
+    def test_a_root_action_reference_resolves_against_the_root_action_file(self):
+        # Making the pathless pin visible is only half of it: the inventory
+        # resolves an upstream blob *at* the pinned SHA, and `path=None` is not
+        # a key in any tree. GitHub resolves `owner/repo@ref` to a root action
+        # file, so that is what the comparison has to use.
+        self.assertEqual(
+            fci.classify(None, {"action.yml": A}, {"action.yml": A}), "CURRENT")
+        self.assertEqual(
+            fci.classify(None, {"action.yaml": A}, {"action.yaml": B}), "DRIFTED")
+
+    def test_a_root_action_reference_is_unknown_when_no_root_action_exists(self):
+        # The hub has no root action today, so this is the live case. UNKNOWN is
+        # the fail-closed answer the rest of this sweep is built on: a reference
+        # whose upstream blob cannot be resolved is never CURRENT.
+        self.assertEqual(fci.classify(None, {PATH: A}, {PATH: A}), "UNKNOWN")
+
+    def test_the_inventory_reads_a_reference_per_line_not_across_one(self):
+        # The second axis of divergence #1482 names. The inventory applied its
+        # pattern to un-split text, where `\s*` after the key spans a newline,
+        # so a bare `uses:` on one line could take the next line's hub
+        # reference as its value. A `uses:` key and its value are on one line in
+        # the YAML this sweep reads; a cross-line match there is not a
+        # reference, it is two unrelated lines.
+        text = f"    uses:\n    Verjson/.github/{PATH}@{A}\n"
+        self.assertEqual(sorted(fci.pins(text)), [])
 
 
 if __name__ == "__main__":
