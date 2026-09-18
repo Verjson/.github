@@ -13,8 +13,11 @@ assigned in the fleet loop and forgotten from the reset. The check could not hav
 the defect it was added for. Re-confirmed against the merged code at `89f11f6` before
 this change, not only against the branch the finding was raised on.
 
-The assertion now walks the loop body for every assignment form bash offers, not the
-handful the script happens to use today, and requires the reset to name all of them. The
+The assertion now walks the loop body for the assignment forms enumerated below rather
+than the handful the script happens to use today, and requires the reset to name all of
+them. That list was built by exercising the collector, one injection case per form; it is
+not a claim that bash offers no other form, and the withdrawal at the end of this fragment
+applies to it as much as to anything else here. The
 first attempt anchored four regexes on leading whitespace, which silently missed an
 assignment sitting behind a `case` arm label or a `[ … ] &&` short-circuit — exactly how
 `has_secret` is written at `scripts/privileged-merge-conformance.sh:483`, `:485`, and
@@ -79,14 +82,50 @@ direction, because a forged name keeps a dead reset entry green — both were ve
 before this change, exit 0 with a reset entry nothing assigns. The expansion is now matched
 per word over the words `segments()` yields, which has already dropped a trailing comment
 and tracked the quoting, and a quote-aware scan inside each word skips single-quoted spans.
-Both directions of both surfaces are injection cases.
+
+That scan honored a backslash escape only inside double quotes, but bash honors one outside
+quotes too: `echo \${e1:=1}` expands nothing and leaves `e1` unset (`declare: e1: not
+found`), while the collector collected `e1`. That is the same forging direction, reached by
+a third route, and forging is the silent one. The scan now skips an escaped character
+wherever a single-quoted span is not in effect, which is exactly where bash honors it.
+Both directions of all three surfaces are injection cases.
 
 A `case` arm label that spells an assignment forged the same way, found while checking
 whether the two surfaces above were the only ones of their class. `case "$x" in a=1) : ;;`
 assigns nothing in bash, but the arm-label lead-in pattern excluded `=`, so `a=1)` fell
 through to the command-prefix rule and was collected as an assignment to `a`. The lead-in
-now admits `=` inside an arm label; an assignment word can never end in `)` without an
-unbalanced `(` the pattern already excludes. Both directions are injection cases.
+now admits `=` inside an arm label.
+
+Admitting `=` was necessary but not sufficient, and the justification previously written
+here for it — *"an assignment word can never end in `)` without an unbalanced `(` the
+pattern already excludes"* — was false twice over, and is withdrawn. `x=b\)` ends in `)`
+and is balanced; and the pattern never required end-of-word at all, being a prefix match.
+Widening the class to `[^()\s|]+` therefore discarded, as an arm label, any word carrying a
+`)` before its first `(`. Four real assignments went silently missing: `x="b)"`, `x='b)'`,
+`x=${r%)}` and `x=b\)`, each confirmed assigned under `declare -p`, each collected by the
+narrower pre-widening class, and a miss is #1448's own bug class.
+
+What the lead-in relies on now is stated by the pattern rather than by prose about bash: an
+arm label is the **whole** word, and its terminating `)` is **unescaped** —
+`\(?[^()\s|]*[^()\s|\\]\)$`. Anchoring to end-of-word is what recovers `x="b)"`, `x='b)'`
+and `x=${r%)}`; requiring the `)` to be unescaped is what recovers `x=b\)` too, and it is
+also what still separates `x=b\)` from the arm label `a=1)`. All four recovered forms are
+injection cases, as are both directions of the `a=1)` forge and the arm-label shapes the
+corpus already pins: `a)`, `(a)`, and a `case` nested inside an arm. The remaining shapes
+the loop actually uses are exercised by the primary run against the real audited script
+rather than by a fixture — `ahead|identical)` and `"")` at
+`scripts/privileged-merge-conformance.sh:337-338` and `*)` at `:339`; the arm at `:483`,
+`all) has_secret=true ;;`, is the one that binds an arm label to an assignment on the same
+segment, and `has_secret` is a name the reset must list, so that run is not vacuous. The
+`b)` half of an alternation label matters because `segments()` splits on the unquoted `|`,
+so that half starts its own segment and must strip with no `case … in` in front of it;
+that is why the lead-in strips arm labels generically rather than only after `in`.
+
+Anchoring costs one shape, recorded rather than glossed: an arm label whose own `)` is
+backslash-escaped — `case … in a\)) x=1 ;;` — is no longer stripped, so an assignment
+sharing that segment is missed. The plain end-of-word anchor misses it identically, so the
+unescaped requirement is free; it is a **miss**, the same direction as the four it recovers
+and never a forge; and it is pinned as an injection case so it cannot drift.
 
 A newline inside a quoted string is data, not a command separator, so the scanner collapses
 it. Without that, the inner lines of any multi-line quoted string that is not recognized as
@@ -114,8 +153,11 @@ injection case, and it is the only row that reddens when the excision is disable
 
 A double-quoted embedded region no longer closes at an escaped quote. `awk "a\"b"` was cut
 at the `\"`, leaving text that `bash -n` rejected. That never forged and never swallowed —
-810 adversarial escaped-quote fixtures produced zero silent passes — but it misreported a
-valid program as unparseable bash. A comment on the loop body's final line is likewise
+it misreported a valid program as unparseable bash, which is loud. A previous revision of
+this fragment credited "810 adversarial escaped-quote fixtures produced zero silent passes"
+here; that figure is not reproducible from anything on this branch and is withdrawn. What
+is measurable is the injection case that pins it, which is one of the 10 rows the previous
+revision of the collector fails. A comment on the loop body's final line is likewise
 closed by the end of the body rather than by a newline, which the scanner previously
 reported as an unterminated region.
 
@@ -175,7 +217,7 @@ Three smaller findings close alongside it:
 
 Every row below is an injection case: a mutated copy of the audited script, fed to the
 collector, required to redden with the stated message rather than merely to redden. There
-are **73** of them, each mutation must find its anchor, and the count itself is asserted,
+are **80** of them, each mutation must find its anchor, and the count itself is asserted,
 so the corpus cannot rot into vacuous passes when the loop moves underneath it or shrink
 silently when a case is dropped.
 
@@ -183,13 +225,21 @@ Its non-vacuity is measured against three collectors rather than asserted:
 
 | Collector the corpus is run against | Corpus result |
 | --- | --- |
-| the collector as it stood before this whole change (`9a5d237`) | **21 of 73 fail** |
-| the collector as it stood one revision ago (`eb1a2af`) | **7 of 73 fail** — the three forging surfaces above, in both directions, plus the escaped-quote misreport |
-| this collector with `opens_embedded` hard-wired to `return False` | **1 of 73 fails** — before this change it was 0, which is what showed the excision was unpinned |
+| the collector as it stood before this whole change (`9a5d237`) | **24 of 80 fail** |
+| the collector as it stood one revision ago (`eb1a2af`) | **10 of 80 fail** — the three forging surfaces above in both directions, the backslash-escape surface in both, the escaped-quote misreport, and the escaped arm-label boundary |
+| this collector with `opens_embedded` hard-wired to `return False` | **1 of 80 fails** — before this change it was 0, which is what showed the excision was unpinned |
 
-Three rows are green against every one of those and are pins on the record rather than on a
-mechanism: the heredoc boundary case asserts a known miss stays a miss, and two multi-line
-`absorbed` rows are absorbed by the newline collapse and the excision independently.
+Staying green against a mutant collector is not by itself distinguishing — 55 of the 80
+rows are green against all three, because each mutant regressed only part of the collector.
+What distinguishes a row is surviving a *mechanism* being disabled. Disabling the newline
+collapse reddens exactly 2 of the 6 multi-line `absorbed` rows, and disabling the excision
+reddens exactly 1 row, which is a different one. So **four** multi-line `absorbed` rows —
+the `awk`, `jq`, `gh --jq`, and double-quoted `sed` bodies — are green under both mechanism
+mutants and are absorbed by either mechanism independently. Those are the same four the
+"Which mechanism absorbs which text" paragraph counts as "the other 4". The heredoc
+`boundary` row pins a recorded miss rather than a mechanism at all, and stays green
+against every collector measured here; with it,
+five rows are pins on the record rather than on a mechanism.
 
 | Mutation | Assertion that fires |
 | --- | --- |
@@ -202,17 +252,19 @@ mechanism: the heredoc boundary case asserts a known miss stays a miss, and two 
 | fleet-wide state moved into the loop | `fleet-wide state moved into the loop body` |
 | `IFS=,` written as loop state rather than a command prefix | `IFS is assigned as loop state, not a command prefix` |
 | each assignment form in the paragraph above, one injection per form | `assigned per repository but never reset:` naming that variable |
+| an assignment whose value ends in `)` — `x="b)"`, `x='b)'`, `x=${r%)}`, `x=b\)` | `assigned per repository but never reset:` naming that variable — four words the widened arm-label class discarded as labels |
 | `\|\| name=1` written past an embedded region's closing quote | `assigned per repository but never reset: ['past_the_region']` |
 | real bash after a non-opener `jq` word in a string, after an apostrophe in a `jq` diagnostic, or after a double-quoted `sed` program | `assigned per repository but never reset:` naming it — the three silent swallows found in review |
 | an embedded program's closing quote is deleted | `the excised loop body no longer parses as bash` |
 | a multi-line `awk`, `jq`, `sed`, `gh --jq`, or `--jq=` program body, or a multi-line quoted string that is no program at all | nothing — the region is excised, so program text cannot forge a name |
 | a dead reset entry whose name only `awk` or `gh --jq` program text spells | `reset but never assigned in the loop:` naming it — the excision closes the silent direction too |
-| `${name:=1}` inside single quotes, or in a trailing comment, or a `case` arm label spelling `a=1)` | nothing — bash expands none of them, so neither may be collected |
-| a reset entry whose name only single-quoted text, a trailing comment, or a `case` arm label spells | `reset but never assigned in the loop:` naming it — the silent direction of each of those three |
+| `${name:=1}` inside single quotes, in a trailing comment, behind a backslash escape, or a `case` arm label spelling `a=1)` | nothing — bash expands none of them, so none may be collected |
+| a reset entry whose name only single-quoted text, a trailing comment, backslash-escaped text, or a `case` arm label spells | `reset but never assigned in the loop:` naming it — the silent direction of each of those four |
 | a single-line double-quoted `sed` program body containing `${name:=1}` | nothing — the one row the excision alone absorbs |
 | a double-quoted `awk` program containing an escaped quote | nothing — an escaped quote does not close the region |
 | a `<<'EOT'` heredoc body naming a variable the reset does not list | `assigned per repository but never reset: ['forged_by_heredoc']` — the loud direction of the documented miss |
 | a `<<'EOT'` heredoc body naming a variable the reset **does** list | nothing — the **silent** direction of the same documented miss, pinned as a known miss |
+| `case … in a\)) x=1 ;;` — an arm label whose own `)` is backslash-escaped | nothing — the documented cost of anchoring the arm label to the end of the word, pinned as a known miss |
 
 ## Where the collector stops
 
@@ -229,6 +281,17 @@ possible.
   injection case now pins it.
 - **An assignment inside a function defined in the loop body** is not modelled.
 - **An assignment inside an excised program's own `$( … )`** goes with the excision.
+- **A `case` arm label whose terminating `)` is backslash-escaped is not stripped**, so an
+  assignment written in the same segment — `case … in a\)) x=1 ;;` — is missed. This is the
+  price of anchoring the arm label to the end of the word, which is what lets an assignment
+  word contain a `)` at all; the plain end-of-word anchor misses it identically. It is a
+  miss, never a forge, and an injection case pins it.
+- **ANSI-C quoting `$'…'` is not modelled.** `echo $'a\'${x:=1}'` assigns nothing under
+  bash, but the collector reads the `\'` as a literal inside a single-quoted span and ends
+  the body inside an unterminated region, reporting `the loop body ends inside an
+  unterminated quote, command substitution, or embedded program region`. That is **loud**
+  — a false alarm, not a forgery — so it is recorded rather than closed. The audited script
+  uses no `$'…'`.
 - **A `<<'EOT'` heredoc body is parsed as bash**, so `foo=bar` inside one is collected as a
   name — and it is silent in one direction, not loud in both. A previous version of this
   list called it "a loud miss" without qualification; that was half true. If the reset does
@@ -251,10 +314,11 @@ A third narrowing would be worth no more than the first two, because each was wr
 reading the code rather than by exercising it, and each was refuted by exercising it. What
 replaces the claim is the measurement: the forging surfaces **known** to exist are the
 heredoc body (both directions), and — before this change — single-quoted text, trailing
-comments, and `case` arm labels (both directions each). All are injection cases, closed
-where they could be closed and pinned where they could not. The corpus and the three
-mutant-collector figures above are the evidence about what this check catches; the
-boundary list is what has been found, not a proof that nothing else is there.
+comments, backslash-escaped text, and `case` arm labels (both directions each). All are
+injection cases, closed where they could be closed and pinned where they could not. The
+corpus and the three mutant-collector figures above are the evidence about what this
+check catches; the boundary list is what has been found, not a proof that nothing else is
+there.
 
 `Verjson/.github#1471` would widen the shipped extractor so the 40-hex guard is reachable
 from a real fixture, which would retire the mutated-copy fixture and with it the

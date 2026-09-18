@@ -843,9 +843,14 @@ LEADIN = re.compile(r"""^(?:
     | [{}]
     | \[\[?
     | \]\]?
-    | \(?[^()\s|]+\)              # a case arm label, `(x)` and `a=1)` too: an arm label is
+    | \(?[^()\s|]*[^()\s|\\]\)$   # a case arm label, `(x)` and `a=1)` too: an arm label is
                                 #  a pattern, never an assignment, and excluding `=` here
-                                #  let `case $x in a=1)` forge the name `a`
+                                #  let `case $x in a=1)` forge the name `a`. This is a
+                                #  prefix match, so the whole word must be the label:
+                                #  unanchored, `x="b)"`, `x='b)'`, `x=${r%)}` and `x=b\)`
+                                #  were all discarded as arm labels and silently missed.
+                                #  The terminating `)` must also be unescaped, which is
+                                #  what separates `x=b\)` from the label `a=1)`.
   )""", re.X)
 
 # Options that consume the following word, per command. Getting this right is what keeps
@@ -979,7 +984,10 @@ def expansion_names(word):
                 quote = None
             index += 1
             continue
-        if quote == '"' and char == "\\":
+        # Bash honors a backslash escape outside quotes exactly as it does inside double
+        # quotes: `echo \${x:=1}` expands nothing and assigns nothing. Only a
+        # single-quoted span has no escape at all.
+        if quote != "'" and char == "\\":
             index += 2
             continue
         if quote is None and char == "'":
@@ -1289,6 +1297,17 @@ form 'a parenthesized case arm' form_case_paren \
   '  case "$relation" in (ahead) form_case_paren=1 ;; esac'
 form 'a nested single-line case' form_case_nested \
   '  case a in a) case b in b) form_case_nested=1 ;; esac ;; esac'
+# An assignment word may itself contain a `)`. The arm-label lead-in is a prefix match, so
+# every one of these was discarded as an arm label and silently missed; all four are real
+# assignments under `declare -p`.
+form 'an assignment whose value ends in a double-quoted )' form_dq_paren \
+  '  form_dq_paren="b)"'
+form 'an assignment whose value ends in a single-quoted )' form_sq_paren \
+  "  form_sq_paren='b)'"
+form 'an assignment whose value is a ) -trimming expansion' form_param_paren \
+  '  form_param_paren=${repository%)}'
+form 'an assignment whose value ends in an escaped )' form_escaped_paren \
+  '  form_escaped_paren=b\)'
 form 'a short-circuit after a test' form_and '  [ -n "$repository" ] && form_and=1'
 form 'the failure arm of a test' form_or '  [ -z "$repository" ] || form_or=1'
 form 'a negated command' form_negated '  ! form_negated=1'
@@ -1388,6 +1407,14 @@ reddens 'a dead reset entry spelled only in a trailing comment' \
   "reset but never assigned in the loop: ['forged_by_comment']" \
   sub '  unset metadata' '  unset forged_by_comment metadata' \
   :: insert before-done '  metadata=2  # see ${forged_by_comment:=1}'
+# Bash honors a backslash escape outside quotes as well as inside double quotes, so
+# `echo \${x:=1}` expands nothing and assigns nothing. Both directions are pinned.
+absorbed 'an assigning expansion behind a backslash escape' \
+  insert before-done '  echo \${forged_by_escape:=1}'
+reddens 'a dead reset entry spelled only behind a backslash escape' \
+  "reset but never assigned in the loop: ['forged_by_escape']" \
+  sub '  unset metadata' '  unset forged_by_escape metadata' \
+  :: insert before-done '  echo \${forged_by_escape:=1}'
 
 # The excision's own load-bearing case. Every multi-line `absorbed` row above is absorbed by
 # the newline collapse, which is a separate mechanism: disabling the excision entirely left
@@ -1408,6 +1435,12 @@ reddens 'a dead reset entry spelled only by a case arm label' \
   "reset but never assigned in the loop: ['forged_by_arm_label']" \
   sub '  unset metadata' '  unset forged_by_arm_label metadata' \
   :: insert before-done '  case "$relation" in forged_by_arm_label=1) : ;; *) : ;; esac'
+# Anchoring the arm-label alternative to the end of the word is what lets an assignment
+# word contain a `)`. The cost is an arm label whose own `)` is backslash-escaped: `a\))`
+# no longer strips, so an assignment sharing that segment is missed. That is a miss, the
+# same direction as the four it recovers, and it is pinned here so it cannot drift.
+boundary 'an arm label ending in an escaped ) hides an assignment in its segment' \
+  insert before-done '  case "$relation" in a\)) form_arm_escaped=1 ;; *) : ;; esac'
 
 # A heredoc body is parsed as bash, so it forges a name. That is a documented boundary, and
 # it is silent in one direction and loud in the other: a name the reset does not list
@@ -1422,9 +1455,9 @@ boundary 'a heredoc body keeping a dead reset entry green, the silent direction 
 
 # The corpus size is asserted, not merely reported: a case deleted or skipped would
 # otherwise shrink it silently, which is the failure mode this whole contract exists for.
-[ "$injection_cases" -eq 73 ] \
+[ "$injection_cases" -eq 80 ] \
   && pass "the reset contract was exercised against all $injection_cases injected mutations" \
-  || fail "the injection corpus has changed size: expected 73 cases, ran $injection_cases"
+  || fail "the injection corpus has changed size: expected 80 cases, ran $injection_cases"
 
 GH_TOKEN='' run_audit \
   && fail "missing audit credential reported green" \
