@@ -149,7 +149,14 @@ case "$*" in
     source="$CONTENT_ROOT/$path"
     [ -f "$source" ] || exit 1
     response="$STUB_TMP/content-response.json"
-    jq -n --arg content "$(base64 -w0 "$source")" '{content:$content}' >"$response"
+    # Through a file, not argv. A single argument is capped at MAX_ARG_STRLEN
+    # (128 KiB on Linux), and base64 is 4/3 of the source -- so this stub used
+    # to start failing with E2BIG once a generated artifact passed ~96 KiB.
+    # `jq` then wrote nothing, `base64 --decode` succeeded on the empty stream,
+    # and the audit reported invalid PARAMETERS three checks later instead of an
+    # unreadable artifact. The generated contract test is 96 KiB and growing.
+    base64 -w0 "$source" | tr -d '\n' >"$STUB_TMP/content-b64"
+    jq -n --rawfile content "$STUB_TMP/content-b64" '{content:$content}' >"$response"
     emit "$response"; exit 0 ;;
   *"/pulls?"*)
     [ "${PULLS_FAIL:-false}" = true ] && exit 1
@@ -933,6 +940,25 @@ rc="$(run_audit)"
 { [ "$rc" != "rc=0" ] && grep -q 'generated-contract-artifact-unreadable path=.github/workflows/changelog-contract.yml' "$tmp/out.txt"; } \
   && pass "a missing changelog-contract.yml faults rather than skipping byte identity" \
   || { fail "a missing changelog-contract.yml was not detected ($rc)"; out | sed 's/^/diag - /'; }
+
+# A truncated artifact is not a readable one. `base64 --decode` exits 0 on an
+# empty stream, so an artifact that arrives as zero bytes used to pass the
+# unreadable guard and surface three checks later as invalid PARAMETERS -- a
+# diagnosis pointing at the adopter's scope/node/package-dirs when nothing had
+# been fetched at all. Absence of an error signal is not evidence the artifact
+# is there.
+# Only the artifacts this fetch loop is the first observer of. An empty
+# changelog.yml is caught earlier, by the workflow enumeration, and reddens
+# there with its own accurate reason.
+for empty_artifact in scripts/changelog-contract.test.sh scripts/render-next.sh; do
+  stack node
+  : >"$content_root/$empty_artifact"
+  rc="$(run_audit)"
+  { [ "$rc" != "rc=0" ] && grep -q "generated-contract-artifact-empty path=$empty_artifact" "$tmp/out.txt"; } \
+    && pass "a zero-byte $empty_artifact faults as empty, not as invalid parameters" \
+    || { fail "a zero-byte $empty_artifact was read as a fetched artifact ($rc)"; out | sed 's/^/diag - /'; }
+done
+stack node
 
 # Bracket-shaped-but-invalid inner content — the one bash regex a future edit
 # is most likely to loosen by accident — must also fault closed rather than
