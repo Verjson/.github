@@ -22,9 +22,9 @@ import argparse
 import dataclasses
 import datetime
 import json
-import os
 import pathlib
 import re
+import subprocess
 import sys
 
 VERSION_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
@@ -180,13 +180,10 @@ HEADER_RE = re.compile(
     r"Verjson/\.github[^\n]*?\b(?P<sha>[0-9a-f]{40})(?![0-9a-f])", re.IGNORECASE)
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 MAX_SCAN_BYTES = 1 << 20
-# `.git` is the one skip that is correct rather than a hole: it is git's own
-# object and ref storage, not the tree Actions checks out and executes, and a
-# 40-hex string in a packfile or a reflog is not a contract reference. Every
-# other directory is scanned. `node_modules` used to be skipped too and that was
-# a hole -- a vendored or committed caller under it is a reference the
-# repository really carries, and the whole claim of this check is totality.
-SKIP_DIRS = {".git"}
+
+
+class TreeNotEnumerable(Exception):
+    """The tree could not be enumerated, so nothing about it was compared."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -195,50 +192,79 @@ class Finding:
     detail: str
 
 
+def _tracked_paths(root):
+    """Every path in the repository index, sorted, as posix-relative strings.
+
+    The index -- not a walk of the directory -- is the boundary, because the
+    index is what Actions checks out and executes. A walk reads whatever the
+    working tree happens to hold: an untracked `node_modules`, a build
+    directory, a tool cache, a downloaded runner binary. None of that is
+    repository content, none of it reaches a workflow run, and every binary in
+    it past the scan limit became an `UNSCANNED` finding no adopter could ever
+    clear. A permanent exit 1 is the muted check ADR 0185 warns about, so the
+    scan that reported it was not more total, only louder.
+
+    Over the content that does ship, this is strictly wider than the walk it
+    replaces: a tracked file inside an otherwise ignored directory is in the
+    index and is scanned, and `.git` needs no special case because git's own
+    object storage is never indexed.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except OSError as error:
+        raise TreeNotEnumerable(f"{root}: git could not be run ({error})") from error
+    if result.returncode != 0:
+        raise TreeNotEnumerable(
+            f"{root}: git ls-files failed ({result.stderr.decode('utf-8', 'replace').strip()})")
+    # `-z` emits raw bytes with no quoting, so a non-UTF-8 path survives the
+    # round trip instead of becoming an unopenable escaped name.
+    return sorted(entry.decode("utf-8", "surrogateescape")
+                  for entry in result.stdout.split(b"\x00") if entry)
+
+
 def _scan_files(root):
-    """`(relative, text, unscanned_reason)` for every file in the tree.
+    """`(relative, text, unscanned_reason)` for every tracked file in the tree.
 
     Scoping the scan to a list of known adopter files would reproduce the defect
     it is meant to catch: a contract reference somewhere the list did not name is
     exactly the intra-repository skew ADR 0185 measured. The same argument
-    applies to a file the scan *reaches* and cannot read: skipping it silently
-    turns "this file might carry a skewed reference" into a clean PASS, so
-    exactly one of `text` and `unscanned_reason` is ever None.
+    applies to a tracked file the scan reaches and cannot read: skipping it
+    silently turns "this file might carry a skewed reference" into a clean PASS,
+    so exactly one of `text` and `unscanned_reason` is ever None.
     """
     root = pathlib.Path(root)
-    for directory, subdirectories, names in os.walk(root):
-        # Pruned in place rather than filtered afterwards: walking a large `.git`
-        # only to discard every entry is the cost, not the correctness problem.
-        subdirectories[:] = sorted(d for d in subdirectories if d not in SKIP_DIRS)
-        for name in sorted(names):
-            path = pathlib.Path(directory) / name
-            if path.is_symlink() or not path.is_file():
-                # A symlink is followed nowhere: it can point outside the tree
-                # being verified, and its target is not this repository's state.
+    for relative in _tracked_paths(root):
+        path = root / relative
+        if path.is_symlink():
+            # A symlink is tracked as its target *path*, which is never a
+            # `uses:` line, and following it would read either a file that is
+            # itself tracked and therefore already scanned on its own entry, or
+            # something outside the tree being verified.
+            continue
+        try:
+            size = path.stat().st_size
+        except OSError as error:
+            yield relative, None, f"could not be sized ({error.strerror or error})"
+            continue
+        if size > MAX_SCAN_BYTES:
+            yield relative, None, f"is {size} bytes, past the {MAX_SCAN_BYTES}-byte scan limit"
+            continue
+        try:
+            raw = path.read_bytes()
+        except OSError as error:
+            yield relative, None, f"could not be read ({error.strerror or error})"
+            continue
+        try:
+            yield relative, raw.decode("utf-8"), None
+        except UnicodeDecodeError:
+            if b"\x00" in raw:
+                # Git's own binary heuristic. A file with a NUL byte holds no
+                # UTF-8 `uses:` line, and reporting every image in the tree
+                # is the noisy check ADR 0185 says gets muted.
                 continue
-            relative = path.relative_to(root).as_posix()
-            try:
-                size = path.stat().st_size
-            except OSError as error:
-                yield relative, None, f"could not be sized ({error.strerror or error})"
-                continue
-            if size > MAX_SCAN_BYTES:
-                yield relative, None, f"is {size} bytes, past the {MAX_SCAN_BYTES}-byte scan limit"
-                continue
-            try:
-                raw = path.read_bytes()
-            except OSError as error:
-                yield relative, None, f"could not be read ({error.strerror or error})"
-                continue
-            try:
-                yield relative, raw.decode("utf-8"), None
-            except UnicodeDecodeError:
-                if b"\x00" in raw:
-                    # Git's own binary heuristic. A file with a NUL byte holds no
-                    # UTF-8 `uses:` line, and reporting every image in the tree
-                    # is the noisy check ADR 0185 says gets muted.
-                    continue
-                yield relative, None, "is text in an encoding this scan cannot decode"
+            yield relative, None, "is text in an encoding this scan cannot decode"
 
 
 def references(root):
@@ -448,7 +474,15 @@ def main(argv=None) -> int:
         print(f"{verdict.state}\t{verdict.reason}")
         return 0 if verdict.state == SUPPORTED else 1
 
-    findings = verify(args.repo_root, releases, args.today)
+    try:
+        findings = verify(args.repo_root, releases, args.today)
+    except TreeNotEnumerable as error:
+        # Same exit 2, same reason as an unreadable releases file: a tree that
+        # was never enumerated was never compared, and a silent fall back to a
+        # scan that finds nothing would report it as conformant.
+        print(f"contract-version: could not enumerate {args.repo_root}: {error}",
+              file=sys.stderr)
+        return 2
     for finding in findings:
         print(f"{finding.kind}\t{finding.detail}")
     return 1 if findings else 0

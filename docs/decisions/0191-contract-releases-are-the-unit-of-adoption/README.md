@@ -109,20 +109,30 @@ not do:
   can be byte-identical while a transitively referenced script has drifted), and
   for reporting comment-only upstream edits as drift. None of the three survives
   once there is a version to compare.
-- **The scan is the whole tree, not a list of known adopter files.** Scoping it
-  to a list would reproduce the defect it exists to catch: a reference the list
-  did not name is precisely the skew that was measured. Totality is a claim with
-  teeth only if the gaps are named, so the implementation makes each one visible
-  rather than silent: a file that is unreadable, past the scan limit, or text in
-  an undecodable encoding is an `UNSCANNED` finding, not a `continue`. The one
-  directory skipped outright is `.git` — git's own object and ref storage, not
-  the tree Actions checks out and executes. A file holding a NUL byte is skipped
-  on git's own binary heuristic, because it cannot carry a UTF-8 `uses:` line and
-  reporting every image in a repository is precisely the noise [ADR 0185](../0185-org-contract-distribution/README.md)
-  says gets a check muted. Comment lines are candidate header claims wherever
-  they occur, not within a leading window: `gen-changelog-caller.sh` stamps
-  `CONTRACT_REF` on line 13 of one generated file and emits the release caller's
-  header below `concurrency:`.
+- **The scan is every tracked file, not a list of known adopter files.** Scoping
+  it to a list would reproduce the defect it exists to catch: a reference the
+  list did not name is precisely the skew that was measured. The boundary is the
+  git index — `git ls-files` — because the index is exactly what Actions checks
+  out and executes, so it is the set within which a contract reference can
+  actually reach a workflow run. That is wider than a directory walk over the
+  content that ships (a tracked file under an ignored directory is in the index
+  and is scanned, and `.git` needs no special case because git's own object
+  storage is never indexed) and narrower only over things no run ever sees:
+  untracked build output, tool caches, downloaded runner binaries. Scanning
+  those was not more total, only louder — each oversize binary in them became an
+  `UNSCANNED` finding no adopter could clear, which is a permanent exit 1 and
+  therefore the muted check [ADR 0185](../0185-org-contract-distribution/README.md)
+  warns about. A tracked symlink is its target *path*, never its target's
+  content. Within that boundary totality is a claim with teeth only if the gaps
+  are named, so the implementation makes each one visible rather than silent: a
+  tracked file that is unreadable, past the scan limit, or text in an undecodable
+  encoding is an `UNSCANNED` finding, not a `continue`. A file holding a NUL byte
+  is skipped on git's own binary heuristic, because it cannot carry a UTF-8
+  `uses:` line and reporting every image in a repository is precisely the noise
+  ADR 0185 says gets a check muted. Comment lines are candidate header claims
+  wherever they occur, not within a leading window: `gen-changelog-caller.sh`
+  stamps `CONTRACT_REF` on line 13 of one generated file and emits the release
+  caller's header below `concurrency:`.
 - **A generated header is read as a claim, never as an instruction.** Headers
   remain human traceability per [ADR 0185](../0185-org-contract-distribution/README.md)'s
   sixth point; here a header disagreeing with the declaration is an *alarm*, and
