@@ -97,6 +97,43 @@ grep -q 'The lead paragraph, which is what a release note carries.' "$ws/summary
   || fail "the preview is not the released shape: $(cat "$ws/summary.md")"
 
 # --------------------------------------------------------------------------
+# Truncation. A job summary is capped, so a preview past the cap is cut -- and
+# the cut is only safe if it SAYS so, because a release note silently missing
+# its tail reads as a complete one. The cut itself moved from `| head -c` to a
+# parameter expansion under #1445, a deliberate semantic change that nothing
+# here exercised; both halves are asserted, so neither the cap nor the notice
+# can be dropped without a red.
+# --------------------------------------------------------------------------
+ws="$tmp/oversized"
+make_repo "$ws"
+{
+  printf -- '---\ndate: 2026-08-06\nissue: 449\nimpact: patch\ntitle: An oversized entry\n---\n\n'
+  printf 'lead %.0s' $(seq 1 20000)
+  printf '\n'
+} >"$ws/NEXT/2026-08-06-issue-449-example.md"
+out="$(run_step "$ws")"
+rc=$?
+[ "$rc" -eq 0 ] \
+  && grep -q 'Truncated for the job summary' "$ws/summary.md" \
+  && pass "an oversized preview says it was truncated rather than ending mid-entry" \
+  || fail "an oversized preview was silent or fatal (rc=$rc): $out"
+
+# The cap is asserted on the body between the <details> header and the notice,
+# so a preview that stopped truncating -- or truncated to some other length --
+# is a failure here rather than a job-summary rejection on a runner.
+body_chars="$(python3 - "$ws/summary.md" <<'MEASURE'
+import sys
+text = open(sys.argv[1], encoding="utf-8").read()
+head = "<details><summary>Release notes this would publish</summary>\n\n"
+body = text.split(head, 1)[1].split("\n\n_Truncated for the job summary.", 1)[0]
+print(len(body))
+MEASURE
+)"
+[ "$body_chars" -eq 65536 ] \
+  && pass "the truncated body is exactly the 65536 characters the notice condition tests" \
+  || fail "the preview body is $body_chars characters, not the 65536 the cap promises"
+
+# --------------------------------------------------------------------------
 # Informational, never a verdict. A repository with nothing unreleased, and one
 # whose engine cannot render, both leave the check passing — and are told apart
 # from each other, so a broken renderer never reads as an empty NEXT/ (#399).

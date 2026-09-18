@@ -23,7 +23,7 @@ fetch_pages() {
   local path="$1" page_shape="$2" out
   if ! out="$(gh api --paginate "$path" 2>&1)"; then
     printf 'UNDETERMINED: GET %s failed: %s\n' \
-      "$path" "$(printf '%s' "$out" | head -3 | tr '\n' ' ')" >&2
+      "$path" "$(head -3 <<<"$out" | tr '\n' ' ')" >&2
     return 2
   fi
   jq -e -s "length > 0 and all(.[]; $page_shape)" <<<"$out" >/dev/null 2>&1 \

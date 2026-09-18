@@ -165,12 +165,25 @@ run_db_step() {
 
 # The container name the step actually used, read back from the docker stub log.
 container_name_of() {
-  sed -n 's/.*--name \([^ ]*\).*/\1/p' "$tmp/$1/docker.log" | head -n1
+  local name
+  IFS= read -r name < <(sed -n 's/.*--name \([^ ]*\).*/\1/p' "$tmp/$1/docker.log") || true
+  printf '%s\n' "$name"
 }
 
 # The handle the step published for teardown to consume.
 published_handle_of() {
-  sed -n 's/^container-id=//p' "$tmp/$1/github_output" | head -n1
+  local handle
+  IFS= read -r handle < <(sed -n 's/^container-id=//p' "$tmp/$1/github_output") || true
+  printf '%s\n' "$handle"
+}
+
+# The first `-p` flag the step passed, for the diagnostic below. Reading with
+# `read` keeps the first-line read off a truncated pipe (#1445); these three
+# helpers all took `| head -n1` before that.
+published_port_flag_of() {
+  local flag
+  IFS= read -r flag < <(grep -o -- '-p [^ ]*' "$tmp/$1/docker.log") || true
+  printf '%s\n' "$flag"
 }
 
 # Two DB-backed jobs sharing one self-hosted host. Inside the reusable they even
@@ -250,7 +263,7 @@ rc_clash_b=$?
 { grep -qE -- '-p [^ ]*::5432' "$tmp/job-a/docker.log" \
     && ! grep -qE -- '-p [0-9.]+:5432 ' "$tmp/job-a/docker.log"; } \
   && pass "the container publishes on an OS-assigned host port (no fixed bind)" \
-  || fail "the container binds a fixed host port (a second DB-backed job on the host cannot start): $(grep -o -- '-p [^ ]*' "$tmp/job-a/docker.log" | head -n1)"
+  || fail "the container binds a fixed host port (a second DB-backed job on the host cannot start): $(published_port_flag_of job-a)"
 
 # (d2) A leaked container used to announce itself by breaking the next job's
 # 5432 bind; with an OS-assigned port it is invisible and accumulates on a

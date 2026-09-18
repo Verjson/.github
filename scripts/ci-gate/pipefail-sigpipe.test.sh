@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
-# `grep -q` exits on its first match. When it reads from a pipe, the producer is
-# usually still writing, so its next write gets EPIPE and it dies on SIGPIPE.
-# Under `set -o pipefail` — which every contract test here sets — that 141
-# becomes the pipeline's status, and an assertion reports a contract violation
-# that never happened (Verjson/.github#1430).
+# A consumer that stops reading before the producer stops writing gives the
+# producer EPIPE, and it dies on SIGPIPE. Under `set -o pipefail` — which every
+# contract test here sets — that 141 becomes the pipeline's status, and an
+# assertion reports a contract violation that never happened
+# (Verjson/.github#1430).
+#
+# `grep -q` was the consumer that first cost a diagnosis, but it was never the
+# hazard: *early exit on the read end of a pipe* is. This guard therefore covers
+# the consumer class, not one spelling of it — `grep -q`/`--quiet`,
+# `grep -m`/`--max-count`, every `head` (`head`, `head -1`, `head -n1`,
+# `head -n 1`, `head -c N`), and an `awk` program that calls `exit`
+# (Verjson/.github#1445).
 #
 # It is timing-dependent, so it is invisible on an idle machine and surfaces on a
 # loaded self-hosted runner: the original report measured 425 spurious failures in
@@ -11,10 +18,16 @@
 # check that reddens for a reason the diff cannot cause is the ADR 0185 hazard —
 # it teaches reviewers to re-run rather than read.
 #
-# The remedy is to drop `-q` and redirect: without it `grep` must read to EOF, so
-# the producer never sees EPIPE. Same exit status, no early close.
+# The remedy is to stop truncating the pipe. For `grep -q`, drop `-q` and
+# redirect: without it `grep` must read to EOF, so the producer never sees EPIPE.
+# For a consumer that genuinely wants only the first line or the first N bytes,
+# the producer's output goes to a file first (`producer >"$tmp/out"`, then read
+# the file) or the read is bounded without a pipe at all
+# (`IFS= read -r first < <(producer)`). Both keep the same result and neither
+# closes the read end early.
 #
-# `grep -q <<<"$x"` is a here-string, not a pipe, and is unaffected.
+# A here-string — `grep -q pat <<<"$x"`, `head -3 <<<"$out"` — is not a pipe, and
+# is unaffected.
 set -uo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -33,6 +46,12 @@ fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 # The `-q` is assembled rather than written, so the scan in (b) does not have to
 # exempt this file and thereby stop covering it.
 q='q'
+# The same trick, for the consumers added by #1445: the positive shapes below are
+# written through these so the scan in (b) keeps covering this file rather than
+# exempting it and thereby stopping.
+h='h'
+m='m'
+ex='ex'
 
 # The payload after the match is a megabyte, far past any pipe buffer, so the
 # producer MUST block until the consumer reads it. `grep -q` has already left,
@@ -122,23 +141,53 @@ join_continuations() {
   ' "$1"
 }
 
-# `-q` is one spelling of the hazard, not the hazard. `grep -E -q`, `grep --quiet`,
-# `egrep -q`, and a command or environment prefix (`LC_ALL=C grep -q`,
-# `command grep -q`, `timeout 5 grep -q`) all close the pipe exactly the same way,
-# so the pattern matches any early-exiting grep on the read end of a pipe.
-# It is assembled from "$q" so this file need not exempt itself from its own scan.
+# `-q` is one spelling of the hazard, not the hazard, and neither is `grep`.
+# `grep -E -q`, `grep --quiet`, `egrep -q`, `grep -m1`, `head -n1`, and
+# `awk 'NR==1{print;exit}'` all close the read end early, and a command or
+# environment prefix (`LC_ALL=C grep -q`, `command head -1`, `timeout 5 grep -q`)
+# changes nothing about that. The pattern therefore matches the consumer class on
+# the read end of a pipe. The grep arm is assembled from "$q" so this file need
+# not exempt itself from its own scan.
 #
-# The ceiling is deliberate and worth stating: `[ef]?grep` declines to match
-# `zgrep`, `rg`, or a longer identifier ending in `grep`, and only the three
-# command prefixes above are recognized, so `xargs grep -q` and `sudo grep -q`
-# are misses. Those are outside #1430's measured scope; widening the pattern
-# speculatively would trade false negatives for false positives on prose.
+# `head` is matched with any arguments and with none, because that is the honest
+# description: bare `head` is `head -n 10` and stops after ten lines exactly as
+# `head -n1` stops after one. `head -c` is included for the same reason — it is a
+# byte budget, not a reason to keep reading.
+#
+# The ceiling is deliberate and worth stating:
+#   * `[ef]?grep` declines to match `zgrep`, `rg`, or a longer identifier ending
+#     in `grep`, and only the three command prefixes above are recognized, so
+#     `xargs grep -q` and `sudo grep -q` are misses.
+#   * `sed`'s `q` command exits early too, and #1445 asked for an explicit
+#     decision on it. It is deliberately NOT matched: no tracked shell script in
+#     this tree pipes into a quitting `sed` today, while a line pattern cannot
+#     tell the `q` *command* in `sed -n '1p;q'` from a `q` inside a replacement
+#     or a regex, so the arm would buy a hypothetical catch with real false
+#     positives on prose. Revisit it the first time a quitting `sed` is written
+#     on the read end of a pipe.
+#   * `awk` programs written across real newlines are not seen at all. The
+#     scan joins only lines ending in `|` or a backslash, so a multi-line
+#     single-quoted program is split before the pattern ever runs. One live
+#     site is missed this way today, in
+#     `scripts/ci-gate/changelog-caller-contract.test.sh`, so the twenty sites
+#     this guard flagged are not the whole class. Buffering multi-line quoted
+#     programs is tracked in #1461; do not read a green run here as proof
+#     that no `awk` truncation exists.
+#   * `awk` is matched on a literal `exit` in its program, so an `exit` reached
+#     only in a branch that never fires still reads as an offender. That is the
+#     safe direction to be wrong in, and the remedy is cheap either way. The
+#     same arm matches an `exit` that is data rather than a statement, such
+#     as `awk '/exit/{print}'` or a trailing `# exit` comment.
+# Widening further speculatively would trade false negatives for false positives.
 pipe_prefix='(^|[^|])\|[[:space:]]*(![[:space:]]*)?'
 pipe_prefix="$pipe_prefix"'([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+|command[[:space:]]+|env[[:space:]]+|timeout[[:space:]]+[^[:space:]]+[[:space:]]+)*'
-pipe_into_grep="$pipe_prefix"'[ef]?grep([[:space:]]+-[^[:space:]]+)*[[:space:]]+(-[A-Za-z]*'"$q"'[A-Za-z]*|--'"$q"'uiet)'
+early_grep='[ef]?grep([[:space:]]+-[^[:space:]]+)*[[:space:]]+(-[A-Za-z]*['"$q"'m][A-Za-z0-9]*|--('"$q"'uiet|max-count))'
+early_head='head([[:space:]]|$)'
+early_awk='awk[^|]*[^[:alnum:]_]exit([^[:alnum:]_]|$)'
+pipe_into_early_exit="$pipe_prefix"'('"$early_grep"'|'"$early_head"'|'"$early_awk"')'
 
 scan_file() {
-  join_continuations "$1" | grep -E "$pipe_into_grep" | sed "s|^|$1:|"
+  join_continuations "$1" | grep -E "$pipe_into_early_exit" | sed "s|^|$1:|"
 }
 
 scan="$tmp/offenders"
@@ -165,10 +214,10 @@ if [ -s "$tmp/scan-err" ]; then
 elif [ "$scanned_count" -lt 50 ]; then
   fail "the scan enumerated only $scanned_count script(s); it is not covering the tree"
 elif [ -s "$scan" ]; then
-  fail "$(wc -l <"$scan") pipe-fed early-exiting grep site(s) reintroduced; see #1430"
+  fail "$(wc -l <"$scan") pipe-fed early-exiting consumer site(s) reintroduced; see #1430 and #1445"
   sed 's/^/       /' "$scan" >&2
 else
-  pass "none of the $scanned_count tracked shell scripts pipes into an early-exiting grep"
+  pass "none of the $scanned_count tracked shell scripts pipes into an early-exiting consumer"
 fi
 
 # (c) The scan must be able to see every shape it claims to cover. A pattern that
@@ -190,6 +239,17 @@ check_shape command-prefix "producer | command grep -$q pat"
 check_shape timeout-prefix "producer | timeout 5 grep -$q pat"
 check_shape egrep          "producer | egrep -$q pat"
 check_shape backslash-join "$(printf 'producer \\\n  | grep -%s pat' "$q")"
+check_shape grep-max-count "producer | grep -${m}1 pat"
+check_shape grep-max-long  "producer | grep --${m}ax-count=1 pat"
+check_shape head-bare      "producer | ${h}ead"
+check_shape head-short-num "producer | ${h}ead -1 | cut -d: -f1"
+check_shape head-n-joined  "producer | ${h}ead -n1"
+check_shape head-n-spaced  "producer | ${h}ead -n 1"
+check_shape head-bytes     "producer | ${h}ead -c 65536"
+check_shape head-prefixed  "producer | command ${h}ead -n1"
+check_shape head-continued "$(printf 'producer |\n  %sead -n 1' "$h")"
+check_shape awk-exit       "producer | awk 'NR==1{print;${ex}it}'"
+check_shape awk-exit-match "producer | awk '/^object /{print \$2; ${ex}it}'"
 if [ -z "$missed" ]; then
   pass "the scan detects every offending shape it claims to cover"
 else
@@ -207,6 +267,12 @@ check_safe() {
 check_safe file-argument "grep -$q pat somefile"
 check_safe here-string   "grep -$q pat <<<\"\$x\""
 check_safe the-remedy    "producer | grep pat >/dev/null"
+check_safe head-file     "${h}ead -n1 somefile"
+check_safe head-heredoc  "head -3 <<<\"\$out\""
+check_safe head-redirect "head -n1 <\"\$tmp/out\""
+check_safe awk-no-exit   "producer | awk '{print \$2}'"
+check_safe grep-m-file   "grep -${m}1 pat somefile"
+check_safe exit-elsewhere "producer | cat; exit 1"
 if [ -z "$caught" ]; then
   pass "the scan leaves the non-piped and remedied forms alone"
 else

@@ -129,12 +129,15 @@ git -C "$root" rev-parse --verify --quiet "$ref^{tree}" >/dev/null 2>&1 \
 # variants of `readme`, optionally `.md`/`.markdown`). Insisting on the exact
 # spelling `README.md` would report a finding a reader cannot reproduce: their
 # `readme.md` renders perfectly on the repository's front page.
-readme_path="$(
+#
+# The first match is taken with `read` rather than `| head -n 1`: a consumer that
+# leaves before the producer finishes gives it EPIPE, and pipefail then reports a
+# policy failure that never happened (#1445).
+IFS= read -r readme_path < <(
   git -C "$root" ls-tree "$ref" 2>/dev/null \
     | awk '$2 == "blob" { sub(/^[^\t]*\t/, ""); print }' \
-    | grep -iE '^readme(\.md|\.markdown)?$' \
-    | head -n 1
-)"
+    | grep -iE '^readme(\.md|\.markdown)?$'
+) || true
 
 readme=''
 if [ -n "$readme_path" ]; then

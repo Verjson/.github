@@ -346,7 +346,8 @@ rc="$(run_watchdog)"
 busy_pool >"$RUNNERS_FILE"
 
 workflows_dir="$here/../.github/workflows"
-default_workflows="$(grep -o 'WATCHDOG_POLL_WORKFLOWS:-[^}]*' "$script" | head -n 1 | sed 's/^[^-]*-//')"
+IFS= read -r default_hit < <(grep -o 'WATCHDOG_POLL_WORKFLOWS:-[^}]*' "$script") || true
+default_workflows="${default_hit#*-}"
 [ "$default_workflows" = __no_poll_workflows__ ] \
   && grep -q 'POLL_STEPS="${WATCHDOG_POLL_STEPS:-}"' "$script" \
   && pass "production watchdog allowlists are inert after polling retirement" \

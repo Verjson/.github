@@ -69,7 +69,11 @@ if [ "${#preview}" -gt 65536 ]; then
 fi
 {
   printf '<details><summary>Release notes this would publish</summary>\n\n'
-  printf '%s' "$preview" | head -c 65536
+  # Truncating with a parameter expansion rather than `| head -c` keeps the
+  # producer and the consumer in one process: a pipe whose reader leaves early
+  # would fail this pipeline under pipefail for no reason (#1445). It also uses
+  # the same character count the `preview_note` condition above tests.
+  printf '%s' "${preview:0:65536}"
   printf '%s\n\n</details>\n' "$preview_note"
 } >>"${GITHUB_STEP_SUMMARY:-/dev/null}"
 printf 'ok - release-note preview written to the job summary\n'

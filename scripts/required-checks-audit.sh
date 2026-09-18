@@ -299,7 +299,7 @@ PY
   # byte for byte, rather than a best-effort parse that would let a hand-edited
   # `runs-on:` regenerate to match itself.
   local pr_gate_args=() runner
-  runner="$(sed -n 's/^ *runs-on: //p' "$tmp/actual/changelog-contract.yml" | head -1)"
+  IFS= read -r runner < <(sed -n 's/^ *runs-on: //p' "$tmp/actual/changelog-contract.yml") || true
   case "$runner" in
     ubuntu-24.04) ;;
     '['*']')
