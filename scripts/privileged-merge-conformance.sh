@@ -55,10 +55,20 @@ extract_canonical_pins() { # extract_canonical_pins <canonical-workflow-basename
   # YAML comment, which requires whitespace before the `#`; `@<sha>#v1` is a single ref
   # and stays refused as a non-SHA pin.
   #
-  # `$1` is the only interpolated value and is always one of the two literals below.
-  # Adopter text reaches sed as input on stdin and never as expression text, so no caller
-  # body can inject a delimiter or a backreference into the expression.
-  sed -nE "s%^[[:space:]]+uses: Verjson/\.github/\.github/workflows/$1\.yml@([^[:space:]]+)([[:space:]]+#.*)?[[:space:]]*\$%\1%p"
+  # The basename is the only interpolated value, and it is expression text rather than
+  # input: a `%` would close the `s` delimiter, a `|` would shift the capture, and `ai-.*`
+  # would still match. Both call sites pass a bare literal, so that is latent rather than
+  # live -- close it by construction instead of by asserting it in a comment. Adopter text
+  # only ever reaches sed on stdin, so no caller body can inject expression text.
+  local wf="${1:?extract_canonical_pins requires a canonical workflow basename}"
+  case "$wf" in
+    ai-privileged-merge | ai-promotion-retry) ;;
+    *)
+      echo "::error title=Unknown canonical workflow basename::extract_canonical_pins refuses '$wf'" >&2
+      return 1
+      ;;
+  esac
+  sed -nE "s%^[[:space:]]+uses: Verjson/\.github/\.github/workflows/$wf\.yml@([^[:space:]]+)([[:space:]]+#.*)?[[:space:]]*\$%\1%p"
 }
 
 find_latest_completed_run() { # find_latest_completed_run <repository> <workflow-id>

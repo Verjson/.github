@@ -61,9 +61,13 @@ new_pins() { extract_canonical_pins "$1"; }
 
 # --- corpus -------------------------------------------------------------------------
 # Each record is `id<TAB>lines<TAB>sed program`, applied to a freshly generated conformant
-# caller. `lines` is the number of canonical `uses:` lines the mutation is expected to
-# leave, and is asserted rather than assumed -- an earlier re-derivation was wrong because
-# a fixture meant to be two lines had collapsed to one. `@WF@`, `@SHA@` and `@SHA2@` are
+# caller. `lines` is the number of lines still mentioning `workflows/<wf>.yml@` at all --
+# deliberately not the number of *canonical* lines, because the shapes that break
+# canonicity on purpose (`other-organization`, `no-leading-indent`, `no-space-after-uses`,
+# `ref-quoted-value`, `conformant-plus-other-organization`) must still be distinguishable
+# from a mutation that deleted the line outright, and an anchored count reports both as
+# zero. It is asserted rather than assumed -- an earlier re-derivation was wrong because a
+# fixture meant to be two lines had collapsed to one. `@WF@`, `@SHA@` and `@SHA2@` are
 # substituted so one corpus serves both sites.
 #
 # Bodies are generated and mutated rather than checked in literally, so this file carries
@@ -92,6 +96,7 @@ pin-comment-bare-hash	1	s|@@SHA@$|@@SHA@ #|
 pin-comment-containing-hash	1	s|@@SHA@$|@@SHA@ # see #1471|
 pin-comment-then-trailing-space	1	s|@@SHA@$|@@SHA@ # v1.2.3  |
 pin-hash-unseparated	1	s|@@SHA@$|@@SHA@#v1|
+pin-hash-unseparated-then-token	1	s|@@SHA@$|@@SHA@#v1 x|
 pin-trailing-whitespace	1	s|@@SHA@$|@@SHA@   |
 mutable-with-comment	1	s|@@SHA@$|@main # pinned by hand|
 other-organization	1	s|uses: Verjson/\.github/\.github/workflows/@WF@|uses: Verjson/other/.github/workflows/@WF@|
@@ -126,9 +131,15 @@ verdict() { # verdict <pin>...
 
 # A tab is IFS whitespace, so an empty field in the table below would collapse when the
 # table is read back and silently shift every later column. No field is ever empty.
+#
+# The separator must be a byte no pin can contain, or `a<sep>b` is indistinguishable from
+# two pins in both the printed table and the two-site comparison. A space is the only
+# choice excluded *by construction*: the capture is `([^[:space:]]+)`, so a pin can never
+# hold one. A control byte such as US would merely be unlikely -- `[^[:space:]]` admits it
+# -- and it renders invisibly in the table this file prints to be read.
 join_pins() { # join_pins <pin>...
   [ "$#" -gt 0 ] || { printf '<none>'; return 0; }
-  local IFS='|'
+  local IFS=' '
   printf '%s' "$*"
 }
 
@@ -221,7 +232,7 @@ printf '# %s\n' "$summary"
 printf '# accept->refuse: %s\n' "$accept_to_refuse_ids"
 printf '# refuse->accept: %s\n' "$refuse_to_accept_ids"
 
-expected_summary='shapes=38 flips=26 accept_to_refuse=5 refuse_to_accept=6 diagnostic_only=15'
+expected_summary='shapes=39 flips=26 accept_to_refuse=5 refuse_to_accept=6 diagnostic_only=15'
 if [ "$summary" = "$expected_summary" ]; then
   pass "the published verdict differential is reproduced by the committed corpus"
 else
@@ -230,8 +241,13 @@ fi
 
 # --- the recorded base expression ----------------------------------------------------
 if git -C "$root" cat-file -e "$base_revision:scripts/privileged-merge-conformance.sh" 2>/dev/null; then
+  # `git show` writes to a file rather than a pipe: `grep -qF` leaves the read end
+  # early, and under this file's own `set -o pipefail` the producer's SIGPIPE would
+  # become the pipeline's status. That is the shape scripts/ci-gate/pipefail-sigpipe.test.sh
+  # forbids (#1430, #1445), and a file argument is not a pipe.
   if git -C "$root" show "$base_revision:scripts/privileged-merge-conformance.sh" \
-    | grep -qF -- "${old_expression_template//@WF@/ai-privileged-merge}"; then
+       >"$tmp/base_script" &&
+     grep -qF -- "${old_expression_template//@WF@/ai-privileged-merge}" "$tmp/base_script"; then
     pass "the recorded pre-change expression matches the blob at $base_revision"
   else
     fail "the recorded pre-change expression is not the one shipped at $base_revision"
@@ -257,10 +273,12 @@ else
   fail "a metacharacter ref was transformed rather than captured: $metacharacter_leak"
 fi
 
-grep -q $'\tbash scripts/ci-gate/privileged-merge-pin-extractor-differential.test.sh$' \
-  "$root/scripts/actions-ci-groups.tsv" \
-  && pass "the pin extractor differential runs in actions CI" \
-  || fail "the pin extractor differential is not wired into actions CI"
+if grep -q $'\tbash scripts/ci-gate/privileged-merge-pin-extractor-differential.test.sh$' \
+  "$root/scripts/actions-ci-groups.tsv"; then
+  pass "the pin extractor differential runs in actions CI"
+else
+  fail "the pin extractor differential is not wired into actions CI"
+fi
 
 [ "$fails" -eq 0 ] && { echo "All tests passed."; exit 0; }
 echo "$fails test(s) failed."

@@ -19,13 +19,13 @@ through the shipped script and the pin-count arm keeps its own meaning: zero can
 **This is strictly stricter, not verdict-neutral.** The differential that establishes that
 is committed alongside the change, at
 `scripts/ci-gate/privileged-merge-pin-extractor-differential.test.sh`, so the figures below
-can be re-derived by anyone reading the repository rather than taken on trust. It runs 38
+can be re-derived by anyone reading the repository rather than taken on trust. It runs 39
 caller shapes — conforming, mutable, malformed, shell-metacharacter, other-repository,
 comment-bearing and multi-`uses:` bodies — through the pre-change expression, recorded from
 `aa9d3865178a52cc2ddade774cd28716fd3ca03d` and checked against that blob where the checkout
 can reach it, and through the shipped expression, which it reads out of the audited script
 rather than transcribing. 26 shapes change verdict: 15 refuse under both and only gain the
-accurate diagnostic, 5 move from accept to refuse, 6 move from refuse to accept, and 12 are
+accurate diagnostic, 5 move from accept to refuse, 6 move from refuse to accept, and 13 are
 unchanged.
 
 The 5 newly-refused shapes are one class, not several: a body carrying a conforming 40-hex
@@ -49,6 +49,14 @@ capture yields, so no non-SHA ref is newly accepted by widening it. The boundary
 in both directions: `@<sha>#v1.2.3`, with no separating space, is not a comment under YAML
 and still refuses as a non-SHA pin. A comment after a *mutable* ref gains only the accurate
 diagnostic and still refuses.
+
+The whitespace *before* the `#` is load-bearing, and the corpus now says so. On
+`@<sha>#v1 x` the shipped `([[:space:]]+#.*)?` matches nothing at all and the line refuses
+on pin count, while the weaker `([[:space:]]*#.*)?` backtracks the ref capture to before
+the `#` and accepts a bare 40-hex SHA the line does not actually pin — a widening in the
+*accept* direction, in a security-relevant extractor. The `pin-hash-unseparated-then-token`
+shape pins that difference, so relaxing the `+` to `*` reddens the differential rather than
+passing silently.
 
 The same narrow capture, and the same fail-open, were present in the promotion-retry pin
 extractor. Rather than widen a second copy and leave the next change to find both, the two
@@ -92,6 +100,12 @@ merge workflow`, each reasoning `fetched artifact decoded to no content, which i
 read rather than an absent file`). A repository that genuinely lacks the caller still
 reports absence, which is asserted by its own test so the two cannot collapse into one
 message. Each of the three verdicts was confirmed to redden against the pre-fix script.
+
+The canonical workflow basename is the one value interpolated into the extractor's `sed`
+expression rather than reaching it as input, so it is expression-live: a `%` closes the `s`
+delimiter, a `|` shifts the capture, and `ai-.*` still matches. Both call sites pass a bare
+literal, so nothing was exploitable, but the helper now names the two permitted literals and
+refuses anything else instead of relying on a comment to keep that true.
 
 The whole decode-after-fetch class was swept rather than these two lines. Two further
 sites outside this script are confirmed vulnerable by direct reproduction and are tracked
