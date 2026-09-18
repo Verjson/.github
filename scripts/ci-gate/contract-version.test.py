@@ -751,6 +751,19 @@ class UsesShapeCoverage(unittest.TestCase):
         track(root)
         self.assertEqual(self.verify(root), [])
 
+    def test_a_capitalized_uses_in_prose_is_not_a_uses_key(self):
+        # Actions requires the key to be lowercase -- `Uses:` is a workflow parse
+        # error, never a reference -- so case-insensitivity on the key side can
+        # only manufacture gaps and can never catch a pin. An ordinary English
+        # list item in a file that happens to name the hub is a permanent red
+        # check an adopter clears only by rewriting prose, which is precisely the
+        # muting hazard ADR 0185 refuses.
+        root = self.repo()
+        (root / "README.md").write_text(
+            "The Verjson/.github contract:\n\n- Uses:\n  - the release caller\n")
+        track(root)
+        self.assertEqual(self.verify(root), [])
+
     def test_a_source_string_opening_with_a_uses_literal_is_not_a_uses_key(self):
         # The third sampled shape, and the reason the key's quotes have to
         # balance: this repository's own test source opens lines with the

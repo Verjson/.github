@@ -204,8 +204,14 @@ HEADER_RE = re.compile(
 # none (#1433). The leading `^` and the `.match()` below each anchor on their
 # own, so neither is individually mutation-killable; the suite kills them
 # together rather than pretending one of them is redundant.
-USES_KEY_RE = re.compile(r"""^\s*(?:-\s+)?(?:uses|"uses"|'uses')\s*:""",
-                         re.IGNORECASE)
+# Case-sensitive, unlike every other pattern here, and that asymmetry is the
+# point: Actions requires the key to be lowercase, so `Uses:` is a workflow parse
+# error rather than a reference. A case-insensitive key can therefore only invent
+# gaps and can never catch a pin -- an English list item reading `- Uses:` in a
+# file that names the hub becomes a permanent red check an adopter clears only by
+# rewriting prose. `USES_RE` keeps its flag because the hub name it also matches
+# really is case-folded by GitHub; this pattern contains no hub text at all.
+USES_KEY_RE = re.compile(r"""^\s*(?:-\s+)?(?:uses|"uses"|'uses')\s*:""")
 # What is left on the line once the key is consumed, when the value is not:
 # nothing (a plain scalar on the following line), a block-scalar indicator, or
 # an alias to an anchor defined elsewhere in the file.

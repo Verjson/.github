@@ -37,6 +37,19 @@ suite's own Python fixture strings; with them it yields none. Anchors and
 continuation lines are file-scoped in YAML, which is what makes "the file never
 names the hub" a proof rather than a guess.
 
+The key pattern is deliberately **case-sensitive**, alone among the patterns here.
+Actions requires a lowercase `uses` key, so `Uses:` is a workflow parse error rather
+than a reference: a case-insensitive key can only invent gaps and can never catch a
+pin. Left in, an ordinary English list item — `- Uses:` — inside any file that names
+the hub becomes a permanent red check an adopter clears only by rewriting prose,
+which is the muted-check hazard ADR 0185 refuses. That line is constructed rather
+than sampled, like the 64-hex digest case above it: zero occur in the measured
+corpus. Zero occurrences is exactly why widening for a quoted key was cheap, so it
+cannot also be a reason to dismiss the symmetric risk of widening the other way —
+the asymmetry that decides it is that one direction can catch a real pin and the
+other cannot. `USES_RE` keeps its flag, because the hub name it also matches really
+is case-folded by GitHub.
+
 The ceiling is stated rather than implied. The scan stays line-based: it will not
 join continuation lines or resolve anchors to *read* an unresolvable reference,
 only name it. And a hub path assembled at run time, where the owner and repository

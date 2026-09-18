@@ -375,7 +375,10 @@ principle as `UNSCANNED`: a shape the scan cannot resolve is named, not read as
 line and requires the file to name the hub — without both, the measured corpus
 produces 30 findings from prose that ends a sentence with `uses:`, from
 `statuses:` containing `uses:`, and from this suite's own fixture strings; with
-both, it produces none. **The stated ceiling:** the scan stays line-based and
+both, it produces none. It is also case-sensitive, alone among these patterns:
+Actions requires a lowercase `uses` key, so a case-insensitive one can only invent
+gaps — `- Uses:` in English prose inside a file that names the hub — and can never
+catch a pin. **The stated ceiling:** the scan stays line-based and
 will not join continuation lines or resolve anchors to read a reference, and a
 hub path assembled at run time from an expression — where the owner and
 repository never appear literally in the tree — leaves no text for any scan of
