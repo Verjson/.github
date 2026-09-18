@@ -10,13 +10,27 @@ import base64
 import importlib.util
 import json
 import pathlib
+import sys
 import unittest
 
 _root = pathlib.Path(__file__).resolve().parents[2]
-_spec = importlib.util.spec_from_file_location(
-    "fleet_contract_inventory", _root / "scripts" / "fleet-contract-inventory.py")
-fci = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(fci)
+
+
+def _load(name, filename):
+    spec = importlib.util.spec_from_file_location(name, _root / "scripts" / filename)
+    module = importlib.util.module_from_spec(spec)
+    # Registered before execution: a `@dataclasses.dataclass` under
+    # `from __future__ import annotations` resolves its field types through
+    # `sys.modules[cls.__module__]`, which is absent for a path-loaded module.
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+fci = _load("fleet_contract_inventory", "fleet-contract-inventory.py")
+# Loaded here so the agreement between the two sweeps can be asserted rather
+# than maintained by hand -- Verjson/.github#1482.
+cv = _load("contract_version", "contract-version.py")
 
 A = "a" * 40
 B = "b" * 40
@@ -55,23 +69,26 @@ class Classify(unittest.TestCase):
 class UsesExtraction(unittest.TestCase):
     def test_extracts_path_and_pin_from_a_hub_reference(self):
         text = f"    uses: Verjson/.github/.github/workflows/node-ci.yml@{A}\n"
-        found = [(m.group("path"), m.group("sha"))
-                 for m in fci.USES_RE.finditer(text)]
-        self.assertEqual(found, [(".github/workflows/node-ci.yml", A)])
+        self.assertEqual(sorted(fci.pins(text)),
+                         [(".github/workflows/node-ci.yml", A)])
 
     def test_ignores_a_reference_to_another_owner(self):
         text = f"    uses: OtherOrg/.github/.github/workflows/node-ci.yml@{A}\n"
-        self.assertEqual(list(fci.USES_RE.finditer(text)), [])
+        self.assertEqual(sorted(fci.pins(text)), [])
 
     def test_ignores_a_moving_tag_because_it_is_not_a_pin(self):
         text = "    uses: Verjson/.github/.github/workflows/node-ci.yml@v1\n"
-        self.assertEqual(list(fci.USES_RE.finditer(text)), [])
+        # Still a *reference* -- `contract-version` reports it as an unpinned
+        # one -- but not a pin, so it is not this sweep's row. The narrowing
+        # moved from the pattern to `pins()`; what it admits did not.
+        self.assertEqual(sorted(fci.pins(text)), [])
+        self.assertEqual([m.group("ref") for m in fci.USES_RE.finditer(text)],
+                         ["v1"])
 
     def test_finds_every_distinct_pin_in_one_file(self):
         text = (f"  uses: Verjson/.github/.github/workflows/node-ci.yml@{A}\n"
                 f"  uses: Verjson/.github/.github/workflows/changelog.yml@{B}\n")
-        self.assertEqual({m.group("sha") for m in fci.USES_RE.finditer(text)},
-                         {A, B})
+        self.assertEqual({sha for _, sha in fci.pins(text)}, {A, B})
 
 
 class HeaderClaimExtraction(unittest.TestCase):
@@ -98,12 +115,17 @@ class UsesBoundaries(unittest.TestCase):
 
     def test_matches_a_lowercase_owner_because_github_is_case_insensitive(self):
         text = f"    uses: verjson/.github/.github/workflows/node-ci.yml@{A}\n"
-        self.assertEqual([m.group("sha") for m in fci.USES_RE.finditer(text)],
-                         [A])
+        self.assertEqual([sha for _, sha in fci.pins(text)], [A])
 
     def test_a_longer_hex_run_is_not_a_pin(self):
         text = f"    uses: Verjson/.github/.github/workflows/node-ci.yml@{'a' * 64}\n"
-        self.assertEqual(list(fci.USES_RE.finditer(text)), [])
+        # The boundary is now `SHA_RE`'s anchoring rather than a `(?![0-9a-f])`
+        # lookahead inside the pattern: the whole 64-hex run is the ref, and a
+        # 64-character ref is not a 40-hex commit. The reference is still seen,
+        # which is what lets `contract-version` report it.
+        self.assertEqual(sorted(fci.pins(text)), [])
+        self.assertEqual([m.group("ref") for m in fci.USES_RE.finditer(text)],
+                         ["a" * 64])
 
 
 class UnreachableIsNotEmpty(unittest.TestCase):
@@ -416,6 +438,53 @@ class AnAbsentDirectoryIsNotAGap(unittest.TestCase):
     def test_a_three_digit_status_is_required(self):
         self._fails_with("gh: nonsense (HTTP 4)\n")
         self.assertIsNone(fci.workflows("Verjson/example"))
+
+
+class RecognizerAgreement(unittest.TestCase):
+    """Verjson/.github#1482. Two hand-maintained copies of one pattern is the
+    condition that produced the drift, so the check is identity: the two sweeps
+    read the *same compiled object*, and a copy cannot be reintroduced without
+    this failing. Asserting equal behaviour on a fixture list would only pin the
+    shapes that list happens to name."""
+
+    def test_the_two_sweeps_share_one_recognizer_object(self):
+        self.assertIs(fci.USES_RE, cv.USES_RE)
+
+    def test_a_root_action_pin_is_a_reference_to_both_sweeps(self):
+        # The divergence this issue reports: #1472 taught `contract-version` to
+        # read a pathless root-action pin, and the inventory's own copy still
+        # required a path segment, so the same line was a pin to one tool and
+        # invisible to the other -- under-reporting in the safe-looking
+        # direction.
+        text = f"    uses: Verjson/.github@{A}\n"
+        self.assertEqual([m.group("ref") for m in cv.USES_RE.finditer(text)], [A])
+        self.assertEqual(sorted(fci.pins(text)), [(None, A)])
+
+    def test_a_root_action_reference_resolves_against_the_root_action_file(self):
+        # Making the pathless pin visible is only half of it: the inventory
+        # resolves an upstream blob *at* the pinned SHA, and `path=None` is not
+        # a key in any tree. GitHub resolves `owner/repo@ref` to a root action
+        # file, so that is what the comparison has to use.
+        self.assertEqual(
+            fci.classify(None, {"action.yml": A}, {"action.yml": A}), "CURRENT")
+        self.assertEqual(
+            fci.classify(None, {"action.yaml": A}, {"action.yaml": B}), "DRIFTED")
+
+    def test_a_root_action_reference_is_unknown_when_no_root_action_exists(self):
+        # The hub has no root action today, so this is the live case. UNKNOWN is
+        # the fail-closed answer the rest of this sweep is built on: a reference
+        # whose upstream blob cannot be resolved is never CURRENT.
+        self.assertEqual(fci.classify(None, {PATH: A}, {PATH: A}), "UNKNOWN")
+
+    def test_the_inventory_reads_a_reference_per_line_not_across_one(self):
+        # The second axis of divergence #1482 names. The inventory applied its
+        # pattern to un-split text, where `\s*` after the key spans a newline,
+        # so a bare `uses:` on one line could take the next line's hub
+        # reference as its value. A `uses:` key and its value are on one line in
+        # the YAML this sweep reads; a cross-line match there is not a
+        # reference, it is two unrelated lines.
+        text = f"    uses:\n    Verjson/.github/{PATH}@{A}\n"
+        self.assertEqual(sorted(fci.pins(text)), [])
 
 
 if __name__ == "__main__":
