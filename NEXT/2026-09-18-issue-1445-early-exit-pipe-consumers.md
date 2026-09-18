@@ -46,3 +46,8 @@ Two corrections from the independent review, before merge:
   stated in the guard and tracked in #1461, rather than left for a reader to infer from a
   green run. The same arm also matches an `exit` that is data rather than a statement;
   that direction is safe and is now stated too.
+- The one semantic change this PR makes to `scripts/changelog-preview.sh` — the job-summary
+  cap moving from `| head -c` to a parameter expansion — is now covered. Nothing exercised
+  the truncation path before, so the cap and the notice that announces it could both have
+  been dropped silently. Both directions redden now: removing the cap fails on the measured
+  body length, removing the notice fails on its absence.
