@@ -119,6 +119,20 @@ redefined as a no-op — `exit` and `return` can be shadowed by a function, so t
 whole allow-list rather than just `fault` — and the pinned literal matched inside a string
 rather than as a command, since the literal search runs over raw text.
 
+A guard is also recognized when it is spent as the NEGATED condition of an `if`/`elif`
+whose protected use sits in the sibling `else` arm — `elif ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]];
+then`. Nothing follows such a guard on its own command but `; then`, so the fatal-tail
+allow-list cannot judge it and reported it as no constraint at all; the proof is structural
+instead, because the arm the guard opens is the failing one and cannot fall through to the
+`else`. `scripts/privileged-merge-conformance.sh:327` is exactly that shape and four of its
+`gh api` uses were reported unconstrained by a scan that was green at this branch's own head
+and red once merged. The recognition is deliberately narrow and fail-closed elsewhere: a
+positive `if <guard>; then <use>` is rejected, because there the failing arm is the one that
+reaches the rest of the file, and so is a negated branch with no `else`, or one whose only
+`else` belongs to a nested `if`. All five shapes are pinned as regression cases, and the
+acceptance was verified by mutating the real guard at `:327` to `elif false; then` and by
+replacing its `else` with `fi`, each observed to exit non-zero.
+
 A Python guard gets the comment check and nothing more. Every cited Python guard is a
 sub-expression of an `if … is None:` or a `require(…)` call, with no single tail shape
 meaning "this raises", so five of the eleven allowlist entries are pinned only as "the cited

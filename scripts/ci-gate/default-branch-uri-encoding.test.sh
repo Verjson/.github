@@ -593,31 +593,80 @@ guard_tail_is_fatal() { # $1 = the text following the pinned guard, $2 = its loo
 #
 # This is a command-level anchor, not a reachability analysis. See the ceiling note in the
 # header: a guard MOVED into a branch that never executes still satisfies this.
+# A guard may also be spent as the NEGATED condition of an `if`/`elif` whose protected use
+# sits in the sibling `else` arm. Nothing follows it on its own command but `; then`, so the
+# tail allow-list cannot judge it, and the proof is structural instead: the arm the guard
+# opens is the FAILING one, and it cannot fall through to the `else`. Establishing that needs
+# lookahead past the guard's own logical line, so the records are read into an array rather
+# than streamed.
+#
+# Deliberately narrow, and fail-closed on everything else. A positive `if <guard>; then <use>`
+# is NOT accepted: its failing arm is the one that reaches the rest of the file. A negated
+# branch with no `else` is not accepted either, for the same reason.
+branch_events() { # $1 = structural text -> its command-position if/fi/else/elif, in order
+  local st="$1" part
+  st="${st//&&/;}"; st="${st//||/;}"; st="${st//|/;}"; st="${st//&/;}"
+  local IFS=';'
+  for part in $st; do
+    part="${part#"${part%%[![:space:]]*}"}"; part="${part%%[[:space:]]*}"
+    case "$part" in if | fi | else | elif) printf '%s\n' "$part" ;; esac
+  done
+}
+
+guard_opens_negated_branch() { # $1 = text before the guard, $2 = text after it
+  [[ "$1" =~ ^[[:space:]]*(el)?if[[:space:]]+\![[:space:]]*$ ]] || return 1
+  [[ "$2" =~ ^[[:space:]]*\;?[[:space:]]*then[[:space:]]*$ ]]
+}
+
+# Walk forward from the guard's logical line. Relative depth 0 is the arm the guard opened;
+# reaching an `else`/`elif` there means the use below is on the arm the guard PASSED, while a
+# `fi` there means the arm fell through and proves nothing. Running out of records proves
+# nothing either.
+negated_branch_dominates() { # $1 = index of the guard's record in GUARD_RECORDS
+  local i d=0 event
+  for ((i = $1 + 1; i < ${#GUARD_RECORDS[@]}; i++)); do
+    while IFS= read -r event; do
+      case "$event" in
+        if) d=$((d + 1)) ;;
+        fi) [ "$d" -eq 0 ] && return 1; d=$((d - 1)) ;;
+        else | elif) [ "$d" -eq 0 ] && return 0 ;;
+      esac
+    done < <(branch_events "$(shell_structure "${GUARD_RECORDS[i]#*$'\t'}")")
+  done
+  return 1
+}
+
 guard_live_literal() { # $1 = literal proof text, $2 = whole|slice; reads the text on stdin
-  local record depth line
-  while IFS= read -r record; do
+  local -a GUARD_RECORDS=()
+  local record line depth i
+  mapfile -t GUARD_RECORDS < <(logical_lines "${2:-whole}")
+  for ((i = 0; i < ${#GUARD_RECORDS[@]}; i++)); do
+    record="${GUARD_RECORDS[i]}"
     depth="${record%%$'\t'*}"; line="${record#*$'\t'}"
     case "$line" in *"$1"*) ;; *) continue ;; esac
     # Anything opening a comment ahead of the pinned text disarms the whole line.
     case "${line%%"$1"*}" in *'#'*) continue ;; esac
-    guard_tail_is_fatal "${line#*"$1"}" "$depth" || continue
-    return 0
-    # Redirected, not pipe-fed: this loop returns on its first live match and would
-    # SIGPIPE a still-writing producer (#1430, #1445).
-  done < <(logical_lines "${2:-whole}")
+    guard_tail_is_fatal "${line#*"$1"}" "$depth" && return 0
+    guard_opens_negated_branch "${line%%"$1"*}" "${line#*"$1"}" || continue
+    negated_branch_dominates "$i" && return 0
+  done
   return 1
 }
 
 guard_live_re() { # $1 = ERE whose match is the proof, $2 = whole|slice; reads the text on stdin
-  local record depth line match
-  while IFS= read -r record; do
+  local -a GUARD_RECORDS=()
+  local record line match depth i
+  mapfile -t GUARD_RECORDS < <(logical_lines "${2:-whole}")
+  for ((i = 0; i < ${#GUARD_RECORDS[@]}; i++)); do
+    record="${GUARD_RECORDS[i]}"
     depth="${record%%$'\t'*}"; line="${record#*$'\t'}"
     [[ "$line" =~ $1 ]] || continue
     match="${BASH_REMATCH[0]}"
     case "${line%%"$match"*}" in *'#'*) continue ;; esac
-    guard_tail_is_fatal "${line#*"$match"}" "$depth" || continue
-    return 0
-  done < <(logical_lines "${2:-whole}")
+    guard_tail_is_fatal "${line#*"$match"}" "$depth" && return 0
+    guard_opens_negated_branch "${line%%"$match"*}" "${line#*"$match"}" || continue
+    negated_branch_dominates "$i" && return 0
+  done
   return 1
 }
 
@@ -807,6 +856,47 @@ guard_tail_case live 'a multi-line `|| {` failure branch' \
   '  echo "::error::could not resolve a head SHA" >&2' \
   '  exit 1' \
   '}'
+# A guard spent as the NEGATED condition of an `if`/`elif`, whose protected use sits in the
+# sibling `else`. Nothing follows the guard on its own command but `; then`, so the fatal-tail
+# allow-list above cannot see it -- and main's #1466 rewrote
+# `scripts/privileged-merge-conformance.sh:327` from a `|| { …; continue; }` into exactly this
+# shape, which made this scan report a live guard as dead at four call sites (#1464 re-review
+# round 4). The domination is structural: the failing arm cannot fall through to the `else`.
+guard_tail_case live 'a negated `elif` whose protected use is in the `else`' \
+  'if [ "${#pins[@]}" -ne 1 ]; then' \
+  '  failures=$((failures + 1))' \
+  'elif ! '"$HEX_GUARD"'; then' \
+  '  failures=$((failures + 1))' \
+  'else' \
+  '  gh api "repos/$repository/commits/$head_sha"' \
+  'fi'
+guard_tail_case live 'a negated `if` whose protected use is in the `else`' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  failures=$((failures + 1))' \
+  'else' \
+  '  gh api "repos/$repository/commits/$head_sha"' \
+  'fi'
+# Fail-closed boundaries of that shape, pinned so widening it stays deliberate. Without an
+# `else` the failing arm falls straight through to the use, so the branch proves nothing.
+guard_tail_case dead 'a negated `if` with no `else`, which falls through to the use' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  echo "::warning::head sha looks wrong"' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+guard_tail_case dead 'a negated `if` whose `else` belongs to a nested branch' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  if [ -n "$head_sha" ]; then' \
+  '    echo "::warning::x"' \
+  '  else' \
+  '    echo "::warning::y"' \
+  '  fi' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+guard_tail_case dead 'a POSITIVE `if` condition, whose failing arm is the unguarded one' \
+  'if '"$HEX_GUARD"'; then' \
+  '  gh api "repos/$repository/commits/$head_sha"' \
+  'fi'
+
 guard_tail_case dead 'an && chain with no || at all: set -e exempts the failing element' \
   "$HEX_GUARD"' && echo ok'
 guard_tail_case dead 'an unlisted helper name, which nothing here proves terminates' \
