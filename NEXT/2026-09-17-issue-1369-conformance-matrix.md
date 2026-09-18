@@ -221,19 +221,37 @@ from "wires nothing", so it fails closed there and the repository is counted
 unaudited. The inspector's behavior on empty input is asserted directly, because
 it is the reason the guard cannot live any further downstream.
 
-Round-4 review of that block corrected one false claim and one real coupling.
-The remedy-runnability cases drive one arm per member and declared mode, not
-every arm; the comment claimed otherwise, and the absent, unreadable and
-mode-header arms are in fact undriven. Driving them would add no coverage,
-because `generated_set_check` composes its remedy exactly twice — both times
-through `generated_set_remedy`, from the member's own fixed invocation
+Round-4 review of that block corrected one false claim, one pin that did not
+hold the property it was written for, and one real coupling. The
+remedy-runnability cases drive one arm per member and declared mode, not every
+arm; the comment claimed otherwise. Driving the remaining arms would add no
+coverage, because `generated_set_check` composes its remedy exactly twice — both
+times through `generated_set_remedy`, from the member's own fixed invocation
 arguments plus one mode string — and every arm appends that one value verbatim,
 so a member's runnable remedies depend on the member and its declared mode and
 never on which arm fired. That is the property the claim rests on, so it is now
-asserted against the generator's own source rather than left as prose: an arm
-that composes its own remedy reddens the case even though the string it emits
-is identical. Separately, the accumulated remedy scan was seeded from whatever
-the preceding statement had left in `run.out`, which coupled it to statement
+asserted against the generator's own source rather than left as prose.
+
+The first form of that assertion did not hold it. It counted `remedy`
+assignments, counted composed ones, and asserted only that the two counts
+agreed — never how many there were, and never where. `remedy+=` is neither an
+assignment it counted nor a read, so it left the counts equal while the poisoned
+value reached the emitted finding text. Measured against the generator at the
+time: injecting `remedy+=" | tee /dev/null"` immediately before each of the
+eight arms in turn left the whole suite at exit 0 for **six** of them, the
+stale-pin arm — the one an adopter who regenerated half the set actually hits —
+among them. The pin now classifies every `remedy` mention in the function and
+fails on any line that is neither a comment, a read, the declaration, nor one of
+the two compositions written out in full; it requires each composition exactly
+once, and the first of them before the first arm. All eight injections now
+redden the pin itself, as do a duplicated composition, a rewrite of `$remedy`
+where an arm uses it, and moving the first composition below the first arm —
+each of which leaves equal the two counts the previous form compared. Stating
+the one acceptable shape fails closed; enumerating the ways to leave it fails
+open on the first way nobody listed, which is what happened here.
+
+Separately, the accumulated remedy scan was seeded from whatever the preceding
+statement had left in `run.out`, which coupled it to statement
 order while being the input to an `eval`; it now runs its own adopter. And a
 paste-safety fixture file that is missing is a failure naming the member rather
 than a silent skip, since skipping it shrank the very list the non-vacuity pin

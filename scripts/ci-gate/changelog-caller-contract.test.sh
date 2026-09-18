@@ -2990,10 +2990,20 @@ unsafe_remedies="$(grep -n '>' "$tmproot/run.out" | grep '|' || true)"
 # header's declared mode after -- and every finding it emits appends that one
 # $remedy verbatim. So the runnable remedies a member can emit are fixed by the
 # member and the mode it declares, never by which arm fired, and driving the
-# absent, unreadable and mode-header arms as well would re-emit strings this
-# scan already holds. That property is load-bearing for the claim, so it is
-# PINNED below rather than left as prose: the moment an arm composes its own
-# remedy, the undriven arms stop being covered and this section says so.
+# remaining arms would re-emit strings this scan already holds.
+#
+# That property is load-bearing for the claim, so it is PINNED below rather than
+# left as prose. The pin states the ONE acceptable shape and requires every
+# `remedy` mention in the function to fall inside it, rather than enumerating
+# ways to leave it: a pin that lists the forms it rejects fails open on the
+# first form nobody listed, and its predecessor here did. That predecessor
+# compared a count of `^ *remedy=` lines against a count of composed ones and
+# asserted only their EQUALITY, so `remedy+=" | tee /dev/null"` -- neither an
+# assignment it counted nor a read -- satisfied it while reaching the emitted
+# finding text. Measured against this generator at the time: injecting that
+# append immediately before each of the eight arms left the whole suite at exit
+# 0 for SIX of them, including the stale-pin arm, which is the arm an adopter
+# that regenerated half the set actually hits.
 #
 # The runs are accumulated rather than read from the last one, since run.out is
 # overwritten per run. The first contribution re-runs its own adopter instead of
@@ -3001,14 +3011,68 @@ unsafe_remedies="$(grep -n '>' "$tmproot/run.out" | grep '|' || true)"
 # this section to statement order, and the seed is the input to the eval below,
 # so a run inserted above it would decide what gets evaluated.
 generated_set_check_body="$(awk '/^generated_set_check\(\) \{/,/^\}/' "$gen")"
+# That range ends at the first line that is `}` alone, so a dedented brace in
+# the body would truncate it silently and the -gt 0 guards below would still
+# hold. generated_set_note is called from nowhere else in the generator, so
+# requiring the body to carry every call site in the file catches a truncation
+# that drops arms, which is the truncation that matters here.
 arm_findings="$(grep -c 'generated_set_note ' <<<"$generated_set_check_body" || true)"
+arm_findings_in_generator="$(grep -c 'generated_set_note ' "$gen" || true)"
 arm_findings_shared_remedy="$(grep -c 'generated_set_note .*\$remedy"$' <<<"$generated_set_check_body" || true)"
-remedy_assignments="$(grep -c '^ *remedy=' <<<"$generated_set_check_body" || true)"
-remedy_assignments_composed="$(grep -c '^ *remedy="\$(generated_set_remedy ' <<<"$generated_set_check_body" || true)"
-{ [ "$arm_findings" -gt 0 ] && [ "$arm_findings" = "$arm_findings_shared_remedy" ] \
-  && [ "$remedy_assignments" -gt 0 ] && [ "$remedy_assignments" = "$remedy_assignments_composed" ]; } \
-  && pass "every generated_set_check arm emits one composed remedy, so a driven arm stands in for the undriven ones" \
-  || fail "generated_set_check no longer composes one remedy for all its arms ($arm_findings_shared_remedy of $arm_findings findings append \$remedy; $remedy_assignments_composed of $remedy_assignments assignments come from generated_set_remedy), so the arms this section does not drive can emit a remedy it never runs"
+
+# Every line of the body that mentions `remedy` is classified, and a line that
+# fits no class FAILS. A line either reads $remedy only, or is the local
+# declaration, or is one of exactly two compositions written out here in full.
+# There is no fourth class, so an append, a rewrite, a third composition or a
+# form nobody has thought of all land in $remedy_unaccounted rather than having
+# to be recognised. Exactly one of each composition is required: a second copy
+# of one would keep any count-balancing pin happy while changing what an arm
+# below it emits.
+remedy_decls=0
+remedy_from_mode=0
+remedy_from_declared=0
+remedy_unaccounted=''
+while IFS= read -r remedy_line; do
+  case "$remedy_line" in *remedy*) ;; *) continue ;; esac
+  # Two classes of line cannot modify anything, by bash's own parse rather than
+  # by this suite's judgement: a line whose first non-blank character is `#`,
+  # and the function opener, whose signature comment names the remedy arguments.
+  # Everything else is classified in full, `#` included, since a `#` this loop
+  # decided to treat as a comment could hide an assignment behind it.
+  grep -qE '^ *#' <<<"$remedy_line" && continue
+  grep -qE '^generated_set_check\(\) \{ *#' <<<"$remedy_line" && continue
+  remedy_rest="${remedy_line//\$remedy/}"
+  remedy_rest="${remedy_rest//\$\{remedy\}/}"
+  remedy_rest="${remedy_rest//generated_set_remedy/}"
+  case "$remedy_rest" in *remedy*) ;; *) continue ;; esac
+  if grep -qxE ' *local .* remedy .*' <<<"$remedy_line"; then
+    remedy_decls=$((remedy_decls + 1))
+  elif grep -qxE ' *remedy="\$\(generated_set_remedy "\$mode" "\$rel" "\$flags" "\$note"\)"' <<<"$remedy_line"; then
+    remedy_from_mode=$((remedy_from_mode + 1))
+  elif grep -qxE ' *remedy="\$\(generated_set_remedy "\$declared" "\$rel" "\$flags" "\$note"\)"' <<<"$remedy_line"; then
+    remedy_from_declared=$((remedy_from_declared + 1))
+  else
+    remedy_unaccounted="$remedy_unaccounted [$remedy_line]"
+  fi
+done <<<"$generated_set_check_body"
+
+# The $mode composition is the only one in scope for the first four arms, so it
+# must precede the first arm: an arm reached before any composition would append
+# an unset $remedy, which no count above would notice.
+remedy_mode_line="$(grep -nE ' *remedy="\$\(generated_set_remedy "\$mode"' <<<"$generated_set_check_body" | sed -n '1s/:.*//p')"
+remedy_first_arm_line="$(grep -n 'generated_set_note ' <<<"$generated_set_check_body" | sed -n '1s/:.*//p')"
+
+{ [ "$arm_findings" -gt 0 ] \
+  && [ "$arm_findings" = "$arm_findings_in_generator" ] \
+  && [ "$arm_findings" = "$arm_findings_shared_remedy" ] \
+  && [ "$remedy_decls" -eq 1 ] \
+  && [ "$remedy_from_mode" -eq 1 ] \
+  && [ "$remedy_from_declared" -eq 1 ] \
+  && [ -z "$remedy_unaccounted" ] \
+  && [ -n "$remedy_mode_line" ] && [ -n "$remedy_first_arm_line" ] \
+  && [ "$remedy_mode_line" -lt "$remedy_first_arm_line" ]; } \
+  && pass "every generated_set_check arm emits one unmodified composed remedy, so a driven arm stands in for the undriven ones" \
+  || fail "generated_set_check no longer emits one unmodified composed remedy for all its arms, so the arms this section does not drive can emit a remedy it never runs ($arm_findings_shared_remedy of $arm_findings findings append \$remedy; the generator holds $arm_findings_in_generator arms in total; $remedy_decls declarations, $remedy_from_mode \$mode and $remedy_from_declared \$declared compositions, each wanted exactly once; first composition at body line ${remedy_mode_line:-none} against first arm at ${remedy_first_arm_line:-none}; lines touching \$remedy that fit no permitted form:${remedy_unaccounted:- none})"
 
 remedy_scan="$tmproot/remedy-scan.out"
 run_adopter "$paste_safety"

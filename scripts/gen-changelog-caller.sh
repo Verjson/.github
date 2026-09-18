@@ -2329,6 +2329,12 @@ generated_set_remedy() { # generated_set_remedy <one-mode|alternation> <rel> <fl
   esac
 }
 
+# The INTERNAL SHAPE of this function is pinned by the hub's
+# scripts/ci-gate/changelog-caller-contract.test.sh: $remedy is assigned only by
+# the two generated_set_remedy compositions below, and the remedy-runnability
+# cases drive one arm per member rather than every arm, standing in for the rest
+# only while that holds. Touching $remedy anywhere else in here -- a third
+# composition, an append, a rewrite -- reddens that pin.
 generated_set_check() { # generated_set_check <relative-path> <required|optional> <pin-pattern> <remedy-mode> <accepted-modes|''> [generator-flags] [remedy-note]
   local rel="$1" required="$2" pattern="$3" mode="$4" accepted="$5" flags="${6:-}" note="${7:-}"
   local abs="$root/$rel" claims claim count remedy modes mode_count declared
