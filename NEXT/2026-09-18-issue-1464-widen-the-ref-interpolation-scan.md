@@ -105,16 +105,18 @@ line and read a live guard as commented out.
 
 The stated ceiling is now split by direction, because the previous version listed only three
 fail-open classes and named none of the ones above. Fail-closed: `exit 300` is rejected
-though it is fatal; a nested group or a *here-document* in a brace body is not flattened,
+though it is fatal; a nested *brace* group or a *here-document* in a brace body is not
+flattened,
 while a plain redirection (`>&2`, `>/dev/null`, `2>&1`) is flattened and still reads fatal —
-it has to, because 97 fatal `|| { … }` guard bodies across 17 files carry a `>&2` —
+it has to, because 96 fatal `|| { … }` guard bodies across 17 files carry a `>&2` —
 `scripts/gen-adr-index.sh:106` and `.github/workflows/node-release.yml:318` are two, read and
 verified — and the stricter rule this note used to claim would report every one of them
 disarmed. That figure is published with its method, in ADR 0194, because the two it replaces
 (67, then 123) were published without one and neither could be reproduced: the universe is
-the scan's own 144-file set, the predicate is this gate's own `logical_lines slice` plus
-`brace_body_is_fatal` with `>&2` in the source text, and 397 of those branches are fatal
-in total. `continue`/`break` are never accepted, in or out of a loop; a
+the scan's own 144-file set and the predicate is this gate's own `logical_lines slice` plus
+`brace_body_is_fatal` with `>&2` in the source text. No denominator is published, for the
+reason given at the end of this note. `continue`/`break` are never accepted, in or out of a
+loop; a
 positive `if <guard>; then <use>` is not accepted, nor a negated branch whose only `else`
 belongs to a nested `if`, nor one where the guard is merely an operand of a `&&`/`||` in the
 condition; an action reached only through a `&&`/`||` chain is not treated as
@@ -236,6 +238,24 @@ legitimately contains a here-document. Probing the first form of that detection 
 near-misses of its own — an introducer blanked away inside an unclosed `$(`, and a delimiter
 not beginning with a letter — which are closed and pinned as well.
 
+Round 6 stops patching that detection and inverts its default instead (#1489, ADR 0194).
+Each of rounds 1 through 5 closed the previous round's fail-open by naming one more
+construct the walk must refuse, and each shipped a new one inside the same mechanism: a
+subshell `( exit 1 ) || echo`, a function definition `cleanup() { exit 1; }`, a
+backgrounded group `{ exit 1; } &` and an expansion opened on one record and closed on a
+later one all reached the fatal statement and read as a terminating arm. Enumerating the
+bypass forms is unwinnable, so the arm walk no longer accepts a record it has not
+accounted for. `arm_record_is_modelled` recognizes the shapes this model does represent --
+no here-document introducer, no data span left open at the record's end, no `&` outside
+`&&`/`>&`/`<&`/`&>`, at most one `{` and braces balanced, and a parenthesis only where an
+open `case` makes it an arm label -- and every other record ENDS the walk as a reject.
+Unmodelled structure can no longer produce an accept. Its measured cost on this repository
+is none: the four pinned figures -- 77 interpolations, 144 workflows, 14 sites, 11
+allowlist entries -- are unchanged, because the one live guard it initially rejected,
+`scripts/privileged-merge-conformance.sh:327`, was recovered by proving the specific `case`
+arm-label shape rather than by widening the allowlist. Each of the six rules is pinned by a
+fixture that no other rule rejects, so none is decorative.
+
 Every new shape is pinned with a control that moves the same fatal statement to the arm's
 top level and must stay live, so a `dead` verdict cannot pass for the wrong reason.
 
@@ -243,6 +263,11 @@ Two ADR 0194 measurements were corrected rather than restated. "No `.py` file co
 `|| { … }`" was false, and so is the narrower "no `.py` line's structural tail is `|| {`":
 `scripts/gen-node-ci-protected.py:778` does end that way structurally, because the quote
 model has no account of Python's `\"` escapes. What holds is that no such `.py` record is
-accepted by `brace_body_is_fatal`. The `397` denominator is withdrawn, not corrected: it
-re-derives as 395 and the stated predicate does not pin which is right. Only `97`, `17` and
-`144`, which reproduce exactly, are stated.
+accepted by `brace_body_is_fatal` — a fact about the CONTENT of those three emitted-shell
+string literals rather than about `.py`, so an edit to `scripts/gen-node-ci-protected.py`
+can move it. The denominator is **removed**, not adjudicated: three independent derivations
+produced two values, and a fourth here produces a third, so it does not belong in a durable
+record whichever is right. Every claim about it is removed with it. `97` is corrected to
+`96`: re-derived against both the committed and the working copy of this gate's functions at
+this head, under three readings of which `|| {` is meant, it returns 96 across 17 files every
+time. Only `96`, `17` and `144` are stated.

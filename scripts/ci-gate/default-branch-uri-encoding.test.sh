@@ -80,15 +80,26 @@
 #         `|| { ( exit 1 ); }`, `|| { false && exit 1; }`, `|| { cat <<EOF` / `exit 1`,
 #         `|| exit 256`, `|| return 256`, `|| continue` and `|| break` all matched it and
 #         all leave the guard standing (third #1464 re-review).
-#         Quoted spans, `#` comments, `${…}`, `$(…)` and `(…)` subshells are blanked by
-#         `shell_structure` before the split, so none of them can supply the action.
+#         Quoted spans, `#` comments, `${…}` and `$(…)` are blanked by `shell_structure`
+#         before the split. A `(…)` SUBSHELL is NOT -- an earlier revision of this sentence
+#         said it was, and `shell_structure` has no such rule. What rejects
+#         `|| { ( exit 1 ); }` is that `( exit 1 )` is not EXACTLY `exit N` as a top-level
+#         statement, which is the same reason `false && exit 1` is rejected; blanking has
+#         nothing to do with it (#1464 re-review round 6).
 #
 #         What that costs, all of it fail-CLOSED -- a live guard can read as disarmed here,
 #         and none of these lets a swallow through:
 #           · `exit 300` really does leave the guard (44), but the status is bounded to
 #             1-255 because that bound is easier to state than "not a multiple of 256".
-#           · a nested command group, or a redirection operator, in the brace body is not
-#             flattened and reads as disarmed.
+#           · a nested BRACE group, or a here-document, in the brace body is not flattened
+#             and reads as disarmed. A REDIRECTION operator does not: `>&2`, `2>&1` and
+#             `>/dev/null` are flattened and the body still reads FATAL, and it has to --
+#             96 accepted fatal `|| { … }` bodies across 17 files in this repository's own
+#             144-file scan set carry a `>&2`, and the pinned live fixture below is that
+#             shape. Three revisions of this line claimed the stricter rule; the code never
+#             implemented it (#1464 re-review round 6, ADR 0194). A `(…)` subshell is
+#             likewise flattened, so `{ ( echo x ); exit 1; }` reads FATAL -- correctly, the
+#             `exit 1` is a top-level statement of the body.
 #           · an action reached only through a `&&`/`||` chain inside the body is not
 #             unconditionally reached. This anchor does not evaluate conditions, so it
 #             cannot tell `{ false && exit 1; }` from `{ [ -n "$x" ] && exit 1; }`; both
@@ -101,12 +112,31 @@
 #             fail-OPEN (#1464 re-review round 5): the scan starts every physical line
 #             unquoted, so a here-document body, and a string continued onto the next line,
 #             read as ORDINARY COMMANDS rather than blanking. Any caller that counts
-#             structure across records must therefore detect those regions and decline --
-#             `negated_branch_dominates` does, via `shell_data_unclosed` and
-#             `HEREDOC_INTRODUCER`. That decline is fail-CLOSED: a guard that genuinely
-#             protects a use from inside an `else` arm containing a here-document, or a
-#             record merely quoting the text `<<WORD`, now reads as disarmed. No site in
-#             this repository is written that way today.
+#             structure across records must therefore detect those regions and decline.
+#             Round 5 detected a here-document and an unclosed QUOTE and missed an unclosed
+#             EXPANSION, which is the same blind spot: `${…}` and `$(…)` are scanned per
+#             record, so one that runs off the end of its record continues onto the next as
+#             ORDINARY COMMANDS. `shell_data_unclosed` now reports that too (#1464
+#             re-review round 6). That decline is fail-CLOSED: a guard that genuinely
+#             protects a use from inside an `else` arm containing a here-document, an
+#             unclosed quote or a run-off expansion, or a record merely quoting the text
+#             `<<WORD`, reads as disarmed. No site in this repository is written that way
+#             today.
+#           · `negated_branch_dominates` no longer decides record by record whether a
+#             construct is one it must count. Its DEFAULT IS INVERTED: `arm_record_is_modelled`
+#             enumerates what the record model represents and REJECTS everything else, so
+#             unmodelled structure is a loud false alarm rather than an ACCEPT. That is the
+#             round-6 change and the reason this list stops growing one construct per round;
+#             see the block comment above that function for why enumerating the constructs
+#             to count is the losing side of the same bet as enumerating bypass forms
+#             (#1489, ADR 0194). Its cost is fail-CLOSED and real: any `(`, any unbalanced
+#             or nested `{`, any `&` that is not `&&` or part of `>&`/`<&`/`&>`, and any
+#             expansion, quote or here-document crossing a record, anywhere between the
+#             guard and the use, now reads as disarmed. The one bare `)` it proves is a
+#             `case` arm's pattern label while a `case` is open (`CASE_ARM_LABEL`), added
+#             because `scripts/privileged-merge-conformance.sh:327` is a live guard whose
+#             `else` arm contains a `case`. Measured on this repository, that cost moved
+#             none of the pinned counts.
 #           · `continue`/`break` are rejected outright rather than modelled. They leave a
 #             guard only inside a loop, the lexical `do`/`done` count that established that
 #             was ~60 lines whose last real site #1466 rewrote into an `elif`, and in
@@ -122,6 +152,12 @@
 #         Python-shaped denylist literal that used to be here, `or True`, was dropped
 #         rather than kept: see `py_guard_is_live` for why a one-entry denylist is worse
 #         than an honest gap.
+#         One measurement in ADR 0194 rests on `.py` files contributing no accepted fatal
+#         `|| { … }` branch. Read that narrowly: three records in
+#         `scripts/gen-node-ci-protected.py` DO reach `brace_body_is_fatal` and all three
+#         are rejected on the CONTENT of those emitted-shell string literals, not by any
+#         rule about `.py`. An edit to that generator can move it, so re-derive the figure
+#         rather than assuming the language settles it.
 #     Even at its strongest this is a COMMAND-level anchor, not reachability analysis, and
 #     these are the ways a pin is satisfied by something that no longer guards:
 #       · a guard MOVED into a branch that never runs;
@@ -141,10 +177,17 @@
 #         not all that is. Round 4 called it "the only fail-OPEN in that class"; round 5 then
 #         found two more -- a fatal statement nested in a loop or `case` body, which
 #         `branch_events` could not see, and a here-document or multi-line string in the
-#         `else` arm, which inflated the depth count. Both are now REJECTED, and both are
-#         pinned as fixtures with controls. Five consecutive rounds shipped a sentence of the
-#         form "this is the only ..." about this anchor and every one was falsified within a
-#         round. Enumerate what is open; do not write another one.
+#         `else` arm, which inflated the depth count. Round 6 then found four more, all of
+#         them inside the mechanism round 5 had just added: an `exit 1` reached only through
+#         a multi-line `(…)` subshell, one that only a function DEFINITION contains, one in a
+#         BACKGROUNDED `{ … } &` group, and a `${…}`/`$(…)` expansion running off the end of
+#         a record in the `else` arm. All four are REJECTED, and all four are pinned as
+#         fixtures with controls -- as are the four ISOLATING cases that keep each of
+#         `arm_record_is_modelled`'s rules individually load-bearing.
+#         Six consecutive rounds shipped a sentence of the form "this is the only ..." about
+#         this anchor and every one was falsified within a round. Enumerate what is open; do
+#         not write another one. Round 6's structural answer is not that the list is now
+#         complete -- it is that the walk stops ACCEPTING what is not on it.
 #       · that same proof is positional, not dataflow: it establishes that the use LINE is
 #         inside the protected arm, not that the value reaching the use is the value the
 #         guard tested. A re-assignment between the guard and the use, or a different
@@ -380,8 +423,8 @@ block_slice() {
 # `$(…)`, backticks, backslashes, and word-position `#`, and nothing else. Where it is
 # unsure it blanks, which makes an unrecognized construct read as NOT fatal.
 SHELL_STRUCTURE_AWK='
-function shell_structure(s,   out, i, n, c, q, d) {
-  n = length(s); out = ""; q = ""
+function shell_structure(s,   out, i, n, c, q, d, u) {
+  n = length(s); out = ""; q = ""; u = ""
   for (i = 1; i <= n; i++) {
     c = substr(s, i, 1)
     if (q != "") { if (c == q) q = ""; out = out " "; continue }
@@ -396,6 +439,9 @@ function shell_structure(s,   out, i, n, c, q, d) {
         if (substr(s, i, 1) == "{") d++
         else if (substr(s, i, 1) == "}") { d--; if (d == 0) break }
       }
+      # The span ran off the end of the record. Like an unclosed quote it continues onto
+      # the next one, which this per-record pass then reads as ordinary commands.
+      if (i > n) u = "$"
       out = out " "; continue
     }
     if (c == "$" && i < n && substr(s, i + 1, 1) == "(") {
@@ -404,6 +450,7 @@ function shell_structure(s,   out, i, n, c, q, d) {
         if (substr(s, i, 1) == "(") d++
         else if (substr(s, i, 1) == ")") { d--; if (d == 0) break }
       }
+      if (i > n) u = "$"
       out = out " "; continue
     }
     # `#` opens a comment only in word position. A `#` inside a word (`release#1`) does
@@ -411,7 +458,7 @@ function shell_structure(s,   out, i, n, c, q, d) {
     if (c == "#" && (out == "" || substr(out, length(out), 1) ~ /[[:space:];&|()]/)) break
     out = out c
   }
-  SHELL_DATA_OPEN = q
+  SHELL_DATA_OPEN = (q != "" ? q : u)
   return out
 }
 function brace_delta(st,   i, n, c, d) {
@@ -425,10 +472,12 @@ shell_structure() { # $1 = shell text -> the same text with data spans blanked
   awk "$SHELL_STRUCTURE_AWK"'{ print shell_structure($0) }' <<<"$1"
 }
 
-# `shell_structure` reads ONE PHYSICAL LINE and starts each one unquoted, so a quote or a
-# backtick opened on one line and closed on the next is not a data span to it: the opening
-# line's remainder blanks, and every following line up to the closer reads as COMMANDS.
-# Callers that count structure across lines must know when that happened.
+# `shell_structure` reads ONE PHYSICAL LINE and starts each one unquoted, so a quote, a
+# backtick, or a `${…}`/`$(…)` expansion opened on one line and closed on the next is not a
+# data span to it: the opening line's remainder blanks, and every following line up to the
+# closer reads as COMMANDS. An unclosed EXPANSION was missed here until #1464 re-review
+# round 6, which reached a use through an `other=${msg:-` / `if …` / `}` region in an `else`
+# arm. Callers that count structure across lines must know when either happened.
 shell_data_unclosed() { # $1 = shell text -> 0 when some line ends inside a data span
   awk "$SHELL_STRUCTURE_AWK"'
     { shell_structure($0); if (SHELL_DATA_OPEN != "") found = 1 }
@@ -648,21 +697,72 @@ arm_statement_is_fatal() { # $1 = structural text of one top-level `then`-arm st
 #     `if ! guard; then echo …; exit 1; fi` is the ordinary spelling and read as dead before.
 # A depth-0 `fi` means the construct closed ABOVE the use, so from there only the second can
 # apply. Running out of records still inside the `then` arm proves nothing.
+# THE DEFAULT IS INVERTED HERE, and that is the whole of round 6's fix.
+#
+# Every round of this review from 1 to 6 closed the previous round's fail-OPEN by teaching
+# this walk one more construct, and every one shipped the next fail-open inside the very
+# mechanism that closed it -- always the same shape, a shell construct the record model does
+# not represent. Round 4 added the `else`/termination distinction; round 5 added `do`/`done`
+# and `case`/`esac` to the depth counter and a here-document/unclosed-quote decline; round 6
+# then found `(…)` subshells, `{…}` groups, function bodies and a `${…}` running off the end
+# of a record unaccounted for in exactly those additions. Adding those four to the counter is
+# round 7's fail-open. Enumerating the constructs that must be counted fails open for the
+# same reason enumerating bypass forms does -- the set is not closed, and a line-oriented
+# model cannot bound it (#1489; ADR 0194 reached the same conclusion for a different
+# sub-problem).
+#
+# So the walk no longer accepts a record it merely failed to recognize. It recognizes a
+# small, explicitly enumerated set of shapes, and DECLINES everything else. Unmodelled
+# structure produces a REJECT -- a loud false alarm, fixed later by proving one more shape --
+# and never an ACCEPT. What is listed below is therefore not "the constructs that disarm a
+# guard"; it is the frontier of what this model claims to represent, and anything outside it,
+# including a construct no one has thought of yet, lands on the rejecting side by default.
+# The one record shape whose bare `)` is NOT a group: a `case` arm's pattern label, and the
+# `;;`/`;&`/`;;&` that ends an arm. It is proven only while a `case` is actually open, and
+# only when the WHOLE record is the label -- `) || echo swallowed` and `( exit 1 )` do not
+# match it, and a `(` with no `)` cannot. `scripts/privileged-merge-conformance.sh:327` is
+# the live guard that needs it: the use it protects sits in an `else` arm containing a
+# `case` over the compare status.
+CASE_ARM_TERMINATOR=';;&?|;&'
+CASE_ARM_LABEL="^[[:space:]]*[(]?[^()]*[)][[:space:]]*(${CASE_ARM_TERMINATOR})?[[:space:]]*\$"
+
+arm_record_is_modelled() { # $1 = raw record, $2 = structural text, $3 = open `case` depth
+  # Data regions the per-record structural pass cannot carry across records: a here-document
+  # body, and a quote, backtick or expansion left open at the end of a record, all read as
+  # ordinary commands on the records that follow (#1464 re-review rounds 5 and 6).
+  [[ "$1" =~ $HEREDOC_INTRODUCER ]] && return 1
+  shell_data_unclosed "$1" && return 1
+  local st="$2" amp opens closes
+  # Any grouping the depth counter does not pair: a `(…)` subshell, a `((…))` command, a
+  # function definition header `name() {`, and a `case` pattern's bare `)`. `$(…)` and
+  # `${…}` are blanked before this, so a parenthesis surviving here opens or closes a group.
+  # A subshell is the round-6 vector twice over -- `( exit 1 ) || echo …` exits the subshell,
+  # and `cleanup() { exit 1; }` only DEFINES an exit -- and both read as fatal at depth 0.
+  if [[ "$st" == *'('* || "$st" == *')'* ]]; then
+    [ "${3:-0}" -gt 0 ] && [[ "$st" =~ $CASE_ARM_LABEL ]] || return 1
+  fi
+  # A `&` that is not `&&`. A backgrounded `{ …; exit 1; } &` exits a subshell, not this
+  # shell, and reads as fatal at depth 0. `>&`, `<&` and `&>` are descriptor-duplicating
+  # redirections, not control operators, and are the one `&` this model does represent --
+  # `echo … >&2` is how this repository writes an error, and the pinned live fixture below
+  # is that shape.
+  amp="${st//&&/}"; amp="${amp//>&/}"; amp="${amp//<&/}"; amp="${amp//&>/}"
+  case "$amp" in *'&'*) return 1 ;; esac
+  # Braces. The ONLY brace shape this analysis can prove is the single FLAT group that
+  # `brace_body_is_fatal` reads, so at most one may open on a record and it must close on
+  # the same record. A `{` left open spans records the depth counter does not pair, which is
+  # both the backgrounded-group vector and the function-body one.
+  opens="${st//[^\{]/}"; closes="${st//[^\}]/}"
+  [ "${#opens}" -le 1 ] && [ "${#opens}" -eq "${#closes}" ]
+}
+
 negated_branch_dominates() { # $1 = index of the guard's record in GUARD_RECORDS
-  local i d=0 event struct in_then=1 arm_terminates=1 depth_at_start
+  local i d=0 event struct in_then=1 arm_terminates=1 depth_at_start case_depth=0
   for ((i = $1 + 1; i < ${#GUARD_RECORDS[@]}; i++)); do
     struct="$(shell_structure "${GUARD_RECORDS[i]}")"
-    # This walk counts structure ACROSS records, which is exactly what the per-line
-    # structural pass cannot do for a here-document body or a string continued onto the next
-    # line: a bare `if` inside either raised `d`, the real `fi` was consumed one level too
-    # deep, and the records ran out with `in_then=0` -- reading as a use inside the protected
-    # arm when the use actually sat below `fi` with a non-terminating `then` arm. That is a
-    # fail-OPEN, and the header's blanket "where it is unsure it blanks, which reads as not
-    # fatal" was the wrong direction for it (#1464 re-review round 5).
-    # Modelling those regions is shell parsing. DETECTING them is not, so the anchor detects
-    # them and declines -- the same move `brace_body_is_fatal` already makes for `<<`.
-    [[ "${GUARD_RECORDS[i]}" =~ $HEREDOC_INTRODUCER ]] && return 1
-    shell_data_unclosed "${GUARD_RECORDS[i]}" && return 1
+    # The inverted default: a record this walk cannot account for ENDS the walk as a REJECT.
+    # Modelling these regions is shell parsing. Refusing them is not.
+    arm_record_is_modelled "${GUARD_RECORDS[i]}" "$struct" "$case_depth" || return 1
     depth_at_start=$d
     # Only a statement of the arm ITSELF is unconditionally reached: one nested inside a
     # further branch is not, which is the same reason `{ false && exit 1; }` is rejected.
@@ -672,12 +772,14 @@ negated_branch_dominates() { # $1 = index of the guard's record in GUARD_RECORDS
     fi
     while IFS= read -r event; do
       case "$event" in
-        if | do | case) d=$((d + 1)) ;;
+        if | do) d=$((d + 1)) ;;
+        'case') d=$((d + 1)); case_depth=$((case_depth + 1)) ;;
         # `arm_terminates` is already 0-for-yes, so it IS the answer below the construct.
         fi) [ "$d" -eq 0 ] && return "$arm_terminates"; d=$((d - 1)) ;;
         # A `done`/`esac` closing at depth 0 would close a construct this walk never saw
         # opened, so the depth model has lost the file. Decline rather than guess.
-        done | esac) [ "$d" -eq 0 ] && return 1; d=$((d - 1)) ;;
+        done) [ "$d" -eq 0 ] && return 1; d=$((d - 1)) ;;
+        'esac') [ "$d" -eq 0 ] && return 1; d=$((d - 1)); case_depth=$((case_depth - 1)) ;;
         else | elif) [ "$d" -eq 0 ] && in_then=0 ;;
       esac
     done < <(branch_events "$struct")
@@ -1028,6 +1130,11 @@ guard_tail_case dead 'a fatal statement inside a `case` arm in the `then` arm' \
   '  esac' \
   'fi' \
   'gh api "repos/$repository/commits/$head_sha"'
+# Round 6's inversion rejected this shape outright -- a `case` arm's pattern label carries a
+# bare `)` and the record model did not represent it. It is back to LIVE because
+# `scripts/privileged-merge-conformance.sh:327` is a real guard written this way, so the
+# label was PROVEN as a shape (`CASE_ARM_LABEL`) rather than the rejection being widened
+# away. The two fixtures below it pin what that proof does NOT extend to.
 guard_tail_case live 'the same `exit 1` below `esac`, at the arm top level' \
   'if ! '"$HEX_GUARD"'; then' \
   '  case "$head_sha" in' \
@@ -1096,6 +1203,130 @@ guard_tail_case live 'a here-STRING below `fi`, which is single-line and not a h
   '  exit 1' \
   'fi' \
   'read -r probe <<<"$head_sha"' \
+  'gh api "repos/$repository/commits/$head_sha"'
+
+# ROUND 6. The arm walk now DECLINES a record it cannot account for, instead of walking
+# past it (`arm_record_is_modelled`). Each vector below reached the use while the anchor
+# reported a live guard, and each is the same shape the four rounds before it were: a
+# grouping or data construct the record model does not represent, read at relative depth 0
+# and taken for a statement of the arm itself.
+#
+# Each is paired with a CONTROL that keeps the legitimate spelling of the same idea alive,
+# so a later narrowing cannot be mistaken for the inversion doing its job.
+guard_tail_case dead 'an `exit 1` that only leaves a multi-line `( … )` subshell' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  (' \
+  '    exit 1' \
+  '  ) || echo "swallowed"' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+guard_tail_case dead 'an `exit 1` inside a function DEFINITION, which only defines it' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  cleanup() {' \
+  '    exit 1' \
+  '  }' \
+  '  echo "::warning::registered a cleanup"' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+guard_tail_case dead 'an `exit 1` in a BACKGROUNDED group, which exits a subshell' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  {' \
+  '    exit 1' \
+  '  } &' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+guard_tail_case live 'the same `exit 1` as a plain statement of the arm' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  echo "::error::head sha is not a 40-hex object name" >&2' \
+  '  exit 1' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+# The data half of the same round: `shell_structure` scans `${…}` and `$(…)` per record, so
+# one that runs off the end of its record continued onto the next records as COMMANDS -- the
+# same blind spot as an unclosed quote, which round 5 detected and this one did not. A bare
+# `if` inside the region then consumed the real `fi` one level too deep and the walk ended
+# still reading the use as inside the protected `else` extent.
+guard_tail_case dead 'a bare `if` inside a `${…}` left open at the end of a record' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  failures=$((failures + 1))' \
+  'else' \
+  '  other=${msg:-' \
+  'if this were code it would open a branch; then' \
+  '}' \
+  '  gh api "repos/$repository/commits/$head_sha"' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+guard_tail_case dead 'the same with a `$(…)` left open instead' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  failures=$((failures + 1))' \
+  'else' \
+  '  other=$(printf "%s" "x' \
+  'if this were code it would open a branch; then' \
+  ')' \
+  '  gh api "repos/$repository/commits/$head_sha"' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+guard_tail_case live 'the same `else` extent with every expansion closing on its record' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  failures=$((failures + 1))' \
+  'else' \
+  '  other="${msg:-none}"' \
+  '  gh api "repos/$repository/commits/$head_sha"'
+# `arm_record_is_modelled` states four rules, and the four vectors above are each caught by
+# more than one of them. These four are the ISOLATING cases, probed by mutating each rule
+# alone: without them a later edit could delete any one rule and keep this file green, which
+# is how a rule that reads like protection stops being any.
+guard_tail_case dead 'a `${…}` run-off whose closer record has BALANCED braces' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  failures=$((failures + 1))' \
+  'else' \
+  '  other=${msg:-' \
+  'if this were code it would open a branch; then' \
+  'x} ${z}{' \
+  '  gh api "repos/$repository/commits/$head_sha"' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+guard_tail_case dead 'a backgrounded SIMPLE command, which no brace or paren rule sees' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  exit 1 &' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+guard_tail_case dead 'a bare `{` group record, whose imbalance is the only signal' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  failures=$((failures + 1))' \
+  'else' \
+  '  {' \
+  'if this were code it would open a branch; then' \
+  '  }' \
+  '  gh api "repos/$repository/commits/$head_sha"' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+guard_tail_case dead 'a bare `(` record inside an OPEN `case`, which is not a label' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  failures=$((failures + 1))' \
+  'else' \
+  '  case "$head_sha" in' \
+  '    a)' \
+  '      (' \
+  'if this were code it would open a branch; then' \
+  '      ;;' \
+  '  esac' \
+  '  gh api "repos/$repository/commits/$head_sha"' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+
+# `CASE_ARM_LABEL` is the ONE bare `)` this model proves, and only while a `case` is open.
+# These pin that it does not become a general licence for a parenthesis.
+guard_tail_case dead 'a single-line `( exit 1 )` subshell, which matches the label shape' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  ( exit 1 )' \
+  'fi' \
+  'gh api "repos/$repository/commits/$head_sha"'
+guard_tail_case dead 'a label-shaped record with no `case` open above it' \
+  'if ! '"$HEX_GUARD"'; then' \
+  '  bogus)' \
+  '  exit 1' \
+  'fi' \
   'gh api "repos/$repository/commits/$head_sha"'
 
 guard_tail_case dead 'a POSITIVE `if` condition, whose failing arm is the unguarded one' \

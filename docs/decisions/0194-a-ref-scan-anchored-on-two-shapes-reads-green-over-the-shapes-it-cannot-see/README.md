@@ -170,40 +170,49 @@ coverage:
 
 - `exit 300` does leave the guard (status 44) but is rejected; the 1–255 bound is easier to
   state and to trust than "any N that is not a multiple of 256".
-- A nested command group, or a **here-document**, in a brace body is not flattened. A plain
+- A nested **brace** group, or a **here-document**, in a brace body is not flattened. A plain
   redirection (`>&2`, `>/dev/null`, `2>&1`, `< <(…)`) is flattened and still reads FATAL, and
-  must keep doing so: **97** fatal `|| { … }` guard bodies, across **17** files, carry a
+  must keep doing so: **96** fatal `|| { … }` guard bodies, across **17** files, carry a
   `>&2`, and every one would read disarmed under the stricter rule earlier revisions of this
-  ADR described. Two, verified by reading the lines: `scripts/gen-adr-index.sh:106` and
+  ADR described. (**97** stood here through round 5 and does not reproduce: the method below,
+  run against both the committed and the working copy of this gate's own functions at this
+  PR's head, returns 96. It is corrected, not defended.) Two, verified by reading the lines: `scripts/gen-adr-index.sh:106` and
   `.github/workflows/node-release.yml:318`, both `… || { echo "…" >&2; exit 1; }`. The code
   never implemented that stricter rule; the prose did, and this is the correction.
 
   **How that number was counted**, stated here because two earlier ones (67, then 123) were
   not, and neither could be reproduced. *Universe:* the scan's own file set — `git ls-files
   '.github/workflows/*.yml' 'scripts/*.sh' 'scripts/*.py'` with `*.test.sh`, `*.test.py` and
-  `*_test.py` removed, 144 files. An earlier revision said "no `.py` file contains a
+  `*_test.py` removed, 144 files: 57 `.py`, 38 `.sh`, 49 `.yml`. An earlier revision said "no `.py` file contains a
   `|| { … }`". That is false — `scripts/gen-node-ci-protected.py:778`, `:781` and `:782`
   contain them inside emitted-shell string literals — and so is the narrower restatement
   "no `.py` line's structural tail is `|| {`": line 778 *does* end that way structurally,
   because `shell_structure` has no model of Python's `\"` escapes and its quote state
   ping-pongs across them. What is true, and what the count actually rests on, is that
   **no `.py` record whose structural tail is `|| {` is accepted by `brace_body_is_fatal`**:
-  three reach that test and all three are rejected. So the 87 shell and YAML files give the
+  three reach that test and all three are rejected. That rejection comes from the CONTENT of
+  those three emitted-shell string literals, not from any rule about `.py`, so an edit to
+  `scripts/gen-node-ci-protected.py` can move it; re-derive rather than assuming the language
+  settles it. So the 87 shell and YAML files give the
   same answer, and no figure quoted against a "206-file" or "174-file" universe belongs to
-  this measurement. *Predicate:* a logical line, as
-  `logical_lines slice` emits them, whose tail is `|| {`, whose body `brace_body_is_fatal`
+  this measurement. *Predicate:* a record, as `logical_lines slice`
+  emits them, whose structural text contains `|| {`, whose body `brace_body_is_fatal`
   accepts, and whose source text contains `>&2` — this gate's own two functions, not a regex
-  approximating them. *Command:* source those functions out of
+  approximating them. "Contains", not "whose tail is": `logical_lines` joins a multi-line
+  `|| {` branch into one record whose tail is `}`, so the earlier wording described nothing
+  the code emits. *Command:* source those functions out of
   `scripts/ci-gate/default-branch-uri-encoding.test.sh` and apply the predicate to each file
-  in the set; 97 of the branches it accepts carry the redirection. Re-derive it rather than
-  trusting it — each figure it replaces survived a full review round.
+  in the set; 96 of the branches it accepts carry the redirection, across 17 files. Three
+  readings of "which `|| {`" — first occurrence, last occurrence, and `&& {` included — all
+  return the same 96 across the same 17 files. Re-derive it rather than trusting it: each
+  figure it replaces survived a full review round, and 97 survived five.
 
-  An earlier revision also quoted a denominator, "397 of those branches are fatal". It is
-  **withdrawn**, not corrected: re-deriving it gives 395, and the predicate as stated does
-  not pin which number is right, because it does not say whether the unit is the logical
-  line or the brace, nor whether the `&& {` form that `logical_lines` joins identically is
-  in scope. Only the three figures that reproduce exactly from the text above — **97**,
-  **17** and **144** — are stated. A denominator returns only with a predicate that pins it.
+  **No denominator is stated.** Earlier revisions quoted one; three independent derivations
+  of it produced two different values, and a figure that does not reproduce across
+  independent derivations does not belong in a durable record whichever value is right. It
+  is removed rather than adjudicated, and so is every claim *about* it. Only the three
+  figures that reproduce exactly from the text above — **96**, **17** and **144** — are
+  stated. A denominator returns only with a predicate that pins its unit and its scope.
 - An action reached only through a `&&`/`||` chain inside the body is not unconditionally
   reached. This anchor does not evaluate conditions: it cannot tell `{ false && exit 1; }`
   from `{ [ -n "$x" ] && exit 1; }`, and reads both as disarmed.
