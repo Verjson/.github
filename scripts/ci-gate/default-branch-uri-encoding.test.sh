@@ -25,14 +25,34 @@
 #      and non-test shell and Python scripts, so a new unencoded site fails here instead of
 #      merely being spelled differently from a denylist pattern.
 #
-# Read that third one narrowly. The scan is anchored on syntax: f-string and `str.format`
-# brace interpolation in Python, `$VAR` interpolation in shell. The same URL built by
-# concatenation (`"...?ref=" + branch`), by `%`-formatting, or across two statements is
-# invisible to it, and so is a ref-bearing URL shape the anchor list does not name. Those
-# are limits of the recognizer, not sites judged safe. Widening both is tracked in #1464,
-# which carries a measured example: flipping a real path-segment encoder to the query form
-# leaves this check green today. Do not read a green run here as "every ref interpolation
-# in this repository is encoded correctly".
+# Read that third one narrowly, and read the ceiling below before trusting a green run.
+#
+# #1464 widened the anchors from two URL shapes to the ref-bearing path segments listed in
+# REF_PATH_SEGMENT (`git/ref[s]/heads/`, `commits/`, `git/commits/`, `git/trees/`,
+# `git/tags/`, `branches/` including `rules/branches/`, and BOTH operands of a
+# `compare/A...B` range), and taught the shell anchor that `${VAR}` is the same
+# interpolation as `$VAR`. That took the scan from 35 recognized sites to 77. Section 0
+# measures each of those shapes against synthetic files, so a regression reports which
+# shape went blind rather than simply finding fewer sites.
+#
+# THE CEILING — these reach a ref-bearing URL and this scan still does NOT see them:
+#   * Non-brace construction in Python. `read("...?ref=" + branch)`, `"...?ref=%s" % branch`,
+#     and a two-statement `url = "...?ref="` / `url += branch` build the same URL and come
+#     back unseen. This is a DELIBERATE ceiling, not an oversight: every ref URL in this
+#     repository is built with an f-string or `str.format`, and recognizing the others needs
+#     an AST/dataflow pass rather than a line anchor -- a line anchor for `+` would be
+#     evadable in exactly the way the two-shape anchor was. Keep building these URLs with
+#     brace interpolation; a site that stops is a site this test stops covering.
+#   * Python embedded in workflow YAML. `{EXPR}` interpolation is only extracted from `.py`
+#     files, so the inline Python in `container-deployment.yml` (5 ref-bearing lines as of
+#     #1464) is outside the scan.
+#   * Shell positional parameters. `commits/$1` is skipped because the subject must be a
+#     name; the proof for a positional is at the call site, not at the use.
+#   * An interpolation split across source lines, and any ref-bearing path segment not in
+#     REF_PATH_SEGMENT.
+#   * The sites in REF_SITE_ALLOWLIST -- exempted by hand, each with its reason.
+# Do not read a green run here as "every ref interpolation in this repository is encoded
+# correctly". Read it as "every shape this scan recognizes is".
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -129,8 +149,10 @@ grep -qF "ai-review-label-rearm.yml?ref=$NESTED_BRANCH" "$GH_CALLS" \
 
 # --------------------------------------------------------------------------------------
 # Shared scan: every ref interpolation in workflows and non-test shell and Python scripts.
-#   query value  -> `?ref=$VAR`     (shell) or `?ref={EXPR}`     (Python)
-#   path segment -> `git/ref[s]/heads/$VAR` or `git/ref[s]/heads/{EXPR}`
+#   query value  -> `?ref=$VAR`          (shell) or `?ref={EXPR}`          (Python)
+#   path segment -> `<ref-segment>/$VAR` (shell) or `<ref-segment>/{EXPR}` (Python), where
+#                   <ref-segment> is any of the ref-bearing GitHub REST path segments in
+#                   REF_PATH_SEGMENT below, plus the second operand of a `compare/A...B`.
 # A `.py` file is scanned for both syntaxes: it may build a URL itself, and it may also emit
 # shell that does (the generated node required-workflow admission step is one).
 # `*.test.sh`, `*.test.py` and `*_test.py` are excluded deliberately: their `?ref=` strings
@@ -145,6 +167,15 @@ mapfile -t scanned < <(
 FUNC_HEADER='^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[(][)][[:space:]]*[({]'
 PY_FUNC_HEADER='^[[:space:]]*def[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[(]'
 
+# The GitHub REST path segments whose next component names a ref (a branch name, a tag, or
+# a commit-ish). A literal "/" in any of them re-addresses the resource exactly the way it
+# does in `git/refs/heads/`, so they all take the path encoding, never the query one.
+# `branches` also covers `rules/branches`; `commits` also covers `git/commits`.
+REF_PATH_SEGMENT='(git/refs?/heads|git/commits|git/trees|git/tags|commits|branches|compare)'
+# `$name` and `${name}` are the same shell interpolation; the scan must not be evadable by
+# adding braces.
+SHVAR='\$\{?[A-Za-z_][A-Za-z0-9_]*\}?'
+
 # Emits "file<TAB>line<TAB>kind<TAB>subject<TAB>syntax" for every ref interpolation in the
 # repository. `syntax` is shvar for a `$name` interpolation and pyexpr for a `{expression}`
 # one, because the two prove themselves differently.
@@ -157,21 +188,48 @@ ref_sites() {
         printf '%s\t%s\tquery\t%s\tshvar\n' "$file" "$line" "${var#?ref=$}"
       done < <(grep -oE '\?ref=\$[A-Za-z_][A-Za-z0-9_]*' <<<"$text" || true)
       while read -r var; do
-        var="${var##*/\$}"
+        var="${var##*/\$}"; var="${var#\{}"; var="${var%\}}"
         printf '%s\t%s\tpath\t%s\tshvar\n' "$file" "$line" "$var"
-      done < <(grep -oE 'git/refs?/heads/\$[A-Za-z_][A-Za-z0-9_]*' <<<"$text" || true)
+      done < <(grep -oE "${REF_PATH_SEGMENT}/${SHVAR}" <<<"$text" || true)
+      if [[ "$text" == *compare/* ]]; then
+        while read -r var; do
+          var="${var##*...\$}"; var="${var#\{}"; var="${var%\}}"
+          printf '%s\t%s\tpath\t%s\tshvar\n' "$file" "$line" "$var"
+        done < <(grep -oE "\.\.\.${SHVAR}" <<<"$text" || true)
+      fi
       [ "${file##*.}" = py ] || continue
       while IFS= read -r expr; do
         expr="${expr#\?ref=\{}"
         printf '%s\t%s\tquery\t%s\tpyexpr\n' "$file" "$line" "${expr%\}}"
       done < <(grep -oE '\?ref=\{[^}]+\}' <<<"$text" || true)
       while IFS= read -r expr; do
-        expr="${expr#*heads/\{}"
+        expr="${expr##*/\{}"
         printf '%s\t%s\tpath\t%s\tpyexpr\n' "$file" "$line" "${expr%\}}"
-      done < <(grep -oE 'git/refs?/heads/\{[^}]+\}' <<<"$text" || true)
-    done < <(grep -nE '\?ref=[$\{]|git/refs?/heads/[$\{]' "$root/$file" \
+      done < <(grep -oE "${REF_PATH_SEGMENT}/\{[^}]+\}" <<<"$text" || true)
+      if [[ "$text" == *compare/* ]]; then
+        while IFS= read -r expr; do
+          expr="${expr##*...\{}"
+          printf '%s\t%s\tpath\t%s\tpyexpr\n' "$file" "$line" "${expr%\}}"
+        done < <(grep -oE '\.\.\.\{[^}]+\}' <<<"$text" || true)
+      fi
+    done < <(grep -nE '\?ref=[$\{]|'"${REF_PATH_SEGMENT}"'/[$\{]|compare/' "$root/$file" \
       | grep -vE '^[0-9]+:[[:space:]]*#' | sed 's/:/\t/' || true)
   done
+}
+
+# `$tmp/py-encoder.py` evaluates a `quote(…)` call against the stdlib binding it installs.
+# A file that re-binds `quote` at module scope would therefore be judged by a function it
+# never calls, so such a file is rejected outright instead of evaluated. Importing the
+# stdlib function under its own name is the one binding that is not a shadow.
+py_quote_unshadowed() { # $1 = file (relative to $root) -> 0 when module scope keeps `quote`
+  local file="$1" line
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    [[ "$line" =~ ^from[[:space:]]+urllib\.parse[[:space:]]+import[[:space:]]+[A-Za-z0-9_,\ ]+$ ]] \
+      || return 1
+  done < <(grep -E '^(def|async def|class)[[:space:]]+quote[[:space:]]*[(:]|^quote[[:space:]]*[:=]|^import[[:space:]].*[[:space:]]as[[:space:]]+quote[[:space:]]*$|^from[[:space:]].*[[:space:]]import[[:space:]].*\bquote\b' \
+    "$root/$file" || true)
+  return 0
 }
 
 # The proof for a value must sit between the top of its enclosing function (or the top of
@@ -190,11 +248,75 @@ block_slice() {
   fi
 }
 
+
+# --------------------------------------------------------------------------------------
+# 0. The recognizer's own coverage, measured rather than described. Each case below is a
+#    shape that reached a ref-bearing URL position while this scan reported green (#1464).
+#    They run against synthetic files, not the repository, so a real site being fixed or
+#    moved cannot quietly retire one.
+# --------------------------------------------------------------------------------------
+mkdir -p "$tmp/fx"
+recognizer_sees() { # $1 = label, $2 = filename, $3 = expected "kind<TAB>subject", $4… = lines
+  local label="$1" name="$2" expected="$3"; shift 3
+  printf '%s\n' "$@" >"$tmp/fx/$name"
+  ( root="$tmp/fx"; scanned=("$name"); ref_sites ) | cut -f3,4 | grep -qxF "$expected" \
+    || fail "the ref scan is blind to $label"
+}
+
+recognizer_sees 'a ref in a commits/ path segment (shell)' anchor-commits.sh \
+  $'path\tdefault_branch' 'gh api "repos/$REPO/commits/$default_branch"'
+recognizer_sees 'a ref in a commits/ path segment (Python)' anchor-commits.py \
+  $'path\tdefault_branch' 'run_gh(f"repos/{repo}/commits/{default_branch}")'
+recognizer_sees 'a ref in a git/commits/ path segment' anchor-git-commits.py \
+  $'path\thead_sha' 'client.request("GET", f"repos/{repo}/git/commits/{head_sha}")'
+recognizer_sees 'a ref in a git/trees/ path segment' anchor-git-trees.py \
+  $'path\tref' 'gh("api", f"repos/{HUB}/git/trees/{ref}?recursive=1")'
+recognizer_sees 'a ref in a git/tags/ path segment' anchor-git-tags.py \
+  $'path\ttag' 'api.call("GET", f"{repo}/git/tags/{tag}", token)'
+recognizer_sees 'a ref in a branches/ path segment' anchor-branches.sh \
+  $'path\tbranch' 'gh api "repos/$ORG/$repo/branches/$branch"'
+recognizer_sees 'a ref in a rules/branches/ path segment' anchor-rules-branches.py \
+  $'path\tbase' 'f"repos/{repo}/rules/branches/{base}?per_page=100"'
+recognizer_sees 'the LEFT operand of a compare/ range' anchor-compare-left.sh \
+  $'path\tbase_ref' 'gh api "repos/$REPO/compare/$base_ref...$head_sha"'
+recognizer_sees 'the RIGHT operand of a compare/ range' anchor-compare-right.sh \
+  $'path\thead_sha' 'gh api "repos/$REPO/compare/$base_ref...$head_sha"'
+recognizer_sees 'the RIGHT operand of a compare/ range (Python)' anchor-compare-right.py \
+  $'path\tcurrent' 'gh_json(f"repos/{repo}/compare/{previous}...{current}")'
+recognizer_sees 'a ${braced} shell interpolation' anchor-braced.sh \
+  $'path\tHEAD_SHA' 'gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/status"'
+
+# A module-scope `quote` re-binding is rejected outright rather than evaluated: the
+# encoder sandbox binds the stdlib `quote`, so a file that ships its own would be judged by
+# a function it never calls.
+cat >"$tmp/fx/shadowed.py" <<'PYFX'
+def quote(value, safe="/"):
+    return value
+
+
+def read(repo, branch):
+    return gh(f"repos/{repo}/git/refs/heads/{quote(branch, safe='')}")
+PYFX
+( root="$tmp/fx"; py_quote_unshadowed shadowed.py ) \
+  && fail "a module-scope 'quote' re-binding was accepted as the stdlib encoder"
+cat >"$tmp/fx/unshadowed.py" <<'PYFX'
+from urllib.parse import quote
+
+
+def read(repo, branch):
+    return gh(f"repos/{repo}/git/refs/heads/{quote(branch, safe='')}")
+PYFX
+( root="$tmp/fx"; py_quote_unshadowed unshadowed.py ) \
+  || fail "the stdlib 'from urllib.parse import quote' was mistaken for a shadow"
+
 # --------------------------------------------------------------------------------------
 # 2. Semantics: evaluate every encoder expression this repository actually ships.
 # --------------------------------------------------------------------------------------
-encoder_program() { # $1 = block slice, $2 = variable -> the jq program of its @uri assignment
-  sed -nE "s/^[[:space:]]*$2=\"\\\$\(jq -rn --arg branch \"[^\"]*\" '(.*)'\)\"\$/\1/p" <<<"$1" \
+# $1 = block slice, $2 = variable -> "<jq --arg name><TAB><jq program>" for its @uri
+# assignment. The `--arg` name is captured rather than assumed: this repository spells it
+# `branch`, `value` and `r`, and a program is only evaluable with the name it actually binds.
+encoder_program() {
+  sed -nE "s/^[[:space:]]*$2=\"\\\$\(jq -rn --arg ([A-Za-z_][A-Za-z0-9_]*) \"[^\"]*\" '(.*)'\)\"\$/\1\t\2/p" <<<"$1" \
     | grep '@uri' || true
 }
 
@@ -248,19 +370,21 @@ assert_py_encoder() { # $1 = label, $2 = python expression, $3 = query|path
 # repository uses. A module-level SHA_PATTERN must itself be the 40-hex pattern.
 py_hex_constrained() { # $1 = file, $2 = block slice, $3 = identifier
   local file="$1" slice="$2" var="$3" hex='\[0-9a-f\]\{40\}'
-  [[ "$var" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+  # A dotted attribute path (`args.deployment_commit`) is as matchable as a bare name: the
+  # grep below is a literal comparison against the text the file actually ships.
+  [[ "$var" =~ ^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$ ]] || return 1
   grep -qE "re\.fullmatch\(r?['\"][^,]*$hex[^,]*['\"],[[:space:]]*$var([^A-Za-z0-9_]|$)" \
     <<<"$slice" && return 0
   grep -qE "SHA_PATTERN\.fullmatch\($var([^A-Za-z0-9_]|$)" <<<"$slice" || return 1
   grep -qE "^SHA_PATTERN = re\.compile\(r['\"]$hex['\"]\)$" "$root/$file"
 }
 
-assert_encoder() { # $1 = label, $2 = jq program, $3 = query|path
-  local label="$1" program="$2" mode="$3" got
-  got="$(jq -rn --arg branch "$HOSTILE_BRANCH" "$program")"
+assert_encoder() { # $1 = label, $2 = jq program, $3 = query|path, $4 = jq --arg name
+  local label="$1" program="$2" mode="$3" arg="$4" got
+  got="$(jq -rn --arg "$arg" "$HOSTILE_BRANCH" "$program")"
   [ "$got" = "$HOSTILE_ENCODED" ] \
     || fail "$label encodes '$HOSTILE_BRANCH' as '$got', expected '$HOSTILE_ENCODED'"
-  got="$(jq -rn --arg branch "$NESTED_BRANCH" "$program")"
+  got="$(jq -rn --arg "$arg" "$NESTED_BRANCH" "$program")"
   case "$mode" in
     query)
       [ "$got" = "$NESTED_BRANCH" ] \
@@ -273,7 +397,76 @@ assert_encoder() { # $1 = label, $2 = jq program, $3 = query|path
 
 # --------------------------------------------------------------------------------------
 # 3. Coverage: the allowlist. Each site proves its value safe, or this test fails.
+#
+# A site whose proof this scan cannot see at the point of use is named here, once, with the
+# reason it is safe anyway. This is a record, not an escape hatch: an entry is keyed by file
+# and interpolated subject, every entry must match at least one live site (a stale one fails
+# below), and a NEW site that is not listed still fails. Widening the recognizer so entries
+# can be retired is tracked in #1464.
+#
+# Two reason classes appear here, and nothing else should be added without one:
+#   sha  — the value is a 40-hex object name, but its constraint is established in another
+#          step, another function, or at the caller, outside this scan's block slice.
+#   ref  — the value is a ref name carrying a stated non-encoding guard at its source.
 # --------------------------------------------------------------------------------------
+REF_SITE_ALLOWLIST=(
+  # sha: `.headRefOid` from `gh pr view`; GitHub answers a 40-hex OID or the `// ""`
+  # default, and this step is not the one that restates the constraint.
+  $'.github/workflows/ai-review-merge.yml\thead_sha'
+  # sha: same value; gate-rearm.yml:168 asserts `^[0-9a-f]{40}$` on it in the job that
+  # resolves it, which is a different step from the read at :347.
+  $'.github/workflows/gate-rearm.yml\thead_sha'
+  # sha: `${{ github.event.pull_request.head.sha || github.sha }}` — a GitHub-supplied
+  # object name, never adopter text.
+  $'.github/workflows/node-ci.yml\tHEAD_SHA'
+  # sha: `${{ inputs.head-sha }}`, admitted and re-checked against
+  # `ADMITTED_HEAD_SHA` elsewhere in the same protected workflow.
+  $'.github/workflows/node-ci-protected.yml\tHEAD_SHA'
+  # sha: `git rev-parse HEAD` in the checkout this step just made; git answers a 40-hex
+  # object name or fails, and the step runs under `set -euo pipefail`.
+  $'.github/workflows/repo-hygiene.yml\tresolved'
+  # sha: validated at :89 via `validate_workflow_identity`, whose `re.fullmatch` on the
+  # 40-hex pattern lives in that function rather than in `build_receipt`'s own block.
+  $'scripts/container_deployment_review_producer.py\targs.producer_commit'
+  # sha: `SHA.fullmatch(target['sha'])` on the line above, spelled through `.get()` at the
+  # use. Same value, different expression, so the literal match cannot join them up.
+  $'scripts/container_deployment_transport.py\ttarget.get('"'"'sha'"'"')'
+  # sha: `require(... SHA.fullmatch(probe['workflowCommit']) ...)` in the probe validator,
+  # a different function from the transport call.
+  $'scripts/container_deployment_transport.py\tprobe['"'"'workflowCommit'"'"']'
+  # sha: `hub_tree`'s own parameter. Its two callers pass the literal "main" and a value
+  # this module already resolved as an object name; the constraint is at the caller.
+  $'scripts/fleet-contract-inventory.py\tref'
+  # sha: `head_sha = require_sha(planned["head_sha"], …)` earlier in the same module;
+  # `require_sha` is the 40-hex boundary check, but it is a call, not an inline pattern.
+  $'scripts/renovate-changelog.py\thead_sha'
+  # ref: guarded at verify-arm-receipt.sh:59-60 with `^[A-Za-z0-9._/-]+$` plus explicit
+  # rejection of a leading "/", of "..", and of "//" — a traversal guard rather than an
+  # encoding, which is the one other shape this test accepts by hand.
+  $'scripts/ci-gate/verify-arm-receipt.sh\tarm_base_branch'
+  # ref: DELIBERATE and UNRESOLVED. assert-mergeable-head.sh:148 encodes with `@uri` and
+  # then gsubs %2F back to "/", i.e. the QUERY form, into a `rules/branches/` PATH segment,
+  # because its comment states the literal separator is what addresses the ruleset. Three
+  # other sites in this repository (gate_coverage_audit.py:216, required-checks-audit.sh,
+  # required-checks-rollout.sh) use the path form for the same endpoint. `branches/` and
+  # `commits/` were measured to accept BOTH forms against the live API while widening this
+  # scan; `rules/branches/` could not be settled here because no Verjson ruleset targets a
+  # slash-bearing ref to compare against. Do not "fix" either side on a guess: settling it
+  # is tracked in #1464. `base_ref` also appears here in fault prose that quotes the URL.
+  $'scripts/assert-mergeable-head.sh\tbase_ref_path'
+  $'scripts/assert-mergeable-head.sh\tbase_ref'
+)
+
+allowlisted_hits=()
+ref_site_allowlisted() { # $1 = file, $2 = subject
+  local entry
+  for entry in "${REF_SITE_ALLOWLIST[@]}"; do
+    [ "$entry" = "$1"$'\t'"$2" ] || continue
+    allowlisted_hits+=("$entry")
+    return 0
+  done
+  return 1
+}
 sites=0
 encoders=0
 py_sites=0
@@ -284,6 +477,8 @@ while IFS=$'\t' read -r file line kind var syntax; do
   if [ "$syntax" = pyexpr ]; then
     py_sites=$((py_sites + 1))
     label="$file:$line {$var}"
+    py_quote_unshadowed "$file" \
+      || fail "$file re-binds 'quote' at module scope; its encoder calls cannot be judged by the stdlib one"
     expression="$(py_encoder_expression "$slice" "$var")"
     if [ -n "$expression" ]; then
       py_encoders=$((py_encoders + 1))
@@ -291,13 +486,15 @@ while IFS=$'\t' read -r file line kind var syntax; do
       continue
     fi
     py_hex_constrained "$file" "$slice" "$var" && continue
+    ref_site_allowlisted "$file" "$var" && continue
     fail "$label reaches a gh api $kind position without a percent-encoding or a 40-hex constraint in its block"
   fi
   label="$file:$line \$$var"
-  program="$(encoder_program "$slice" "$var")"
-  if [ -n "$program" ]; then
+  jq_arg=""; program=""
+  IFS=$'\t' read -r jq_arg program < <(encoder_program "$slice" "$var") || true
+  if [ -n "${program:-}" ]; then
     encoders=$((encoders + 1))
-    assert_encoder "$label" "$program" "$kind"
+    assert_encoder "$label" "$program" "$kind" "$jq_arg"
     continue
   fi
   # A 40-hex-constrained value needs no encoding: the constraint already excludes every
@@ -308,15 +505,36 @@ while IFS=$'\t' read -r file line kind var syntax; do
   if grep -qE "(^|[[:space:]])$var[:=][[:space:]]*[\"']?[0-9a-f]{40}[\"']?[[:space:]]*\$" <<<"$slice"; then
     continue
   fi
+  # The same 40-hex constraint spelled inside the jq program that produced the value.
+  # `jq -er` exits non-zero when `select` drops the value, and `set -euo pipefail` at the
+  # top of every one of these blocks turns that into an abort, so the constraint is as
+  # load-bearing as the `[[ … =~ ]]` form above.
+  if grep -qE "^[[:space:]]*$var=\"\\\$\(jq -er .*\^\[0-9a-f\]\{40\}\\\$" <<<"$slice"; then
+    continue
+  fi
+  ref_site_allowlisted "$file" "$var" && continue
   fail "$label reaches a gh api $kind position without a percent-encoding or a 40-hex constraint in its block"
 done < <(ref_sites)
 
-[ "$sites" -ge 20 ] || fail "the ref-interpolation scan found only $sites sites; it is not reaching the repository"
-[ "$encoders" -ge 10 ] || fail "only $encoders encoder expressions were exercised; the semantics check is not reaching the fixed sites"
-[ "$py_sites" -ge 8 ] || fail "the ref-interpolation scan found only $py_sites Python sites; it is not reaching the Python callers"
-[ "$py_encoders" -ge 4 ] || fail "only $py_encoders Python encoder calls were exercised; the semantics check is not reaching them"
+# Floors, not targets. They exist so that a recognizer regression -- an anchor dropped, a
+# grep that stops matching -- shows up as "the scan stopped reaching the repository" rather
+# than as a quieter green run. Raise them when the recognizer widens; never lower one to
+# accommodate a scan that found less.
+[ "$sites" -ge 70 ] || fail "the ref-interpolation scan found only $sites sites; it is not reaching the repository"
+[ "$encoders" -ge 16 ] || fail "only $encoders encoder expressions were exercised; the semantics check is not reaching the fixed sites"
+[ "$py_sites" -ge 18 ] || fail "the ref-interpolation scan found only $py_sites Python sites; it is not reaching the Python callers"
+[ "$py_encoders" -ge 6 ] || fail "only $py_encoders Python encoder calls were exercised; the semantics check is not reaching them"
+
+# A stale allowlist entry is a silent hole: it would keep vouching for a site that has
+# moved, been renamed, or been fixed, and would quietly cover a future site that happens to
+# reuse the name. Every entry must have been consulted by a live site.
+for entry in "${REF_SITE_ALLOWLIST[@]}"; do
+  printf '%s\n' "${allowlisted_hits[@]:-}" | grep -qxF "$entry" \
+    || fail "stale ref-site allowlist entry, no site matched it: ${entry//$'\t'/ }"
+done
 
 echo "PASS: $sites ref interpolations ($py_sites of them Python) across ${#scanned[@]} workflows"
 echo "      and non-test scripts are percent-encoded or 40-hex-constrained, and all $encoders jq"
 echo "      and $py_encoders Python encoder expressions keep '/' literal in a query value and"
 echo "      encode it as %2F in a path segment"
+echo "      ${#REF_SITE_ALLOWLIST[@]} sites are allowlisted with a stated reason instead"

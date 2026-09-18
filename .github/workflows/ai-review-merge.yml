@@ -468,11 +468,15 @@ jobs:
           # independent of branch protection, whereas mergeStateStatus only
           # reports BEHIND when a strict "up to date" rule is set (this org's
           # ruleset is NOT strict, so a behind-but-clean branch reads CLEAN).
-          # Compare against the head SHA, not the ref, so a slash in the branch
-          # name can't confuse the ...-path. Behind → update the branch; the push
-          # fires `synchronize`, and that fresh run reviews/merges against the
-          # current base, so this run steps aside.
-          behind="$(gh api "repos/$REPO/compare/$base_ref...$head_sha" --jq '.behind_by' 2>/dev/null || echo 0)"
+          # Compare against the head SHA on the right, not the ref, so a slash in
+          # the head branch name can't confuse the ...-path. The LEFT operand is
+          # still a branch name and is adopter-controlled, so it is percent-encoded
+          # as a path segment (`@uri`, no gsub back to "/"): a base ref named
+          # `release/1.x` must address that branch, not a deeper path.
+          # Behind → update the branch; the push fires `synchronize`, and that
+          # fresh run reviews/merges against the current base, so this run steps aside.
+          base_ref_path="$(jq -rn --arg base_ref "$base_ref" '$base_ref|@uri')"
+          behind="$(gh api "repos/$REPO/compare/$base_ref_path...$head_sha" --jq '.behind_by' 2>/dev/null || echo 0)"
           [[ "$behind" =~ ^[0-9]+$ ]] || behind=0
           if [ "$behind" -gt 0 ]; then
             if gh api --method PUT "repos/$REPO/pulls/$PR_NUMBER/update-branch" >/dev/null 2>&1; then
