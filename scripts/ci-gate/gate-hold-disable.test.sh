@@ -90,6 +90,16 @@ run_arm(){
 expect_fail(){ label="$1"; if run_arm >"$tmp/out" 2>&1; then fail "$label"; else pass "$label"; fi; }
 
 write_hold
+export EVENT_ACTION=labeled EVENT_LABEL=hold
+if run_arm >"$tmp/out" 2>&1 \
+  && grep -q 'disablePullRequestAutoMerge' "$CALLS" \
+  && ! grep -q 'workflow run ai-review-merge.yml' "$CALLS"; then
+  pass "adding a lowercase hold label disables auto-merge without review dispatch"
+else
+  fail "adding a lowercase hold label did not disable auto-merge"
+fi
+
+write_hold
 MINTED_APP_SLUG=renamed-app
 if run_arm >"$tmp/out" 2>&1; then
   fail "minted App slug mismatch was accepted"
