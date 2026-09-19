@@ -129,7 +129,7 @@ jobs:
           explicit_label_delivery=false
           if [ "$EVENT_NAME" = pull_request_target ] && [ "$EVENT_ACTION" = labeled ]; then
             label_normalized="$(jq -nr --arg raw_label "$EVENT_LABEL" '$raw_label | ascii_downcase | gsub("[ _-]+";"-")')"
-            case "$label_normalized" in ai-review|re-review) ;; *) exit 0 ;; esac
+            case "$label_normalized" in ai-review|re-review|hold|do-not-merge) ;; *) exit 0 ;; esac
             explicit_label_delivery=true
           fi
           if [ "$explicit_label_delivery" = true ] || { [ "$EVENT_NAME" = pull_request_target ] &&
