@@ -54,7 +54,12 @@ jobs:
           ' <<<"$run" >/dev/null
           default_branch="$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch)"
           run_head="$(jq -er '.head_sha | select(test("^[0-9a-f]{40}$"))' <<<"$run")"
-          current_head="$(gh api "repos/$GITHUB_REPOSITORY/commits/$default_branch" --jq .sha)"
+          # The default branch is repository-controlled text landing in a path segment, so
+          # it is percent-encoded with "/" included (`@uri`, no gsub): `commits/<ref>` must
+          # address that ref rather than a deeper path.
+          default_branch_path="$(jq -rn --arg branch "$default_branch" '$branch|@uri')"
+          current_head="$(gh api "repos/$GITHUB_REPOSITORY/commits/$default_branch_path" --jq .sha)"
+          [[ "$current_head" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::default-branch head is malformed'; exit 1; }
           jq -e --arg branch "$default_branch" '.head_branch == $branch' <<<"$run" >/dev/null
           comparison="$(gh api "repos/$GITHUB_REPOSITORY/compare/$run_head...$current_head")"
           jq -e --arg run_head "$run_head" '

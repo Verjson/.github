@@ -94,9 +94,16 @@ def build_receipt(args: argparse.Namespace, api: Api = github_api) -> dict[str, 
     pull = json.loads(api(f"repos/{args.repository}/pulls/{args.pull_request}", "GET", None, None))
     if args.deployment_ref != f"refs/heads/{repository['default_branch']}":
         raise ValueError("producer must execute on the caller default branch")
+    # Both of these land in a `commits/<ref>` path segment below. Constrain them to a
+    # 40-hex object name here, at the boundary, rather than percent-encoding at each use:
+    # a commit-ish that is not an object name is not a value this producer can vouch for.
+    if re.fullmatch(r"[0-9a-f]{40}", args.deployment_commit) is None:
+        raise ValueError("deployment commit must be a 40-hex object name")
     associated = json.loads(api(f"repos/{args.repository}/commits/{args.deployment_commit}/pulls", "GET", None, None))
     select_merged_pull(associated, args.pull_request, repository["default_branch"])
     reviewed_head = pull["head"]["sha"]
+    if not isinstance(reviewed_head, str) or re.fullmatch(r"[0-9a-f]{40}", reviewed_head) is None:
+        raise ValueError("reviewed head must be a 40-hex object name")
     reviewed_commit = json.loads(api(f"repos/{args.repository}/git/commits/{reviewed_head}", "GET", None, None))
     deployed_commit = json.loads(api(f"repos/{args.repository}/git/commits/{args.deployment_commit}", "GET", None, None))
     if deployed_commit["tree"]["sha"] != reviewed_commit["tree"]["sha"]:
