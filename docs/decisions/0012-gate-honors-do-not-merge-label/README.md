@@ -269,3 +269,12 @@ on "is this an amendment?" would have passed it. Being dated does not make a cla
 The hold disposition itself is unchanged and is driven today by
 `scripts/ci-gate/native-automerge.test.sh`, which exercises the label, normalized-label,
 title, and draft forms against the shipped promotion step.
+
+## Amendment (2026-09-19, #1507) — terminal-hold labels reach the gate guard
+
+The hold classifier already normalized label names, but the `labeled`-event allowlist
+accepted only `ai-review` and `re-review`. Adding `hold` or `do-not-merge` therefore
+exited before the current PR state could disable native auto-merge. The allowlist now
+accepts those normalized terminal-hold names; a regression case verifies that adding a
+lowercase `hold` label disables auto-merge without dispatching another paid review. This
+restores the existing terminal-hold decision without changing who may remove a hold.
