@@ -469,7 +469,7 @@ jobs:
     # lane would make a saturated or offline pool leave the check PENDING — the
     # ambiguous state ADR 0178 added this job to eliminate. A deferral must
     # always conclude, and conclude non-SUCCESS.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions: {}
     steps:
