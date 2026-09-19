@@ -69,7 +69,7 @@ def main():
     script = next(step["run"] for step in arm["jobs"]["arm"]["steps"] if step.get("id") == "arm")
     for marker in (
         '[ "$EVENT_NAME" = pull_request_target ] && [ "$EVENT_ACTION" = labeled ]',
-        'case "$label_normalized" in ai-review|re-review)',
+        'case "$label_normalized" in ai-review|re-review|hold|do-not-merge)',
         '[ "${GITHUB_RUN_ATTEMPT:-}" = 1 ]',
         '[ "$WORKFLOW_REF" = "$TARGET_REPO/.github/workflows/ai-review-label-rearm.yml@refs/heads/$DEFAULT_BRANCH" ]',
         '.path == ".github/workflows/ai-review-label-rearm.yml"',

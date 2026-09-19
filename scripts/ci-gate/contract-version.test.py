@@ -707,6 +707,25 @@ class UsesShapeCoverage(unittest.TestCase):
         self.assertEqual([f.kind for f in findings], ["PIN_MISMATCH"])
         self.assertIn("root-action.yml", findings[0].detail)
 
+    def test_a_flow_style_step_pin_is_a_reference_not_a_gap(self):
+        # Verjson/.github#1482. `steps: [{uses: ...@<sha>}]` parses to exactly
+        # the block-style structure, so the pin is present, immutable and
+        # readable. Unifying the two recognizers let the ref class run through
+        # the closing `}` and `]`, which made this line a gap on one sweep and
+        # a clean file on the other -- the muting direction again. Two entries,
+        # because with one the class that stops at the structure and the class
+        # that runs past it differ only in a ref's content, not in the number
+        # of findings.
+        root = self.repo()
+        (root / ".github" / "workflows" / "flow.yml").write_text(
+            "jobs:\n  ci:\n    steps: [{uses: Verjson/.github/.github/workflows/"
+            "node-ci.yml@" + "b" * 40 + "}, {uses: Verjson/.github/.github/"
+            "workflows/changelog.yml@" + "c" * 40 + "}]\n")
+        track(root)
+        findings = self.verify(root)
+        self.assertEqual([f.kind for f in findings],
+                         ["PIN_MISMATCH", "PIN_MISMATCH"])
+
     def test_an_unpinned_expression_ref_is_quoted_whole(self):
         # The verdict was already right; the detail string was not. `[^\s"']+`
         # stops at the first space, so the reader was told the offending ref is
@@ -823,31 +842,189 @@ class UsesShapeCoverage(unittest.TestCase):
         track(root)
         self.assertEqual([f.kind for f in self.verify(root)], ["PIN_MISMATCH"])
 
-    def test_a_pin_inside_a_backtick_literal_is_still_read(self):
-        # The backtick alternative, which the other three do not cover and which
-        # nothing else in this suite would have killed. Deleting it alone drops
-        # 24 of the fleet's 632 references: 16 `.md` lines documenting a pin as
-        # inline code, and 8 `.ts`/`.py` template literals that build a caller
-        # fixture. A consumer test asserting a stale pin is a real skew the sweep
-        # exists to report, and the backtick opens a string in exactly the way
-        # the quote characters do.
+    def test_a_pin_inside_a_backtick_literal_is_read_as_its_sha(self):
+        # The backtick alternative of the key anchor, which nothing else in this
+        # suite covers: a pin documented as Markdown inline code, or built into
+        # a caller fixture as a template literal, opens its string with a
+        # backtick exactly as the quote characters do.
         #
-        # The verdict is UNPINNED_REFERENCE rather than PIN_MISMATCH, and that is
-        # asserted rather than worked around: the ref class excludes whitespace
-        # and the two quotes but *not* a backtick, so the closing backtick is
-        # absorbed into the ref and a backtick-delimited pin never compares equal
-        # to a release commit. That is the ref class's behaviour, not the
-        # anchor's -- it is identical under the pattern this PR replaces -- so it
-        # is pinned here and left to Verjson/.github#1483 rather than changed
-        # inside a key-side change (Verjson/.github#1472).
+        # This asserted the opposite until Verjson/.github#1483. The ref class
+        # excluded whitespace and the two quotes but not a backtick, so the
+        # closing backtick was absorbed and the ref was 41 characters -- a
+        # correct, immutable 40-hex pin that could never compare equal to a
+        # release commit, so the verdict was UNPINNED_REFERENCE on a line that
+        # is in fact pinned. That is the muting direction ADR 0185 names. The
+        # verdict is now PIN_MISMATCH, which is the true statement about this
+        # fixture: the pin is read, and it is not the tracked release commit.
         root = self.repo()
         (root / "surface.test.ts").write_text(
             "const pinnedUses = `    uses: "
             "Verjson/.github/.github/workflows/node-ci.yml@" + "b" * 40 + "`;\n")
         track(root)
         findings = self.verify(root)
-        self.assertEqual([f.kind for f in findings], ["UNPINNED_REFERENCE"])
-        self.assertIn("b" * 40 + "`", findings[0].detail)
+        self.assertEqual([f.kind for f in findings], ["PIN_MISMATCH"])
+        self.assertIn("b" * 40, findings[0].detail)
+        self.assertNotIn("b" * 40 + "`", findings[0].detail)
+
+    def test_two_adjacent_backtick_pins_are_two_references_not_one(self):
+        # The boundary needs more than one instance to be pinned. With a single
+        # backtick-delimited pin on the line, admitting the backtick and
+        # excluding it differ only in the *content* of one ref; with two written
+        # adjacently, with no whitespace to stop the ref on the pattern's
+        # behalf, they differ in the number of matches -- 1 against 2. Measured
+        # both ways before this test was written: admitting the backtick yields
+        # one match whose ref is `<sha-a>``uses:`, having run straight through
+        # the closing backtick and into the second reference.
+        line = ("`uses: Verjson/.github/.github/workflows/node-ci.yml@" + "a" * 40
+                + "``uses: Verjson/.github/.github/workflows/node-ci.yml@"
+                + "b" * 40 + "`")
+        self.assertEqual([m.group("ref") for m in cv.USES_RE.finditer(line)],
+                         ["a" * 40, "b" * 40])
+
+    def test_two_adjacent_backtick_refs_are_two_references_when_unpinned(self):
+        # The test above pins the #1483 backtick exclusion with 40-hex refs, and
+        # #1482's flow-style fix quietly took that job over: the ref now matches
+        # a 40-hex run as a whole alternative and stops after 40 characters, so
+        # the backtick never gets the chance to be absorbed and re-admitting it
+        # reddens nothing. Measured -- with both fixes in, flipping the backtick
+        # back into the class left every test green. The exclusion is still the
+        # only thing doing the work for a ref that is *not* a SHA, which is
+        # where #1483 is now load-bearing, so that is what this pins. Admitting
+        # the backtick yields one match whose ref is `v1``uses:`.
+        line = ("`uses: Verjson/.github/.github/workflows/node-ci.yml@v1"
+                "``uses: Verjson/.github/.github/workflows/changelog.yml@v2`")
+        self.assertEqual([m.group("ref") for m in cv.USES_RE.finditer(line)],
+                         ["v1", "v2"])
+
+    def test_two_adjacent_escaped_newline_refs_are_two_references(self):
+        # The same argument for the backslash, which the ref class excludes as
+        # the closing half of the `\n` the key anchor already reads as an
+        # opener. A source-string fixture writes several workflow lines into one
+        # Python line; without the exclusion the first ref runs through the
+        # escape and swallows the next key, so two references read as one.
+        line = (r'text = "uses: Verjson/.github/.github/workflows/node-ci.yml@v1'
+                r'\nuses: Verjson/.github/.github/workflows/changelog.yml@v2\n"')
+        self.assertEqual([m.group("ref") for m in cv.USES_RE.finditer(line)],
+                         ["v1", "v2"])
+
+    def test_two_adjacent_single_quoted_refs_are_two_references(self):
+        # The single quote, found by running the same routine matrix that found
+        # the backtick and the backslash rather than by suspecting it. It was
+        # subsumed the same way: the 40-hex alternative stops a pin after 40
+        # characters, so re-admitting `\'` to the ref class reddened nothing on
+        # any pinned fixture in this suite. Measured -- dropping it from the
+        # class left the whole suite green until this test. A single-quoted
+        # scalar is the commonest shape the corpus writes, so the exclusion is
+        # load-bearing for every non-SHA ref in one; admitting the quote yields
+        # one match whose ref is `v1\'\'uses:`.
+        line = ("'uses: Verjson/.github/.github/workflows/node-ci.yml@v1"
+                "''uses: Verjson/.github/.github/workflows/changelog.yml@v2'")
+        self.assertEqual([m.group("ref") for m in cv.USES_RE.finditer(line)],
+                         ["v1", "v2"])
+
+    def test_a_shell_grep_assertion_single_quoting_a_pin_is_still_read(self):
+        # The twin of the double-quoted grep assertion above, for the other
+        # quote in the *delimiter* class -- and the fourth exclusion the matrix
+        # found untested. Dropping `'` from that class left the whole suite
+        # green: `sh` quotes a grep pattern either way, and with the key sitting
+        # after the opening `'` rather than at the line start, the entire
+        # reference goes unread and the repository reports as carrying none.
+        # That is a whole reference muted, not a corrupted one.
+        root = self.repo()
+        (root / "check.sh").write_text(
+            "grep -qF 'uses: Verjson/.github/.github/workflows/node-ci.yml@"
+            + "b" * 40 + "' \"$1\"\n")
+        track(root)
+        self.assertEqual([f.kind for f in self.verify(root)], ["PIN_MISMATCH"])
+
+    def test_a_single_quoted_uses_key_is_a_contract_reference(self):
+        # `'uses': x` is legal YAML exactly as `"uses": x` is, and the key
+        # alternative for it had no test of its own -- deleting `'uses'` from
+        # the pattern left the suite green while the double-quoted twin above
+        # was covered.
+        root = self.repo()
+        (root / ".github" / "workflows" / "sq-key.yml").write_text(
+            "jobs:\n  ci:\n    'uses': Verjson/.github/.github/workflows/node-ci.yml@"
+            + "b" * 40 + "\n")
+        track(root)
+        self.assertEqual([f.kind for f in self.verify(root)], ["PIN_MISMATCH"])
+
+    def test_a_repository_whose_name_only_resembles_the_hub_is_not_a_reference(self):
+        # The `.` in `Verjson/\.github` is escaped, and nothing asserted it:
+        # unescaping it left the suite green. `Verjson/xgithub` is a name the
+        # org could hold, and reading one as the contract hub would compare an
+        # unrelated repository's pin against this repository's releases -- the
+        # inventing direction, and on a repository nobody referenced at all.
+        line = "    uses: Verjson/xgithub/.github/workflows/node-ci.yml@" + "b" * 40
+        self.assertEqual([m.group("ref") for m in cv.USES_RE.finditer(line)], [])
+
+    def test_a_forty_hex_run_a_ref_continues_past_is_not_a_pin(self):
+        # The lookahead after the 40-hex alternative, character by character.
+        # `\w`, `.` and `-` are covered by the fall-through tests above; `/` and
+        # `+` were not, and dropping either left the suite green. `@` was not in
+        # the class at all until this, and that was a live inventing case:
+        # `git check-ref-format` accepts `refs/tags/<40-hex>@2`, and the scan
+        # read its first 40 characters as a pin, reporting PIN_MISMATCH against
+        # a SHA nobody wrote. All four are legal refname characters, so a ref
+        # that continues past a 40-hex run falls through to the general class
+        # and is reported unpinned -- the muting direction, which for an
+        # already-unpinned ref costs nothing.
+        sha = "b" * 40
+        for suffix in ("/b", "+b", "@2", "-rc1", ".1"):
+            with self.subTest(suffix=suffix):
+                line = ("    uses: Verjson/.github/.github/workflows/node-ci.yml@"
+                        + sha + suffix)
+                matches = list(cv.USES_RE.finditer(line))
+                # One reference, whose path is unchanged -- the path class
+                # excludes `@` so the `@2` form cannot be re-cut as a longer
+                # path and a one-character ref -- and whose ref is not a pin.
+                self.assertEqual([m.group("path") for m in matches],
+                                 [".github/workflows/node-ci.yml"])
+                self.assertEqual([m.group("ref") for m in matches], [sha + suffix])
+                self.assertFalse(cv.SHA_RE.match(matches[0].group("ref")))
+
+    def test_a_ref_that_merely_ends_in_forty_hex_is_not_a_pin(self):
+        # `@v1-<40-hex>` is a legal tag, and reading it as a pin would report a
+        # moving tag as immutably pinned -- the inventing direction, and the
+        # one that makes a drifting adopter look conformant.
+        #
+        # What does the work is `SHA_RE`'s trailing `$`; its leading `^` is
+        # redundant and no test can kill it, because every call site in this
+        # module, `contract-version` and `fleet-contract-inventory` uses
+        # `.match()`, which anchors at position 0 regardless. Dropping `^` was
+        # measured against the whole suite and changed nothing. It stays as a
+        # guard against a later `.search()` call site, stated here rather than
+        # asserted, on the same footing as the other deliberately unasserted
+        # characters named in `contract_reference`.
+        #
+        # Assembled at the `@` rather than written literally, for the reason the
+        # semver fixture below states: `doc-tag-pins.sh` greps every tracked
+        # file for `workflows/<name>.yml@v<ref>` and checks that ref against
+        # this repository's tags, so a literal `@v1-<40-hex>` here reads as a
+        # documented pin to a tag that was never cut. Measured -- it failed
+        # exactly that way before the split.
+        ref = "v1-" + "b" * 40
+        line = "    uses: Verjson/.github/.github/workflows/node-ci.yml@" + ref
+        refs = [m.group("ref") for m in cv.USES_RE.finditer(line)]
+        self.assertEqual(refs, [ref])
+        self.assertIsNone(cv.SHA_RE.match(refs[0]))
+
+    def test_the_ref_class_still_admits_a_full_semver_build_ref(self):
+        # The other side of the same boundary. Excluding one character from a
+        # class is the kind of edit that over-narrows by one more, and a ref is
+        # not only ever a 40-hex SHA: `@v2.2.0-rc.1+build` is a legal ref whose
+        # `.`, `-` and `+` must all survive. Truncating it would quote a ref
+        # back at the reader that nobody wrote, which is the complaint that
+        # produced the `${{ ... }}` branch alongside it.
+        # Assembled rather than written literally: doc-tag-pins.sh greps every
+        # tracked file for `workflows/<name>.yml@v<ref>` and checks that ref
+        # against this repository's tag list, so a literal fixture here would
+        # read as a documented pin to a tag that was never cut. Splitting the
+        # string at the `@` keeps the fixture a fixture.
+        ref = "v2.2.0-rc.1+build"
+        line = "  uses: Verjson/.github/.github/workflows/node-ci.yml@" + ref
+        self.assertEqual([m.group("ref") for m in cv.USES_RE.finditer(line)],
+                         [ref])
 
     def test_an_expression_ref_stops_at_its_own_closing_braces(self):
         # Discriminates lazy from greedy, which the first version of this test

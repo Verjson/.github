@@ -398,9 +398,16 @@ jobs:
             return 1
           }
 
+          # An unreadable PR metadata read is indeterminate, not permissive.
+          # This used to emit a ::warning:: and `out proceed true; exit 0`,
+          # which skipped the freshness evaluation entirely — so a total API
+          # outage proceeded without ever reaching the compare guard below,
+          # making that guard unreachable on exactly the path it exists for
+          # (Verjson/.github#1476, #1496, ADR 0195).
           if ! meta=$(pr_json author,headRefName,baseRefName,headRefOid,mergeable); then
-            echo "::warning::could not read PR metadata; proceeding without a freshness action."
-            out proceed true; exit 0
+            out proceed false
+            echo "::error::Could not read PR metadata after 3 attempts, so freshness could not be evaluated at all. Holding rather than merging on a base we could not check."
+            exit 1
           fi
           author="$(jq -r '.author.login // ""' <<<"$meta")"
           head_ref="$(jq -r '.headRefName // ""' <<<"$meta")"
@@ -472,8 +479,50 @@ jobs:
           # name can't confuse the ...-path. Behind → update the branch; the push
           # fires `synchronize`, and that fresh run reviews/merges against the
           # current base, so this run steps aside.
-          behind="$(gh api "repos/$REPO/compare/$base_ref...$head_sha" --jq '.behind_by' 2>/dev/null || echo 0)"
-          [[ "$behind" =~ ^[0-9]+$ ]] || behind=0
+          #
+          # An indeterminate answer is NOT `behind=0`. Previously the request
+          # failing, returning nothing, or returning an unparseable body all
+          # collapsed into 0 via `|| echo 0` / `|| behind=0`, so an outage, a
+          # rate limit, or an auth blip read as "not behind" and the gate
+          # merged a review taken against a possibly stale base — a fail-open
+          # whose only signal was silence (Verjson/.github#1476, ADR 0195).
+          #
+          # Only a numeric body counts as an answer; everything else returns
+          # non-zero and is retried on a bounded loop, so a single transient
+          # blip still self-heals rather than wedging the gate fleet-wide. If
+          # it is still unanswerable after the retries we hold (fail closed)
+          # and say so, rather than merging on an assumption we could not
+          # check.
+          #
+          # The retries are delay-free, matching pr_json above. Spacing them
+          # looks tempting — the fallback here is a hard hold, so waiting a
+          # blip out is worth more than it is for pr_json — but this workflow
+          # is under an event-driven no-runner-held-waiting contract, asserted
+          # by runner-routing-policy.test.sh, event-driven-authorization.test.py
+          # and gate-rearm-caller-contract.test.sh. Any runner-held delay here
+          # fails all three, and they match on the file's text, so even naming
+          # the construct in a comment trips them. If a tight retry proves too
+          # weak against a rate-limit burst, the remedy is re-arming on an
+          # event, not holding the runner.
+          compare_behind() {
+            local raw
+            raw="$(gh api "repos/$REPO/compare/$base_ref...$head_sha" --jq '.behind_by' 2>/dev/null)" || return 1
+            [[ "$raw" =~ ^[0-9]+$ ]] || return 1
+            printf '%s' "$raw"
+          }
+          compare_attempts=3
+          behind=""
+          attempt=0
+          while [ "$attempt" -lt "$compare_attempts" ]; do
+            behind="$(compare_behind)" && break
+            behind=""
+            attempt=$((attempt + 1))
+          done
+          if [ -z "$behind" ]; then
+            out proceed false
+            echo "::error::Could not determine whether the head is behind $base_ref: the compare API was unanswerable after $compare_attempts attempts. Holding rather than merging on a possibly stale base."
+            exit 1
+          fi
           if [ "$behind" -gt 0 ]; then
             if gh api --method PUT "repos/$REPO/pulls/$PR_NUMBER/update-branch" >/dev/null 2>&1; then
               echo "Branch was $behind commit(s) behind $base_ref; updated it — a fresh run will merge against the current base."
