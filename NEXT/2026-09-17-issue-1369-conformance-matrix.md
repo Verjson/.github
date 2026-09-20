@@ -109,9 +109,10 @@ it still claims, and the commit the set is pinned at. The per-member assertions
 that already existed stop at whichever divergence they reach first, so fixing a
 two-member subset regeneration used to take two round trips.
 
-Each finding carries the regeneration command for its member. That command is
-composed from a mode literal in the generator and the suite's own
-`CONTRACT_REF`; nothing in it is derived from the file being reported on.
+Each finding now carries prose-only recovery guidance that names the affected member and
+available mode hint, then directs operators to regenerate the complete caller set in a
+clean temporary checkout. Review the full diff and preserve custom options before replacing
+the set; diagnostics provide no single-file command or redirection.
 
 Every arm reports positive evidence. A member that is absent, unreadable, not a
 regular file, unscannable, emptied to zero bytes, carrying a pin declaration
@@ -211,15 +212,10 @@ a 4/3 base64 expansion, so it began failing with `E2BIG` once the generated
 contract test passed roughly 96 KiB. It is 96 KiB now and grows with every
 contract addition, so the stub passes the content through a file.
 
-Review of the same commit found the identical fail-open one function away, at
-the audit's workflow-source fetch. There it did not merely mis-name a fault: an
-empty `$source` makes the workflow inspector report absent changelog wiring and
-no path filter, and the caller scan find no job, so the repository was reported
-**nonconformant** with `stack-caller-missing` for a workflow that was never
-retrieved. The fetch is the only place that can distinguish "returned nothing"
-from "wires nothing", so it fails closed there and the repository is counted
-unaudited. The inspector's behavior on empty input is asserted directly, because
-it is the reason the guard cannot live any further downstream.
+A successful Contents API response may contain a zero-byte workflow. The audit now passes
+that empty source to the workflow inspector, reports missing required contexts as
+nonconformant, and completes the repository scan. API, decode, or inspection failures still
+report the repository as workflow-source-unreadable and fail closed.
 
 Round-4 review of that block corrected one false claim, one pin that did not
 hold the property it was written for, and one real coupling. The

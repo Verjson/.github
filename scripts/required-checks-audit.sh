@@ -376,17 +376,9 @@ source_contract_for_repo() { # $1 = repo, $2 = stack
       source_fault=1
       break
     }
-    # Same fail-open as the generated-artifact fetch above: `base64 --decode`
-    # exits 0 on an empty stream, so a contents fetch that returned nothing
-    # lands as an empty `$source`. The inspector then reports absent changelog
-    # wiring and no path filter -- indistinguishable from an adopter that wires
-    # nothing -- and the caller scan finds no job, so the repository is reported
-    # NONCONFORMANT for a workflow that was never retrieved. The fetch is the
-    # only place that can tell those apart, so it fails closed here.
-    [ -n "$source" ] || {
-      source_fault=1
-      break
-    }
+    # A successful Contents API response may contain an empty file. Leave it
+    # empty so the inspector reports missing wiring; API, decoding, and
+    # inspection failures still stop the workflow scan.
 
     local found
     inspection="$(python3 -I "$WORKFLOW_INSPECTOR" "$expected_changelog_job" <<<"$source")" || {

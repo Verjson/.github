@@ -2325,30 +2325,29 @@ generated_set_symlink_component() { # generated_set_symlink_component <relative-
 # EXACTLY against $accepted, an alternation that is itself a literal here, so the
 # value substituted is one of this file's own constants and not adopter text.
 #
-# A remedy carrying `>` is a command a human pastes, so it must be RUNNABLE. An
-# alternation is not: `{a|b|c}` is not brace expansion in bash -- `|` is the pipe
-# operator, so `... {a|b|c} ... > .github/workflows/release.yml` parses as a
-# three-stage pipeline whose every stage fails while the `>` redirect still
-# truncates the target to zero bytes. Where several modes write one path the
-# remedy therefore either names the ONE mode the member itself declares, or --
-# when no mode has been established -- states the choice as prose and carries no
-# `>` at all. A remedy that deletes a workflow on ~95 repositories is worse than
-# no remedy, which is the same reason the modes are all named in the first place.
+# Repair guidance is deliberately prose, never a shell command. The checker
+# cannot recover every caller-specific option from a workflow, and a direct `>`
+# redirection truncates its target before generation succeeds. The guidance
+# names a mode hint when available, asks the operator to inspect the
+# existing artifacts for the full mode and options, and directs a complete
+# regeneration into a temporary checkout for review before replacing the set.
 generated_set_remedy() { # generated_set_remedy <one-mode|alternation> <rel> <flags> <note>
+  local mode_hint
   case "$1" in
     *[\|{}]*)
-      printf '%s' "Regenerate the whole set at one commit: run scripts/gen-changelog-caller.sh at $CONTRACT_REF${3:+ with $3}, writing $2 with the one mode this repository adopted, out of $(printf '%s' "$1" | tr -d '{}' | sed 's/|/, /g').$4"
+      mode_hint="its mode cannot be established by this check; possible modes are $(printf '%s' "$1" | tr -d '{}' | sed 's/|/, /g')"
       ;;
     *)
-      printf '%s' "Regenerate the whole set at one commit, starting with: scripts/gen-changelog-caller.sh $1 $CONTRACT_REF${3:+ $3} > $2$4"
+      mode_hint="mode hint: $1; verify it against existing artifacts"
       ;;
   esac
+  printf '%s' "Regenerate the complete generated set at one immutable contract commit. Affected member: $2; $mode_hint. Inspect the existing caller and related generated artifacts to derive the exact mode and all custom generator options; preserve them. Generate into a clean temporary checkout, review the full diff, then replace the committed set together. This diagnostic intentionally prints no single-file command.$4"
 }
 
 # The INTERNAL SHAPE of this function is pinned by the hub's
 # scripts/ci-gate/changelog-caller-contract.test.sh: $remedy is assigned only by
-# the two generated_set_remedy compositions below, and the remedy-runnability
-# cases drive one arm per member rather than every arm, standing in for the rest
+# the two generated_set_remedy compositions below, and the remedy-safety cases
+# drive one arm per member rather than every arm, standing in for the rest
 # only while that holds. Any line here that *names* $remedy and is not one of
 # those two compositions reddens that pin -- a third composition, an append, a
 # rewrite at a use site. Its reach is the name: an indirect write that never
@@ -2393,9 +2392,9 @@ generated_set_check() { # generated_set_check <relative-path> <required|optional
       return 0
     fi
     # $declared matched $accepted exactly, so it is one of this file's own mode
-    # literals. Every arm below can therefore print the runnable single-mode
-    # command instead of the alternation, naming the mode this repository
-    # actually adopted rather than making the reader choose.
+    # literals. Passing it through makes the prose identify the mode declared by
+    # this member; custom generator options still have to be inspected in the
+    # existing artifacts before regeneration.
     remedy="$(generated_set_remedy "$declared" "$rel" "$flags" "$note")"
   fi
   if ! claims="$(sed -nE "s|$pattern|\1|p" "$abs" 2>/dev/null)"; then
@@ -2524,7 +2523,7 @@ validate_optional_adr_artifacts() {
     [ -f "$adr_generator" ] && [ -r "$adr_generator" ] \
       || fail "$adr_generator is present but is not a readable regular file"
     [ "$(contract_digest_of "$adr_generator")" = "$ADR_INDEX_SHA256" ] \
-      || fail "$adr_generator is not the generator pinned at $CONTRACT_REF. Regenerate it with: scripts/gen-changelog-caller.sh adr-index-generator $CONTRACT_REF > scripts/gen-adr-index.sh"
+      || fail "$adr_generator is not the generator pinned at $CONTRACT_REF. Regenerate the canonical ADR-index generator at $CONTRACT_REF in a clean temporary checkout, review it, and replace this file only after generation succeeds."
   fi
   if [ -e "$adr_generator_test" ] || [ -L "$adr_generator_test" ]; then
     [ ! -L "$adr_generator_test" ] \
@@ -2534,7 +2533,7 @@ validate_optional_adr_artifacts() {
     [ -f "$adr_generator_test" ] && [ -r "$adr_generator_test" ] \
       || fail "$adr_generator_test is present but is not a readable regular file"
     [ "$(contract_digest_of "$adr_generator_test")" = "$ADR_INDEX_TEST_SHA256" ] \
-      || fail "$adr_generator_test is not the test pinned at $CONTRACT_REF. Replace any hand-written copy with: scripts/gen-changelog-caller.sh adr-index-test $CONTRACT_REF > scripts/gen-adr-index.test.sh"
+      || fail "$adr_generator_test is not the test pinned at $CONTRACT_REF. Replace it with the canonical ADR-index test generated at $CONTRACT_REF in a clean temporary checkout after reviewing it."
   fi
 }
 
@@ -2543,14 +2542,14 @@ validate_adr_generator() {
   [ -n "$ADR_INDEX_SHA256" ] \
     || fail "adr-index: true has no canonical generator at $CONTRACT_REF"
   [ -x "$adr_generator" ] \
-    || fail "adr-index: true requires the pinned scripts/gen-adr-index.sh. Acquire it with: scripts/gen-changelog-caller.sh adr-index-generator $CONTRACT_REF > scripts/gen-adr-index.sh && chmod +x scripts/gen-adr-index.sh"
+    || fail "adr-index: true requires the pinned scripts/gen-adr-index.sh. Generate the canonical ADR-index generator at $CONTRACT_REF in a clean temporary checkout, review it, then add it and mark it executable only after generation succeeds."
   # The generator ships with the suite that covers it. A hand-written local copy
   # is not equivalent: one asserted only rejections, so every fixture being
   # malformed kept it green for months (#1380). Executability is deliberately
   # not required — adopters invoke it as `bash scripts/gen-adr-index.test.sh`.
   adr_generator_test="$root/scripts/gen-adr-index.test.sh"
   [ -f "$adr_generator_test" ] \
-    || fail "adr-index: true requires the pinned scripts/gen-adr-index.test.sh. Acquire it with: scripts/gen-changelog-caller.sh adr-index-test $CONTRACT_REF > scripts/gen-adr-index.test.sh"
+    || fail "adr-index: true requires the pinned scripts/gen-adr-index.test.sh. Generate the canonical ADR-index test at $CONTRACT_REF in a clean temporary checkout, review it, then add it only after generation succeeds."
 }
 validate_optional_adr_artifacts
 if grep -qE '^ +adr-index: true$' "$validation_workflow"; then
@@ -2982,7 +2981,7 @@ while IFS= read -r release_workflow; do
   elif grep -q "gen-changelog-caller.sh release-snapshot $CONTRACT_REF" "$release_workflow"; then
     release_mode=release-snapshot
   else
-    fail "$release_workflow is not a generated release caller at $CONTRACT_REF. Regenerate it: scripts/gen-changelog-caller.sh release-node $CONTRACT_REF > .github/workflows/release.yml (or release-artifact for GitHub Release assets, or release-snapshot when the repository publishes nothing from the release workflow)"
+    fail "$release_workflow is not a generated release caller at $CONTRACT_REF. Inspect the existing release workflow and repository configuration to determine its mode and all custom generator options. Regenerate the complete caller set at $CONTRACT_REF in a clean temporary checkout, review the full diff, then replace the committed set together. Supported release modes are release-node, release-artifact for GitHub Release assets, and release-snapshot when the release workflow publishes nothing."
   fi
   workflow_package_dirs_json=""
   workflow_package_dirs_shell=""

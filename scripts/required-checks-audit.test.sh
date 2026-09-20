@@ -629,14 +629,9 @@ rc="$(WORKFLOWS_FAIL=true run_audit)"
   && pass "unreadable workflow source fails closed" \
   || { fail "a workflow-source API failure was absorbed ($rc)"; out | sed 's/^/diag - /'; }
 
-# --- an empty workflow-source fetch is a fault, not "the repository has none" -
-# The same defect shape as `generated-contract-artifact-empty`, one function
-# away: `gh api ... | base64 --decode` exits 0 on an empty stream, so a contents
-# fetch that returned nothing lands as an empty `$source` that the inspector
-# reads as a workflow with no jobs. This first asserts that reading directly,
-# because it is the reason the guard has to exist rather than an inference
-# about it: the inspector CANNOT distinguish "fetched nothing" from "the
-# adopter wires nothing", so only the audit can.
+# A successful Contents API response may contain a zero-byte workflow.
+# Its empty source means no wiring; the separate WORKFLOWS_FAIL case above
+# proves API failure still stops the audit as unreadable.
 inspector_on_empty="$(python3 -I "$REPO_ROOT/scripts/required-checks-workflow.py" changelog </dev/null)"
 inspector_on_empty_rc=$?
 { [ "$inspector_on_empty_rc" -eq 0 ] \
@@ -649,9 +644,13 @@ inspector_on_empty_rc=$?
 stack node
 : >"$content_root/.github/workflows/ci.yml"
 rc="$(run_audit)"
-{ [ "$rc" != "rc=0" ] && grep -q 'workflow-source-unreadable' "$tmp/out.txt"; } \
-  && pass "an empty workflow-source fetch fails closed instead of reporting absent wiring" \
-  || { fail "an empty workflow source was read as a repository that wires nothing ($rc)"; out | sed 's/^/diag - /'; }
+{ [ "$rc" = "rc=1" ] &&
+  grep -q 'result=missing-core-contexts' "$tmp/out.txt" &&
+  ! grep -q 'workflow-source-unreadable' "$tmp/out.txt" &&
+  grep -q 'phase=done' "$tmp/out.txt" &&
+  grep -q 'unaudited=0' "$tmp/out.txt"; } &&
+pass "a fetched zero-byte workflow is nonconformant and the audit completes" \
+|| { fail "a fetched zero-byte workflow was treated as a fetch fault ($rc)"; out | sed 's/^/diag - /'; }
 
 stack node
 printf 'on: [unterminated\n' >"$tmp/workflow.yml"
