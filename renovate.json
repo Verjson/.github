@@ -34,8 +34,15 @@
       "pinDigests": true
     },
     {
+      "description": "Hosted runner labels are an organization baseline managed as one policy migration, not Renovate dependency updates.",
+      "matchManagers": ["github-actions"],
+      "matchDepTypes": ["github-runner"],
+      "enabled": false
+    },
+    {
       "description": "One PR for all action digests. Every Renovate PR here pays a full AI review pass through ai-review-merge.yml and holds a runner on the shared pool while the gate polls, so PR count is the cost — not diff size. These bump together, fail together, and are never reverted individually.",
       "matchManagers": ["github-actions", "custom.regex"],
+      "matchPackageNames": ["!ubuntu"],
       "groupName": "github actions digests"
     },
     {
