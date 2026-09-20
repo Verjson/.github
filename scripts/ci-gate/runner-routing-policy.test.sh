@@ -18,6 +18,35 @@ fails=0
 pass() { printf 'ok   - %s\n' "$1"; }
 fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 
+if python3 - "$root/renovate.json" <<'PY'
+import json
+import sys
+
+rules = json.load(open(sys.argv[1], encoding="utf-8")).get("packageRules", [])
+runner_rules = [
+    rule for rule in rules
+    if rule.get("matchManagers") == ["github-actions"]
+    and rule.get("matchDepTypes") == ["github-runner"]
+]
+digest_rules = [
+    rule for rule in rules
+    if rule.get("groupName") == "github actions digests"
+]
+if len(runner_rules) != 1 or runner_rules[0].get("enabled") is not False:
+    raise SystemExit("github-runner dependencies must be disabled for Renovate")
+if (
+    len(digest_rules) != 1
+    or digest_rules[0].get("matchManagers") != ["github-actions", "custom.regex"]
+    or digest_rules[0].get("matchPackageNames") != ["!ubuntu"]
+):
+    raise SystemExit("the action digest group must keep its manager scope and exclude the ubuntu runner package")
+PY
+then
+  pass "Renovate leaves hosted runner labels under the coordinated baseline"
+else
+  fail "Renovate can propose an uncoordinated hosted runner migration"
+fi
+
 # A literal hosted selector is allowed only where fixed hosted placement is a
 # reviewed security boundary. Inventory file AND job identity so another job in
 # an allowed workflow cannot inherit the exception by proximity.
