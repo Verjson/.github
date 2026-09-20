@@ -266,3 +266,6 @@ The generated-set check now requires every changelog-contract generator output t
 
 
 Follow-up hardens the generated-set repair contract: release and self-repair diagnostics are pinned as complete prose-only strings, and unused remedy parameters are removed. Workflow source auditing validates Contents API encoding and size, fetches `encoding: none` files through the raw endpoint, and verifies byte count before inspection so a real zero-byte file remains distinct from omitted API content.
+
+
+The generated-set atomicity case also verifies that each artifact header names its actual generator mode at the pinned commit; same-pin files emitted by another mode are rejected.
