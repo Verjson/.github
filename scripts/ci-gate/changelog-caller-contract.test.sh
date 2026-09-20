@@ -3391,7 +3391,14 @@ verify_safe_symlink_repair() { # verify_safe_symlink_repair <label> <path> <muta
   [ -L "$dir/$member" ] \
     && pass "$label finding leaves the symlink in place until its repair command is run" \
     || fail "$label generated-set check changed the symlink while reporting it"
-  repair="$(sed -nE 's/.*Safe path repair preserves the symlink target: `([^`]*)`.*/\1/p' "$tmproot/run.out" | head -n1)"
+  repair="$(awk '
+    /Safe path repair preserves the symlink target: `[^`]*`/ {
+      sub(/^.*Safe path repair preserves the symlink target: `/, "")
+      sub(/`.*/, "")
+      print
+      exit
+    }
+  ' "$tmproot/run.out")"
   [ -n "$repair" ] \
     || { fail "$label finding did not provide a safe path repair command"; return; }
   ( cd "$dir" && eval "$repair" ) \
