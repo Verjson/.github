@@ -2331,7 +2331,7 @@ generated_set_symlink_component() { # generated_set_symlink_component <relative-
 # names a mode hint when available, asks the operator to inspect the
 # existing artifacts for the full mode and options, and directs a complete
 # regeneration into a temporary checkout for review before replacing the set.
-generated_set_remedy() { # generated_set_remedy <one-mode|alternation> <rel> <flags> <note>
+generated_set_remedy() { # generated_set_remedy <one-mode|alternation> <rel> <note>
   local mode_hint
   case "$1" in
     *[\|{}]*)
@@ -2341,7 +2341,7 @@ generated_set_remedy() { # generated_set_remedy <one-mode|alternation> <rel> <fl
       mode_hint="mode hint: $1; verify it against existing artifacts"
       ;;
   esac
-  printf '%s' "Regenerate the complete generated set at one immutable contract commit. Affected member: $2; $mode_hint. Inspect the existing caller and related generated artifacts to derive the exact mode and all custom generator options; preserve them. Generate into a clean temporary checkout, review the full diff, then replace the committed set together. This diagnostic intentionally prints no single-file command.$4"
+  printf '%s' "Regenerate the complete generated set at one immutable contract commit. Affected member: $2; $mode_hint. Inspect the existing caller and related generated artifacts to derive the exact mode and all custom generator options; preserve them. Generate into a clean temporary checkout, review the full diff, then replace the committed set together. This diagnostic intentionally prints no single-file command.$3"
 }
 
 # The INTERNAL SHAPE of this function is pinned by the hub's
@@ -2357,7 +2357,7 @@ generated_set_remedy() { # generated_set_remedy <one-mode|alternation> <rel> <fl
 generated_set_check() { # generated_set_check <relative-path> <required|optional> <pin-pattern> <remedy-mode> <accepted-modes|''> [generator-flags] [remedy-note]
   local rel="$1" required="$2" pattern="$3" mode="$4" accepted="$5" flags="${6:-}" note="${7:-}"
   local abs="$root/$rel" claims claim count remedy modes mode_count declared symlink_component repair_command quoted_path parent_dir quoted_parent
-  remedy="$(generated_set_remedy "$mode" "$rel" "$flags" "$note")"
+  remedy="$(generated_set_remedy "$mode" "$rel" "$note")"
   if symlink_component="$(generated_set_symlink_component "$rel")"; then
     printf -v quoted_path '%q' "$symlink_component"
     parent_dir="${rel%/*}"
@@ -2395,7 +2395,7 @@ generated_set_check() { # generated_set_check <relative-path> <required|optional
     # literals. Passing it through makes the prose identify the mode declared by
     # this member; custom generator options still have to be inspected in the
     # existing artifacts before regeneration.
-    remedy="$(generated_set_remedy "$declared" "$rel" "$flags" "$note")"
+    remedy="$(generated_set_remedy "$declared" "$rel" "$note")"
   fi
   if ! claims="$(sed -nE "s|$pattern|\1|p" "$abs" 2>/dev/null)"; then
     generated_set_note "$rel could not be scanned for a pin declaration, so it cannot be compared with $CONTRACT_REF. $remedy"

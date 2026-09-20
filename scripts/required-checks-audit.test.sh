@@ -136,19 +136,38 @@ case "$*" in
   *"repos/Verjson/.github/contents/scripts/gen-changelog-caller.sh"*)
     printf 'fetch\n' >>"$GENERATOR_FETCHES"
     git -C "$REPO_ROOT" show "$CONTRACT_PIN:scripts/gen-changelog-caller.sh"; exit 0 ;;
-  *"repos/Verjson/.github/compare/"*) printf '{"status":"%s"}\n' "${PIN_ANCESTRY_STATUS:-identical}" | { if [ -n "$filter" ]; then jq -r "$filter"; else cat; fi; }; exit 0 ;;
+  *"commits?per_page=1"*)
+printf '[{"sha":"%s"}]\n' "$CONTRACT_PIN" | jq -r "$filter"; exit 0 ;;
+ *"repos/Verjson/.github/compare/"*) printf '{"status":"%s"}\n' "${PIN_ANCESTRY_STATUS:-identical}" | { if [ -n "$filter" ]; then jq -r "$filter"; else cat; fi; }; exit 0 ;;
   *"repos/Verjson/.github/branches/main"*) printf '{"commit":{"sha":"%s"}}\n' "$CONTRACT_PIN" | { if [ -n "$filter" ]; then jq -r "$filter"; else cat; fi; }; exit 0 ;;
   *"repos/Verjson/.github"*) printf '{"default_branch":"main"}\n' | { if [ -n "$filter" ]; then jq -r "$filter"; else cat; fi; }; exit 0 ;;
   *"/contents/.github/workflows"|*"/contents/.github/workflows?ref="*)
     [ "${WORKFLOWS_FAIL:-false}" = true ] && exit 1
     emit "$WORKFLOW_LIST_FILE"; exit 0 ;;
+  *"/contents/"*"application/vnd.github.raw+json"*)
+    endpoint="${args[1]}"
+    path="${endpoint#*contents/}"; path="${path%%\?*}"
+    printf '%s\n' "$endpoint" >>"$STUB_TMP/content-api-requests"
+    case "$path" in *%*) path="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.unquote(sys.argv[1]))' "$path")" ;; esac
+    printf '%s\n' "$path" >>"$STUB_TMP/raw-content-fetches"
+    cat "$CONTENT_ROOT/$path"
+    exit 0 ;;
   *"/contents/"*)
     [ "${WORKFLOWS_FAIL:-false}" = true ] && exit 1
     endpoint="${args[1]}"
+    printf '%s\n' "$endpoint" >>"$STUB_TMP/content-api-requests"
     path="${endpoint#*contents/}"; path="${path%%\?*}"
+    case "$path" in *%*) path="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.unquote(sys.argv[1]))' "$path")" ;; esac
     source="$CONTENT_ROOT/$path"
     [ -f "$source" ] || exit 1
     response="$STUB_TMP/content-response.json"
+    if [ "${CONTENT_ENCODING_NONE:-false}" = true ]; then
+    content_size="$(wc -c <"$source")"
+    [ -z "${CONTENT_SIZE_OVERRIDE:-}" ] || content_size="$CONTENT_SIZE_OVERRIDE"
+    jq -n --argjson size "$content_size" \
+        '{content:"",encoding:"none",size:$size}' >"$response"
+      emit "$response"; exit 0
+    fi
     # Through a file, not argv. A single argument is capped at MAX_ARG_STRLEN
     # (128 KiB on Linux), and base64 is 4/3 of the source -- so this stub used
     # to start failing with E2BIG once a generated artifact passed ~96 KiB.
@@ -156,7 +175,8 @@ case "$*" in
     # and the audit reported invalid PARAMETERS three checks later instead of an
     # unreadable artifact. The generated contract test is 96 KiB and growing.
     base64 -w0 "$source" | tr -d '\n' >"$STUB_TMP/content-b64"
-    jq -n --rawfile content "$STUB_TMP/content-b64" '{content:$content}' >"$response"
+    jq -n --rawfile content "$STUB_TMP/content-b64" --argjson size "$(wc -c <"$source")" \
+      '{content:$content,encoding:"base64",size:$size}' >"$response"
     emit "$response"; exit 0 ;;
   *"/pulls?"*)
     [ "${PULLS_FAIL:-false}" = true ] && exit 1
@@ -642,6 +662,150 @@ inspector_on_empty_rc=$?
   || { fail "the inspector no longer classifies an empty workflow as missing changelog wiring (rc=$inspector_on_empty_rc)"; printf 'diag - %s\n' "$inspector_on_empty"; }
 
 stack node
+workflow_for node
+cp "$content_root/.github/workflows/ci.yml" "$content_root/.github/workflows/inert.txt"
+printf '[{"type":"file","path":".github/workflows/inert.txt"}]\n' >"$WORKFLOW_LIST_FILE"
+: >"$tmp/content-api-requests"
+rc="$(run_audit)"
+{
+  [ "$rc" = "rc=1" ] &&
+    grep -q 'result=stack-caller-missing' "$tmp/out.txt" &&
+    ! grep -q 'workflow-source-unreadable' "$tmp/out.txt" &&
+    ! grep -q 'inert.txt' "$tmp/content-api-requests" &&
+    grep -q 'unaudited=0' "$tmp/out.txt"
+} && pass "non-workflow files cannot satisfy the workflow audit" \
+  || { fail "inert workflow-directory files were counted"; out | sed 's/^/diag - /'; }
+
+# A newline in a GitHub path must not split the path stream.
+stack node
+workflow_for node
+python3 - "$WORKFLOW_LIST_FILE" <<'PY'
+import json, sys
+with open(sys.argv[1], "w") as listing:
+    json.dump([{"type": "file", "path": ".github/workflows/ci\n.yml"}], listing)
+PY
+: >"$tmp/content-api-requests"
+rc="$(run_audit)"
+{
+ [ "$rc" = "rc=1" ] && grep -q 'result=stack-caller-missing' "$tmp/out.txt" &&
+ ! grep -q 'workflow-source-unreadable' "$tmp/out.txt" &&
+ [ ! -s "$tmp/content-api-requests" ] && grep -q 'unaudited=0' "$tmp/out.txt"
+} && pass "control characters cannot split workflow paths" \
+ || { fail "a control-character workflow path reached Contents API ($rc)"; out | sed 's/^/diag - /'; }
+
+# Bound request count as well as response bytes; empty files still cost API calls.
+stack node
+workflow_for node
+python3 - "$WORKFLOW_LIST_FILE" <<'PY'
+import json, sys
+with open(sys.argv[1], "w") as listing:
+    json.dump([{"type": "file", "path": f".github/workflows/ci-{i}.yml"} for i in range(101)], listing)
+PY
+: >"$tmp/content-api-requests"
+rc="$(run_audit)"
+{
+ [ "$rc" = "rc=1" ] && grep -q 'workflow-source-unreadable' "$tmp/out.txt" &&
+ [ ! -s "$tmp/content-api-requests" ] && grep -q 'unaudited=1' "$tmp/out.txt"
+} && pass "workflow file count is bounded before Contents API calls" \
+ || { fail "an oversized workflow listing was not rejected before fetch ($rc)"; out | sed 's/^/diag - /'; }
+
+stack node
+workflow_for node
+# The Contents API truncates directory listings at 1,000 entries; a full page may hide workflows.
+stack node
+workflow_for node
+python3 - "$WORKFLOW_LIST_FILE" <<'PY'
+import json, sys
+entries = [{"type": "file", "path": ".github/workflows/ci.yml"}]
+entries.extend({"type": "file", "path": f".github/workflows/inert-{i}.txt"} for i in range(999))
+with open(sys.argv[1], "w") as listing:
+    json.dump(entries, listing)
+PY
+: >"$tmp/content-api-requests"
+rc="$(run_audit)"
+{
+ [ "$rc" = "rc=1" ] && grep -q 'workflow-source-unreadable' "$tmp/out.txt" &&
+ [ ! -s "$tmp/content-api-requests" ] && grep -q 'unaudited=1' "$tmp/out.txt"
+} && pass "a full Contents API directory page fails closed" \
+ || { fail "a possibly truncated workflow listing was scanned as complete ($rc)"; out | sed 's/^/diag - /'; }
+
+query_path='.github/workflows/ci?ref=wrong#frag.yml'
+cp "$content_root/.github/workflows/ci.yml" "$content_root/$query_path"
+printf '[{"type":"file","path":"%s"}]\n' "$query_path" >"$WORKFLOW_LIST_FILE"
+printf 'alpha\tmain\t%s\n' "$contract_pin" >"$tmp/query-heads.tsv"
+: >"$tmp/content-api-requests"
+rc="$(RCA_HEADS_FILE="$tmp/query-heads.tsv" run_audit)"
+{
+  [ "$rc" = "rc=1" ] &&
+    grep -q 'result=changelog-caller-missing' "$tmp/out.txt" &&
+    ! grep -q 'workflow-source-unreadable' "$tmp/out.txt" &&
+    grep -Fq "repos/Verjson/alpha/contents/.github/workflows/ci%3Fref%3Dwrong%23frag.yml?ref=$contract_pin" \
+      "$tmp/content-api-requests" &&
+    grep -q 'unaudited=0' "$tmp/out.txt"
+} && pass "workflow paths are encoded before audited-ref queries" \
+  || { fail "special workflow path altered the audited Contents API request ($rc)"; out | sed 's/^/diag - /'; }
+
+stack node
+workflow_for node
+: >"$tmp/raw-content-fetches"
+rc="$(CONTENT_ENCODING_NONE=true CONTENT_SIZE_OVERRIDE=$((5 * 1024 * 1024 + 1)) run_audit)"
+{
+  [ "$rc" = "rc=1" ] &&
+    grep -q 'workflow-source-unreadable' "$tmp/out.txt" &&
+    [ ! -s "$tmp/raw-content-fetches" ]
+} && pass "an over-limit workflow is rejected before raw download" \
+  || { fail "an over-limit workflow was downloaded or not reported unreadable ($rc)"; out | sed 's/^/diag - /'; }
+
+stack node
+workflow_for node
+python3 - "$content_root/.github/workflows/ci.yml" "$content_root/.github/workflows" <<'PY'
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1]).read_bytes()
+root = Path(sys.argv[2])
+for index in range(1, 4):
+    (root / f"budget-{index}.yml").write_bytes(source + b"\n# " + b"x" * (4 * 1024 * 1024))
+PY
+printf '[{"type":"file","path":".github/workflows/budget-1.yml"},{"type":"file","path":".github/workflows/budget-2.yml"},{"type":"file","path":".github/workflows/budget-3.yml"}]\n' >"$WORKFLOW_LIST_FILE"
+: >"$tmp/raw-content-fetches"
+rc="$(CONTENT_ENCODING_NONE=true run_audit)"
+{
+  [ "$rc" = "rc=1" ] &&
+    grep -q 'workflow-source-unreadable' "$tmp/out.txt" &&
+    [ "$(wc -l <"$tmp/raw-content-fetches")" -eq 2 ] &&
+ [ "$(grep -Fc ".github/workflows/budget-1.yml?ref=$contract_pin" "$tmp/content-api-requests")" -eq 2 ] &&
+ [ "$(grep -Fc ".github/workflows/budget-2.yml?ref=$contract_pin" "$tmp/content-api-requests")" -eq 2 ] &&
+    ! grep -q 'budget-3.yml' "$tmp/raw-content-fetches"
+} && pass "per-repository workflow byte budget stops further downloads" \
+  || { fail "aggregate workflow download budget was not enforced ($rc)"; out | sed 's/^/diag - /'; }
+
+stack node
+workflow_for node
+cp "$content_root/.github/workflows/ci.yml" "$tmp/large-ci-original.yml"
+python3 - "$content_root/.github/workflows/ci.yml" <<'PY'
+import sys
+from pathlib import Path
+
+with Path(sys.argv[1]).open("ab") as workflow:
+    workflow.write(b"\n# " + b"x" * 1_000_100 + b"\n")
+PY
+printf '[{"type":"file","path":".github/workflows/ci.yml"}]\n' >"$WORKFLOW_LIST_FILE"
+: >"$tmp/content-api-requests"
+: >"$tmp/raw-content-fetches"
+rc="$(CONTENT_ENCODING_NONE=true run_audit)"
+cp "$tmp/large-ci-original.yml" "$content_root/.github/workflows/ci.yml"
+{
+  [ "$rc" = "rc=1" ] &&
+    grep -q 'result=changelog-caller-missing' "$tmp/out.txt" &&
+    ! grep -q 'workflow-source-unreadable' "$tmp/out.txt" &&
+    grep -Fxq '.github/workflows/ci.yml' "$tmp/raw-content-fetches" &&
+    grep -q 'unaudited=0' "$tmp/out.txt"
+} && pass "an oversized workflow uses the raw contents response" \
+  || { fail "an oversized workflow was not audited from raw contents ($rc)"; out | sed 's/^/diag - /'; }
+
+stack node
+workflow_for node
 : >"$content_root/.github/workflows/ci.yml"
 rc="$(run_audit)"
 { [ "$rc" = "rc=1" ] &&

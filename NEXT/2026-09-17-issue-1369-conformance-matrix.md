@@ -263,3 +263,6 @@ than a silent skip, since skipping it shrank the very list the non-vacuity pin
 beside it is computed from.
 
 The generated-set check now requires every changelog-contract generator output to be enumerated and rejects symlinks in member paths, including parent directories. Reporting a symlink does not mutate it. The repair command first verifies the path is still a symlink, then removes only that link and recreates its parent before regeneration; leaf and parent cases execute it, confirm the target remains unchanged, and prove stale instructions preserve replacement paths. Synthetic cases cover both optional ADR index artifacts. Their embedded content digests are checked whenever the files exist, even when the caller does not enable ADR indexing, so current-looking headers cannot mask stale payloads.
+
+
+Follow-up hardens the generated-set repair contract: release and self-repair diagnostics are pinned as complete prose-only strings, and unused remedy parameters are removed. Workflow source auditing validates Contents API encoding and size, fetches `encoding: none` files through the raw endpoint, and verifies byte count before inspection so a real zero-byte file remains distinct from omitted API content.

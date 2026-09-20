@@ -2737,10 +2737,10 @@ run_adopter "$snapshot_adopter" \
   && pass "emitted suite accepts a generated release-snapshot caller" \
   || fail "emitted suite rejects a generated release-snapshot caller: $(tail -2 "$tmproot/run.out")"
 
-grep -qF 'Inspect the existing release workflow and repository configuration to determine its mode and all custom generator options.' "$emitted" \
-  && ! grep -qF ' > .github/workflows/release.yml' "$emitted" \
+expected_release_fallback='    fail "$release_workflow is not a generated release caller at $CONTRACT_REF. Inspect the existing release workflow and repository configuration to determine its mode and all custom generator options. Regenerate the complete caller set at $CONTRACT_REF in a clean temporary checkout, review the full diff, then replace the committed set together. Supported release modes are release-node, release-artifact for GitHub Release assets, and release-snapshot when the release workflow publishes nothing."'
+grep -Fqx "$expected_release_fallback" "$emitted" \
   && pass "release-specific unknown-provenance fallback is prose-only" \
-  || fail "release-specific unknown-provenance fallback is missing or includes a truncating redirect"
+  || fail "release-specific unknown-provenance fallback diverged or included an unapproved command"
 
 unknown_release="$tmproot/adopter-unrecognized-release"
 build_adopter "$unknown_release" yes generated-artifacts-with-adr-index
@@ -3088,9 +3088,9 @@ while IFS= read -r remedy_line; do
   case "$remedy_rest" in *remedy*) ;; *) continue ;; esac
   if grep -qxE ' *local .* remedy .*' <<<"$remedy_line"; then
     remedy_decls=$((remedy_decls + 1))
-  elif grep -qxE ' *remedy="\$\(generated_set_remedy "\$mode" "\$rel" "\$flags" "\$note"\)"' <<<"$remedy_line"; then
+  elif grep -qxE ' *remedy="\$\(generated_set_remedy "\$mode" "\$rel" "\$note"\)"' <<<"$remedy_line"; then
     remedy_from_mode=$((remedy_from_mode + 1))
-  elif grep -qxE ' *remedy="\$\(generated_set_remedy "\$declared" "\$rel" "\$flags" "\$note"\)"' <<<"$remedy_line"; then
+  elif grep -qxE ' *remedy="\$\(generated_set_remedy "\$declared" "\$rel" "\$note"\)"' <<<"$remedy_line"; then
     remedy_from_declared=$((remedy_from_declared + 1))
   else
     remedy_unaccounted="$remedy_unaccounted [$remedy_line]"
@@ -3155,10 +3155,10 @@ if run_adopter "$paste_modes"; then
 else
   stale_guidance="$(grep -F 'Affected member: .github/workflows/changelog.yml;' "$tmproot/run.out")"
   expected_stale_guidance='its mode cannot be established by this check; possible modes are generated-artifacts, generated-artifacts-with-adr-index, workflow. Inspect the existing caller and related generated artifacts to derive the exact mode and all custom generator options; preserve them. Generate into a clean temporary checkout, review the full diff, then replace the committed set together. This diagnostic intentionally prints no single-file command. Name the mode this repository already adopted: generated-artifacts-with-adr-index also wires adr-index: true and the pinned scripts/gen-adr-index.sh, and workflow is the compatibility alias.'
-  actual_stale_guidance="${stale_guidance#*; }"
+  actual_stale_guidance="${stale_guidance#*Affected member: .github/workflows/changelog.yml; }"
   [ "$actual_stale_guidance" = "$expected_stale_guidance" ] \
     && pass "unknown-mode caller guidance matches approved prose exactly" \
-    || fail "unknown-mode caller guidance diverged from approved prose or included a command"
+    || fail "unknown-mode caller guidance diverged (actual: ${actual_stale_guidance:-<none>}; expected: $expected_stale_guidance)"
 fi
 
 paste_self="$tmproot/adopter-remedy-paste-self"
@@ -3167,12 +3167,12 @@ duplicate_pin_line "$paste_self/scripts/changelog-contract.test.sh"
 if run_adopter "$paste_self"; then
   fail "emitted suite accepted its own duplicate pin"
 else
-  self_guidance="$(grep -F 'Regenerate the complete generated set' "$tmproot/run.out")"
-  { grep -qF 'derive the exact mode and all custom generator options' <<<"$self_guidance" \
-    && ! grep -qF 'scripts/gen-changelog-caller.sh ' <<<"$self_guidance" \
-    && ! grep -qF '>' <<<"$self_guidance"; } \
-    && pass "the contract-suite duplicate-pin remedy stays prose-only" \
-    || fail "the contract-suite duplicate-pin remedy printed a command or redirect"
+    self_finding="$(grep -F 'Affected member: scripts/changelog-contract.test.sh;' "$tmproot/run.out")"
+    self_guidance="${self_finding#*Affected member: scripts/changelog-contract.test.sh; }"
+    expected_self_guidance='mode hint: contract-test; verify it against existing artifacts. Inspect the existing caller and related generated artifacts to derive the exact mode and all custom generator options; preserve them. Generate into a clean temporary checkout, review the full diff, then replace the committed set together. This diagnostic intentionally prints no single-file command.'
+    [ "$self_guidance" = "$expected_self_guidance" ] \
+      && pass "the contract-suite duplicate-pin remedy stays prose-only" \
+      || fail "the contract-suite duplicate-pin remedy diverged (actual: ${self_guidance:-<none>}; expected: $expected_self_guidance)"
 fi
 
 # The header states which MODE produced the file, and that is part of the claim.
