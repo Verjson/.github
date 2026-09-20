@@ -208,6 +208,15 @@ generated_contract_identity_for_repo() ( # $1 = repo, $2 = audited head or empty
         echo "::error::phase=audit repo=$repo result=generated-contract-artifact-unreadable path=$path"
         return 1
       }
+    # `base64 --decode` exits 0 on an empty stream, so a fetch that returned
+    # nothing lands here as a zero-byte file that every check downstream reads
+    # as content. The byte comparison then reports drift, and the parameter
+    # extraction reports invalid parameters, for an artifact that was never
+    # retrieved. An empty artifact is a fetch fault, named as one.
+    [ -s "$tmp/actual/$name" ] || {
+      echo "::error::phase=audit repo=$repo result=generated-contract-artifact-empty path=$path"
+      return 1
+    }
   done
 
   read -r mode pin < <(sed -nE \
@@ -338,8 +347,9 @@ PY
 )
 
 source_contract_for_repo() { # $1 = repo, $2 = stack
-  local repo="$1" stack="$2" listing paths path source stack_workflow head='' ref_query='' changelog_state
+  local repo="$1" stack="$2" listing listing_count paths path stack_workflow workflow_count head='' ref_query='' changelog_state
   local stack_callers='' canonical_callers=0 changelog_callers=0 changelog_caller_path='' changelog_contract_jobs=0 source_fault=0
+  local source_bytes=0 remaining_bytes source_size
   local expected_stack_job expected_changelog_job inspection path_filter
 
   case "$stack" in
@@ -347,37 +357,63 @@ source_contract_for_repo() { # $1 = repo, $2 = stack
   esac
   if [ -n "${RCA_HEADS_FILE:-}" ]; then
     head="$(head_for_repo "$repo")" || return 2
+  else
+    head="$(gh api "repos/$ORG/$repo/commits?per_page=1" --jq '.[0].sha' 2>/dev/null)" || return 2
   fi
   # The audited head is a 40-hex commit SHA; re-assert that where it builds a query string,
   # so no future caller can route arbitrary text into one.
-  [ -z "$head" ] || { [[ "$head" =~ ^[0-9a-f]{40}$ ]] || return 2; ref_query="?ref=$head"; }
+  [[ "$head" =~ ^[0-9a-f]{40}$ ]] || return 2
+  ref_query="?ref=$head"
   stack_workflow="$(stack_workflow_for "$stack")" || return 2
   expected_stack_job="$(jq -r '.caller_job_names.stack' "$CONTRACT_FILE")"
   expected_changelog_job="$(jq -r '.caller_job_names.changelog' "$CONTRACT_FILE")"
   listing="$(gh api "repos/$ORG/$repo/contents/.github/workflows$ref_query" 2>/dev/null)" ||
     return 2
   jq -e 'type == "array"' <<<"$listing" >/dev/null 2>&1 || return 2
-  paths="$(jq -r '.[] | select(.type == "file") | .path' <<<"$listing")" ||
-    return 2
+  listing_count="$(jq 'length' <<<"$listing")" || return 2
+  path_filter='.[] | select(.type == "file") | .path as $path | select($path | strings) | select($path | explode | all(. >= 32 and . != 127)) | select($path | test("^\\.github/workflows/[^/]+\\.ya?ml$"))'
+  workflow_count="$(jq "[${path_filter}] | length" <<<"$listing")" || return 2
+  if [ "$listing_count" -ge "$MAX_WORKFLOW_DIRECTORY_ENTRIES" ] || [ "$workflow_count" -gt "$MAX_WORKFLOW_FILES_PER_REPO" ]; then
+    source_fault=1
+    paths=''
+  else
+    paths="$(jq -r "$path_filter | .path" <<<"$listing")" || return 2
+  fi
 
-  while read -r path; do
+  while IFS= read -r path; do
     [ -n "$path" ] || continue
-    source="$(gh api "repos/$ORG/$repo/contents/$path$ref_query" --jq .content 2>/dev/null |
-      tr -d '\n' | base64 --decode 2>/dev/null)" || {
+    local source_file
+    source_file="$(mktemp)" || {
       source_fault=1
       break
     }
+    remaining_bytes=$((MAX_WORKFLOW_BYTES_PER_REPO - source_bytes))
+    if [ "$remaining_bytes" -le 0 ] || ! workflow_source_to_file "$repo" "$path" "$ref_query" "$source_file" "$remaining_bytes"; then
+      source_fault=1
+      rm -f -- "$source_file"
+      break
+    fi
+    source_size="$(wc -c <"$source_file")" || {
+      source_fault=1
+      rm -f -- "$source_file"
+      break
+    }
+    source_size="${source_size//[[:space:]]/}"
+    source_bytes=$((source_bytes + source_size))
 
     local found
-    inspection="$(python3 -I "$WORKFLOW_INSPECTOR" "$expected_changelog_job" <<<"$source")" || {
+    inspection="$(python3 -I "$WORKFLOW_INSPECTOR" "$expected_changelog_job" <"$source_file")" || {
       source_fault=1
+      rm -f -- "$source_file"
       break
     }
     path_filter="$(jq -r '.path_filter' <<<"$inspection")" || {
       source_fault=1
+      rm -f -- "$source_file"
       break
     }
-    found="$(caller_job_for "$stack_workflow" <<<"$source")"
+    found="$(caller_job_for "$stack_workflow" <"$source_file")"
+    rm -f -- "$source_file"
     if [ -n "$found" ]; then
       stack_callers="$stack_callers$found"$'\n'
       # Only the CANONICALLY NAMED caller publishes the required contexts, so
@@ -496,6 +532,39 @@ nonconformant=0
 unclassified=0
 unaudited=0
 skipped=0
+
+readonly MAX_WORKFLOW_FILE_BYTES=$((5 * 1024 * 1024))
+readonly MAX_WORKFLOW_BYTES_PER_REPO=$((10 * 1024 * 1024))
+readonly MAX_WORKFLOW_FILES_PER_REPO=100
+readonly MAX_WORKFLOW_DIRECTORY_ENTRIES=1000
+
+workflow_source_to_file() {
+  local repo="$1" path="$2" ref_query="$3" destination="$4" remaining_bytes="$5"
+  local response encoding size encoded actual_size encoded_path
+
+  encoded_path="$(jq -nr --arg path "$path" '$path | split("/") | map(@uri) | join("/")')" || return 1
+  response="$(gh api "repos/$ORG/$repo/contents/$encoded_path$ref_query" 2>/dev/null)" || return 1
+  encoding="$(jq -er '.encoding | select(. == "base64" or . == "none")' <<<"$response")" || return 1
+  size="$(jq -er '.size | select(type == "number" and . >= 0 and floor == .)' <<<"$response")" || return 1
+  [ "$size" -le "$MAX_WORKFLOW_FILE_BYTES" ] && [ "$size" -le "$remaining_bytes" ] || return 1
+
+  case "$encoding" in
+    base64)
+      jq -e 'has("content") and (.content | type == "string")' <<<"$response" >/dev/null || return 1
+      encoded="$(jq -r '.content' <<<"$response")" || return 1
+      printf '%s' "$encoded" | tr -d '\n' | base64 --decode >"$destination" 2>/dev/null || return 1
+      ;;
+    none)
+      [ "$size" -gt 1000000 ] || return 1
+      gh api "repos/$ORG/$repo/contents/$encoded_path$ref_query" --header 'Accept: application/vnd.github.raw+json' \
+        >"$destination" 2>/dev/null || return 1
+      ;;
+  esac
+
+  actual_size="$(wc -c <"$destination")" || return 1
+  actual_size="${actual_size//[[:space:]]/}"
+  [ "$actual_size" = "$size" ]
+}
 
 audit_repo() {
   local repo="$1" stack heads sha seen='' n=0 missing=() contract
