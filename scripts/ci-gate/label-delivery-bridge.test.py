@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 from pathlib import Path
-import copy
-import json
+import os
 import subprocess
 import tempfile
 import yaml
@@ -24,43 +23,55 @@ def validate_caller(doc, target):
         "with": {"ai_review_environment": "ai-review-app"},
     }}
 
-def validate_event_admission(job):
-    condition = job.get("if", "true").removeprefix("${{").removesuffix("}}").strip()
+def validate_event_admission(workflow):
+    script = workflow["jobs"]["event-policy"]["steps"][0]["run"]
     cases = [
         ("body-only edit", {"action": "edited", "changes": {"body": {"from": "old body"}}}, False),
         ("body-only edit on held PR", {"action": "edited", "changes": {"body": {"from": "old body"}}, "pull_request": {"title": "DO NOT MERGE: held"}}, False),
-        ("base-only edit on held PR", {"action": "edited", "changes": {"base": {"ref": {"from": "main"}},}, "pull_request": {"title": "DO NOT MERGE: held"}}, False),
-        ("missing changes on held PR", {"action": "edited", "pull_request": {"title": "DO NOT MERGE: held"}}, False),
+        ("base-only edit on held PR", {"action": "edited", "changes": {"base": {"ref": {"from": "main"}}}, "pull_request": {"title": "DO NOT MERGE: held"}}, False),
+        ("missing changes", {"action": "edited", "pull_request": {"title": "DO NOT MERGE: held"}}, False),
         ("null previous title", {"action": "edited", "changes": {"title": {"from": None}}, "pull_request": {"title": "DO NOT MERGE: held"}}, False),
-        ("empty previous title", {"action": "edited", "changes": {"title": {"from": ""}}}, False),
-        ("ordinary title edit", {"action": "edited", "changes": {"title": {"from": "Old title"}}}, False),
-        ("title removal", {"action": "edited", "changes": {"title": {"from": "Old title"}}, "pull_request": {"title": ""}}, False),
+        ("empty previous title", {"action": "edited", "changes": {"title": {"from": ""}}, "pull_request": {"title": "ordinary title"}}, False),
+        ("ordinary title edit", {"action": "edited", "changes": {"title": {"from": "Old title"}}, "pull_request": {"title": "New title"}}, False),
+        ("embedded prefix does not clear a hold", {"action": "edited", "changes": {"title": {"from": "REDO NOT MERGE: old"}}, "pull_request": {"title": "ordinary title"}}, False),
+        ("embedded suffix does not set a hold", {"action": "edited", "changes": {"title": {"from": "ordinary title"}}, "pull_request": {"title": "DO NOT MERGER: new"}}, False),
         ("add title hold", {"action": "edited", "changes": {"title": {"from": "Old title"}}, "pull_request": {"title": "DO NOT MERGE: Old title"}}, True),
         ("add mixed-case title hold", {"action": "edited", "changes": {"title": {"from": "Old title"}}, "pull_request": {"title": "dO nOt mErGe: Old title"}}, True),
         ("remove title hold", {"action": "edited", "changes": {"title": {"from": "do not merge: Old title"}}, "pull_request": {"title": "Old title"}}, True),
         ("retain title hold", {"action": "edited", "changes": {"title": {"from": "do not merge: Old title"}}, "pull_request": {"title": "DO NOT MERGE: new title"}}, False),
+        ("unrelated label addition", {"action": "labeled", "label": {"name": "documentation"}}, False),
+        ("recognized label addition", {"action": "labeled", "label": {"name": "hold"}}, True),
+        ("recognized label removal", {"action": "unlabeled", "label": {"name": "hold"}}, True),
     ]
     cases.extend((action, {"action": action}, True) for action in (
-        "opened", "reopened", "synchronize", "labeled", "unlabeled",
-        "ready_for_review", "converted_to_draft",
+        "opened", "reopened", "synchronize", "ready_for_review", "converted_to_draft",
     ))
-    for name, event, expected in cases:
-        context = copy.deepcopy(event)
-        context.setdefault("changes", {}).setdefault("title", {})
-        context.setdefault("pull_request", {}).setdefault("title", "")
-        # GitHub's string contains() is case-insensitive; provide it to Node's VM.
-        # The configured guard uses string inequality and truthiness, which have
-        # the same semantics in JavaScript for these GitHub event values.
-        completed = subprocess.run([
-            "node", "-e",
-            'const vm = require("node:vm"); process.stdout.write(JSON.stringify(Boolean(vm.runInNewContext(process.argv[1], {github: {event: JSON.parse(process.argv[2])}, needs: {"event-policy": {outputs: {run_control_plane: "true"}}, "app-key-policy": {result: "success"}}, contains: (search, item) => String(search ?? "").toLowerCase().includes(String(item).toLowerCase())}))));',
-            condition.replace("needs.event-policy", "needs[\"event-policy\"]").replace("needs.app-key-policy", "needs[\"app-key-policy\"]"), json.dumps(context),
-        ], check=True, capture_output=True, text=True)
-        assert json.loads(completed.stdout) is expected, name
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        output_path = Path(temporary_directory) / "github-output"
+        for name, event, expected in cases:
+            changes = event.get("changes") or {}
+            title_change = changes.get("title") or {}
+            title_changed = title_change.get("from") is not None
+            pull_request = event.get("pull_request") or {}
+            label = event.get("label") or {}
+            env = os.environ.copy()
+            env.update({
+                "EVENT_ACTION": event["action"],
+                "EVENT_LABEL": label.get("name", ""),
+                "EVENT_TITLE_CHANGED": str(title_changed).lower(),
+                "EVENT_OLD_TITLE": title_change.get("from") or "",
+                "EVENT_NEW_TITLE": pull_request.get("title") or "",
+                "GITHUB_OUTPUT": str(output_path),
+            })
+            output_path.write_text("", encoding="utf-8")
+            completed = subprocess.run(["bash", "-c", script], env=env, check=False, capture_output=True, text=True)
+            assert completed.returncode == 0, (name, completed.stderr)
+            outputs = dict(line.split("=", 1) for line in output_path.read_text(encoding="utf-8").splitlines())
+            assert outputs["run_control_plane"] == str(expected).lower(), name
 
 def main():
     arm = load(ARM)
-    validate_event_admission(arm["jobs"]["arm"])
+    validate_event_admission(arm)
     assert "issues" not in arm[True]
     assert "labeled" not in arm[True]["pull_request_target"]["types"]
     validate_caller(load(CALLER), "./.github/workflows/gate-rearm.yml")

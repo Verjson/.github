@@ -254,7 +254,7 @@ jobs:
             ([.labels[].name | ascii_upcase | gsub("[ _-]+";" ")]) as $labels
             | (.isDraft or ($labels | index("HOLD")) or
                ($labels | index("DO NOT MERGE")) or
-               (.title | ascii_upcase | contains("DO NOT MERGE")))
+               (.title | test("(^|[^A-Z0-9_])DO NOT MERGE([^A-Z0-9_]|$)"; "i")))
             | if . then "true" else "false" end' <<<"$meta")"
           [ "$held" = false ] || exit 0
 

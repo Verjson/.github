@@ -40,6 +40,8 @@ document = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
 jobs = document["jobs"]
 
 expected = {
+    # Permissionless event-time title classification.
+    "title-policy": {},
     # Reusable app-key policy callee; reads its own workflow metadata only.
     # Nested reusable App-key policy calls receive this explicit read-only
     # boundary from the caller.

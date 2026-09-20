@@ -64,7 +64,7 @@ was confirmed, since inspection-only claims go stale silently).
 
 - [#629](https://github.com/Verjson/.github/issues/629) — Protected runner canary rollout. GitHub API verification on 2026-09-04: `verjson-github-runner` has no generated deployment caller; its protected `production` environment has the registration App key but lacks `DIGITALOCEAN_RUNNER_FLEET_TOKEN`. Its environment review policy also needs alignment with ADR 0144. Complete adopter installation and a non-production fleet canary/stop/rollback receipt in the owning repository before closure.
 
-- [#1514](https://github.com/Verjson/.github/issues/1514) — Replace the shipped Terraform GitLab mirror kit with Pulumi. Opened 2026-09-20; implementation is tracked by [verjson-ci#200](https://github.com/Verjson/verjson-ci/issues/200), currently blocked by this canonical decision.
+- [#1518](https://github.com/Verjson/.github/issues/1518) — Match title hold markers as whole phrases. This follow-up keeps event classification and every merge gate aligned.
 
 Prune an entry when its issue closes. This list loads into every session, so a
 closed entry costs context in each one and misreports the state of the work.
