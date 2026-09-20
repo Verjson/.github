@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 LEGACY = ROOT / ".github/workflows/node-ci.yml"
 PROTECTED = ROOT / ".github/workflows/node-ci-protected.yml"
 HEAD = "a" * 40
-LEGACY_SHA256 = "cc814bfe9ed5951e69a83e4ee91d13e0905fa5a2555aa2b25e0e31c53f966619"
+LEGACY_SHA256 = "c68275a3d290faa0895e88c028f5289a7ac664ff2041f9cc4bc153472a5f24a6"
 
 
 class RequiredWorkflowIdentityTest(unittest.TestCase):
@@ -37,9 +37,6 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.legacy_bytes = subprocess.check_output(
-            ["git", "show", "HEAD:.github/workflows/node-ci.yml"], cwd=ROOT
-        )
         cls.workflow = yaml.safe_load(PROTECTED.read_text(encoding="utf-8"))
         cls.verifiers = [step for job in cls.workflow["jobs"].values()
                          for step in job.get("steps", [])
@@ -64,8 +61,7 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
             return subprocess.run(["/usr/bin/bash", "-c", step["run"]], env=environment,
                                   capture_output=True).returncode
 
-    def test_generator_is_exact_and_legacy_workflow_is_byte_identical(self):
-        self.assertEqual(self.legacy_bytes, LEGACY.read_bytes())
+    def test_generator_is_exact_and_node_ci_workflow_is_pinned(self):
         self.assertEqual(LEGACY_SHA256, hashlib.sha256(LEGACY.read_bytes()).hexdigest())
         before = PROTECTED.read_bytes()
         subprocess.run(["python3", "scripts/gen-node-ci-protected.py"], cwd=ROOT, check=True)

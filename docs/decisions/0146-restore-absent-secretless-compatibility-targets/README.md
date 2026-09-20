@@ -262,3 +262,10 @@ than deleting unowned state.
   staging. A deterministic swap/load/restore control proves pathname execution
   loads attacker bytes while the bound lane continues to load the verified
   version.
+
+
+## 2026-09-20 correction — reject unsupported runner combinations early
+
+[Verjson/.github#1416](https://github.com/Verjson/.github/issues/1416) found that a `secretless-trusted-ref` call could combine `secretless-compatibility-ranges` with a self-hosted runner. Compatibility sandbox provisioning remains intentionally hosted-only, but the compatibility lane was not, so the call failed only after dependency acquisition when `/usr/bin/bwrap` was unavailable. Keep hosted-only provisioning and reject this unsupported combination in the `eligibility` job before acquisition or build work. The check uses the selected runner's `runner.environment`, so it also catches the default self-hosted lane when the caller leaves `runner` unset. It applies only to trusted-ref mode: secretless pull-request builds deliberately ignore the caller's runner and use the untrusted lane.
+
+The regression assertion lives in `scripts/ci-gate/node-ci-secretless-compatibility.test.sh`: the eligibility guard must be limited to trusted-ref compatibility calls on non-hosted runners and must fail with the stable diagnostic. This preserves the existing fail-closed sandbox boundary rather than silently skipping compatibility verification.
