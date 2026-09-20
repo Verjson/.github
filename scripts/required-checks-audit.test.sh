@@ -638,14 +638,14 @@ inspector_on_empty_rc=$?
   && [ "$(jq -r '.changelog_contract' <<<"$inspector_on_empty")" = absent ] \
   && [ "$(jq -r '.generated_changelog' <<<"$inspector_on_empty")" = absent ] \
   && [ "$(jq -r '.path_filter' <<<"$inspector_on_empty")" = false ]; } \
-  && pass "the workflow inspector reports an empty source as absent wiring, so the audit must guard the fetch" \
-  || { fail "the inspector no longer reads empty input as absent wiring (rc=$inspector_on_empty_rc); re-derive the audit's empty-source guard"; printf 'diag - %s\n' "$inspector_on_empty"; }
+  && pass "the workflow inspector reports an empty source as absent changelog wiring" \
+  || { fail "the inspector no longer classifies an empty workflow as missing changelog wiring (rc=$inspector_on_empty_rc)"; printf 'diag - %s\n' "$inspector_on_empty"; }
 
 stack node
 : >"$content_root/.github/workflows/ci.yml"
 rc="$(run_audit)"
 { [ "$rc" = "rc=1" ] &&
-  grep -q 'result=missing-core-contexts' "$tmp/out.txt" &&
+  grep -q 'result=stack-caller-missing' "$tmp/out.txt" &&
   ! grep -q 'workflow-source-unreadable' "$tmp/out.txt" &&
   grep -q 'phase=done' "$tmp/out.txt" &&
   grep -q 'unaudited=0' "$tmp/out.txt"; } &&

@@ -568,7 +568,7 @@ adr_index_test_digest="$(printf '%s\n' "$adr_index_test" | sha256sum | cut -d' '
 grep -qE "^ADR_INDEX_TEST_SHA256=\"$adr_index_test_digest\"\$" "$emitted" \
   && pass "the contract test pins the digest of the emitted ADR-index suite" \
   || fail "the contract test does not pin the emitted ADR-index suite's digest"
-grep -qF 'Generate canonical ADR-index test at $CONTRACT_REF in clean temporary checkout' "$emitted" \
+grep -qF 'Generate the canonical ADR-index test at $CONTRACT_REF in a clean temporary checkout' "$emitted" \
   && ! grep -qF '> scripts/gen-adr-index.test.sh' "$emitted" \
   && pass "the contract test names how to acquire the pinned ADR-index suite" \
   || fail "ADR-index test guidance is missing or includes a truncating redirection"
@@ -2941,7 +2941,7 @@ known_remedy="$tmproot/adopter-changelog-remedy"
 build_adopter "$known_remedy" yes generated-artifacts-with-adr-index
 stale_pin "$known_remedy" .github/workflows/changelog.yml
 run_adopter "$known_remedy"
-known_finding="$(grep -F '.github/workflows/changelog.yml still at' "$tmproot/run.out")"
+known_finding="$(grep -F '.github/workflows/changelog.yml is still at' "$tmproot/run.out")"
 known_guidance="${known_finding#*Affected member: .github/workflows/changelog.yml; }"
 expected_known_guidance='mode hint: generated-artifacts-with-adr-index; verify it against existing artifacts. Inspect the existing caller and related generated artifacts to derive the exact mode and all custom generator options; preserve them. Generate into a clean temporary checkout, review the full diff, then replace the committed set together. This diagnostic intentionally prints no single-file command.'
 [ "$known_guidance" = "$expected_known_guidance" ] \
@@ -3129,10 +3129,12 @@ stale_pin "$custom_modes" .github/workflows/changelog-contract.yml
 if run_adopter "$custom_modes"; then
   fail "emitted suite accepted custom release callers with stale pins"
 else
-release_guidance="$(grep -F 'Affected member: .github/workflows/release.yml;' "$tmproot/run.out")"
-pr_gate_guidance="$(grep -F 'Affected member: .github/workflows/changelog-contract.yml;' "$tmproot/run.out")"
-expected_release_guidance='Regenerate the complete generated set at one immutable contract commit. Affected member: .github/workflows/release.yml; mode hint: release-artifact; verify it against existing artifacts. Inspect the existing caller and related generated artifacts to derive the exact mode and all custom generator options; preserve them. Generate into a clean temporary checkout, review the full diff, then replace the committed set together. This diagnostic intentionally prints no single-file command. Name the mode this repository already adopted: release-artifact publishes GitHub Release assets, release-snapshot publishes nothing from the release workflow.'
-expected_pr_gate_guidance='Regenerate the complete generated set at one immutable contract commit. Affected member: .github/workflows/changelog-contract.yml; mode hint: pr-gate; verify it against existing artifacts. Inspect the existing caller and related generated artifacts to derive the exact mode and all custom generator options; preserve them. Generate into a clean temporary checkout, review the full diff, then replace the committed set together. This diagnostic intentionally prints no single-file command.'
+release_finding="$(grep -F 'Affected member: .github/workflows/release.yml;' "$tmproot/run.out")"
+release_guidance="${release_finding#*Affected member: .github/workflows/release.yml; }"
+pr_gate_finding="$(grep -F 'Affected member: .github/workflows/changelog-contract.yml;' "$tmproot/run.out")"
+pr_gate_guidance="${pr_gate_finding#*Affected member: .github/workflows/changelog-contract.yml; }"
+expected_release_guidance='mode hint: release-artifact; verify it against existing artifacts. Inspect the existing caller and related generated artifacts to derive the exact mode and all custom generator options; preserve them. Generate into a clean temporary checkout, review the full diff, then replace the committed set together. This diagnostic intentionally prints no single-file command. Name the mode this repository already adopted: release-artifact publishes GitHub Release assets, and release-snapshot publishes nothing from the release workflow.'
+expected_pr_gate_guidance='mode hint: pr-gate; verify it against existing artifacts. Inspect the existing caller and related generated artifacts to derive the exact mode and all custom generator options; preserve them. Generate into a clean temporary checkout, review the full diff, then replace the committed set together. This diagnostic intentionally prints no single-file command.'
 [ "$release_guidance" = "$expected_release_guidance" ] && [ "$pr_gate_guidance" = "$expected_pr_gate_guidance" ] \
   && pass "custom stale caller guidance preserves exact safe prose and mode hints" \
   || fail "custom stale caller guidance diverged or included a command: ${release_guidance:-<no release guidance>} ${pr_gate_guidance:-<no pr-gate guidance>}"

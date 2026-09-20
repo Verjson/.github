@@ -213,7 +213,7 @@ contract test passed roughly 96 KiB. It is 96 KiB now and grows with every
 contract addition, so the stub passes the content through a file.
 
 A successful Contents API response may contain a zero-byte workflow. The audit now passes
-that empty source to the workflow inspector, reports missing required contexts as
+that empty source to the workflow inspector, reports the missing changelog caller as
 nonconformant, and completes the repository scan. API, decode, or inspection failures still
 report the repository as workflow-source-unreadable and fail closed.
 
