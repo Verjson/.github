@@ -265,3 +265,5 @@ order while being the input to an `eval`; it now runs its own adopter. And a
 paste-safety fixture file that is missing is a failure naming the member rather
 than a silent skip, since skipping it shrank the very list the non-vacuity pin
 beside it is computed from.
+
+The generated-set check now requires every changelog-contract generator output to be enumerated and rejects symlinks in member paths, including parent directories. Reporting a symlink does not mutate it. The repair command first verifies the path is still a symlink, then removes only that link and recreates its parent before regeneration; leaf and parent cases execute it, confirm the target remains unchanged, and prove stale instructions preserve replacement paths. Synthetic cases cover both optional ADR index artifacts. Their embedded content digests are checked whenever the files exist, even when the caller does not enable ADR indexing, so current-looking headers cannot mask stale payloads.
