@@ -11,6 +11,20 @@ fail(){ printf 'FAIL - %s\n' "$1"; fails=$((fails+1)); }
 awk '$0=="        id: arm"{f=1} f&&$0=="        run: |"{r=1;next} r{if($0~/^      - name:/)exit;sub(/^          /,"");print}' \
   "$workflow" >"$tmp/arm.sh"
 [ -s "$tmp/arm.sh" ] || { echo "FAIL - arm block missing"; exit 1; }
+python3 - "$workflow" "$tmp/preauthorize.sh" <<'PY'
+import sys
+from pathlib import Path
+
+lines = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
+step_name = "- name: Authorize draft and title hold clearing actor before App token mint"
+start = next(i for i, line in enumerate(lines) if line.strip() == step_name)
+step_indent = len(lines[start]) - len(lines[start].lstrip())
+run = next(i for i in range(start + 1, len(lines)) if lines[i].strip() == "run: |")
+body_indent = len(lines[run]) - len(lines[run].lstrip()) + 2
+end = next((i for i in range(run + 1, len(lines)) if lines[i].strip().startswith("- name:") and len(lines[i]) - len(lines[i].lstrip()) == step_indent), len(lines))
+Path(sys.argv[2]).write_text("\n".join(line[body_indent:] for line in lines[run + 1:end]) + "\n", encoding="utf-8")
+PY
+[ -s "$tmp/preauthorize.sh" ] || { echo "FAIL - hold-clearing authorization step missing"; exit 1; }
 awk '$0=="      - name: Complete the authorization when no review was dispatched"{f=1} f&&$0=="        run: |"{r=1;next} r{if($0~/^      - name:/)exit;sub(/^          /,"");print}' \
   "$workflow" >"$tmp/terminalize.sh"
 [ -s "$tmp/terminalize.sh" ] || { echo "FAIL - authorization terminalizer missing"; exit 1; }
@@ -37,7 +51,9 @@ case "$*" in
     for arg in "$@"; do destination="$arg"; done
     mkdir -p "$destination"
     printf '{"review_policy":"%s"}\n' "$RECEIPT_POLICY" >"$destination/receipt.json" ;;
-  *"collaborators/maintainer/permission"*) printf '%s\n' "${ACTOR_PERMISSION:-triage}" ;;
+ *"collaborators/"*"/permission --jq"*)
+   [ "${GH_PERMISSION_FAIL:-false}" != true ] || exit 1
+   printf '%s\n' "${ACTOR_PERMISSION:-triage}" ;;
   *"issues/7/events?per_page=100"*) printf '[{"id":1,"event":"labeled","label":{"name":"ai-review"},"actor":{"login":"maintainer"}},{"id":2,"event":"labeled","label":{"name":"re-review"},"actor":{"login":"maintainer"}}]\n' ;;
   *"contents/.github/workflows/ai-review-merge.yml?ref=main"*) cat "$CALLER_FILE" ;;
   *"--method POST repos/Verjson/example/check-runs --input -"*)
@@ -63,6 +79,8 @@ export REQUEST_ACTOR=maintainer
 export WORKFLOW_REF=Verjson/example/.github/workflows/ai-review-label-rearm.yml@refs/heads/main
 export WORKFLOW_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 export EVENT_HEAD_SHA=0123456789abcdef0123456789abcdef01234567
+export EVENT_NEW_TITLE='' HOLD_CLEAR_ACTOR_PERMISSION=''
+export GITHUB_ENV="$tmp/github-env"
 export ACTIONS_TOKEN=actions-token GH_TOKEN=app-token GITHUB_SERVER_URL=https://github.com
 export GITHUB_RUN_ID=8000 GITHUB_RUN_ATTEMPT=1 RUNNER_TEMP="$tmp"
 export GITHUB_OUTPUT="$tmp/github-output"
@@ -88,6 +106,98 @@ run_arm(){
   WORKFLOW_REF="Verjson/example/.github/workflows/$caller@refs/heads/main" bash "${ARM_SCRIPT:-$tmp/arm.sh}"
 }
 expect_fail(){ label="$1"; if run_arm >"$tmp/out" 2>&1; then fail "$label"; else pass "$label"; fi; }
+run_preauthorize(){ bash "$tmp/preauthorize.sh"; }
+
+if python3 - "$workflow" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+
+workflow = yaml.safe_load(Path(sys.argv[1]).read_text(encoding="utf-8"))
+jobs = workflow["jobs"]
+steps = jobs["arm"]["steps"]
+preauthorize = next(i for i, step in enumerate(steps) if step.get("name", "").startswith("Authorize draft and title hold"))
+mint = next(i for i, step in enumerate(steps) if step.get("name") == "Mint dedicated authorization App token")
+assert preauthorize < mint, "actor authorization must precede App-token mint"
+assert "admin|maintain" in steps[preauthorize]["run"]
+
+title_clear = "(contains(github.event.changes.title.from, 'DO NOT MERGE') && !contains(github.event.changes.title.to, 'DO NOT MERGE'))"
+assert jobs["app-key-policy"]["if"] == "${{ github.event.action != 'edited' || " + title_clear + " }}"
+assert jobs["arm"]["if"] == "${{ needs.app-key-policy.result == 'success' && (github.event.action != 'edited' || " + title_clear + ") }}"
+
+def title_edit_enters_arm(old, new):
+    marker = "do not merge"
+    return marker in old.casefold() and marker not in new.casefold()
+
+assert title_edit_enters_arm("DO NOT MERGE: hold", "ordinary title")
+assert not title_edit_enters_arm("DO NOT MERGE: hold", "DO NOT MERGE: keep")
+assert not title_edit_enters_arm("ordinary title", "new ordinary title")
+assert not title_edit_enters_arm("ordinary title", "DO NOT MERGE: add hold")
+print("workflow hold-removal expressions and authorization ordering pass")
+PY
+then
+  pass "only actual title-hold removals reach the trusted arm and token steps"
+else
+  fail "workflow hold-removal entry gates are incomplete"
+fi
+
+export EVENT_ACTION=ready_for_review EVENT_OLD_TITLE='' EVENT_NEW_TITLE='ordinary title'
+: >"$CALLS"
+for permission in read triage write; do
+  : >"$GITHUB_ENV"
+  export ACTOR_PERMISSION="$permission"
+  if run_preauthorize >"$tmp/out" 2>&1; then
+    fail "$permission actor cleared a draft hold"
+  elif grep -q 'workflow run ai-privileged-merge.yml\|workflow run ai-review-merge.yml' "$CALLS"; then
+    fail "$permission actor reached privileged dispatch"
+  else
+    pass "$permission actor is rejected before App-token mint"
+  fi
+done
+
+for permission in maintain admin; do
+  : >"$GITHUB_ENV"
+  export ACTOR_PERMISSION="$permission"
+  if run_preauthorize >"$tmp/out" 2>&1 && grep -q "^HOLD_CLEAR_ACTOR_PERMISSION=$permission$" "$GITHUB_ENV"; then
+    pass "$permission actor is authorized to clear a draft hold"
+  else
+    fail "$permission actor could not clear a draft hold"
+  fi
+done
+
+export ACTOR_PERMISSION=maintain GH_PERMISSION_FAIL=true
+if run_preauthorize >"$tmp/out" 2>&1; then
+  fail "permission API failure cleared a draft hold"
+elif grep -q 'workflow run ai-privileged-merge.yml\|workflow run ai-review-merge.yml' "$CALLS"; then
+  fail "permission API failure reached privileged dispatch"
+else
+  pass "permission API failure remains fail-closed before App-token mint"
+fi
+unset GH_PERMISSION_FAIL
+
+export EVENT_ACTION=edited EVENT_OLD_TITLE='chore: DO NOT MERGE QA' EVENT_NEW_TITLE='chore: QA'
+export ACTOR_PERMISSION=maintain
+: >"$GITHUB_ENV"
+if run_preauthorize >"$tmp/out" 2>&1 && grep -q '^HOLD_CLEAR_ACTOR_PERMISSION=maintain$' "$GITHUB_ENV"; then
+  pass "a maintainer can clear an existing title hold"
+else
+  fail "a real title-hold removal was not authorized"
+fi
+
+for old_title in 'chore: DO NOT MERGE QA' 'chore: QA'; do
+  for new_title in 'chore: DO NOT MERGE QA' 'chore: new title'; do
+    if [[ "$old_title" == *'DO NOT MERGE'* && "$new_title" != *'DO NOT MERGE'* ]]; then
+      continue
+    fi
+    export EVENT_OLD_TITLE="$old_title" EVENT_NEW_TITLE="$new_title"
+    if run_preauthorize >"$tmp/out" 2>&1; then
+      fail "non-clearing title edit was authorized: $old_title -> $new_title"
+    else
+      pass "non-clearing title edit is rejected before App-token mint"
+    fi
+  done
+done
 
 write_hold
 export EVENT_ACTION=labeled EVENT_LABEL=hold
@@ -260,9 +370,9 @@ else fail "hold removal did not reuse authorization: $(tail -1 "$tmp/out")"; fi
 for release_case in normalized-label ready-for-review edited-title; do
   write_repromotion
   case "$release_case" in
-    normalized-label) export EVENT_ACTION=unlabeled EVENT_LABEL='Do__Not--Merge' EVENT_OLD_TITLE='' ;;
-    ready-for-review) export EVENT_ACTION=ready_for_review EVENT_LABEL='' EVENT_OLD_TITLE='' ;;
-    edited-title) export EVENT_ACTION=edited EVENT_LABEL='' EVENT_OLD_TITLE='chore: DO NOT MERGE until QA' ;;
+    normalized-label) export EVENT_ACTION=unlabeled EVENT_LABEL='Do__Not--Merge' EVENT_OLD_TITLE='' EVENT_NEW_TITLE='' HOLD_CLEAR_ACTOR_PERMISSION='' ;;
+    ready-for-review) export EVENT_ACTION=ready_for_review EVENT_LABEL='' EVENT_OLD_TITLE='' EVENT_NEW_TITLE='change' HOLD_CLEAR_ACTOR_PERMISSION=maintain ;;
+    edited-title) export EVENT_ACTION=edited EVENT_LABEL='' EVENT_OLD_TITLE='chore: DO NOT MERGE until QA' EVENT_NEW_TITLE='change' HOLD_CLEAR_ACTOR_PERMISSION=maintain ;;
   esac
   if run_arm >"$tmp/out" 2>&1 && grep -q 'workflow run ai-privileged-merge.yml' "$CALLS" \
       && ! grep -q 'workflow run ai-review-merge.yml' "$CALLS"; then
@@ -271,6 +381,25 @@ for release_case in normalized-label ready-for-review edited-title; do
     fail "$release_case did not follow the receipt-preserving re-arm path"
   fi
 done
+
+write_repromotion
+export EVENT_ACTION=ready_for_review EVENT_LABEL='' HOLD_CLEAR_ACTOR_PERMISSION=triage
+if run_arm >"$tmp/out" 2>&1; then
+  fail "unauthorized ready-for-review actor was silently accepted"
+elif grep -q 'workflow run ai-privileged-merge.yml\|workflow run ai-review-merge.yml' "$CALLS"; then
+  fail "unauthorized ready-for-review actor reached privileged dispatch"
+else
+  pass "unauthorized ready-for-review actor cannot dispatch privileged work"
+fi
+
+write_repromotion
+jq '.title="chore: DO NOT MERGE QA"' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"
+export EVENT_ACTION=edited EVENT_OLD_TITLE='chore: DO NOT MERGE QA' EVENT_NEW_TITLE='chore: QA' HOLD_CLEAR_ACTOR_PERMISSION=maintain
+if run_arm >"$tmp/out" 2>&1 && ! grep -q 'commits/.*/check-runs\|workflow run' "$CALLS"; then
+  pass "title edit that retains the authoritative hold exits before receipt lookup"
+else
+  fail "title edit that retains the hold reached authorization dispatch"
+fi
 
 write_repromotion
 for rejected in replay stale-head actor-mismatch; do

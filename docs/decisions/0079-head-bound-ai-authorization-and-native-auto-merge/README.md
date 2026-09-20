@@ -386,3 +386,7 @@ basenames as well as full paths, and a table column header ("Why the assertion i
 longer meaningful") is not a sentence that retires a file. Where a property survived the
 deletion, the table and the two bullets below it already name the registered suite that
 carries it now; none of that changes.
+
+## Amendment (2026-09-20, #1504) — authorize draft and title hold removal
+
+Only a repository `maintain` or `admin` actor may clear a draft hold through `ready_for_review` or remove an existing `DO NOT MERGE` title marker. The authorization check runs before minting the dedicated review App token. The trusted workflow admits a title edit only when the old title contains the marker and the new title removes it, then confirms the authoritative current PR title is clear before reusing a receipt. Title edits that keep or add the marker do not reach the trusted runner. Label-based hold removal retains its existing event and label gates; all paths retain the exact-head receipt requirement.

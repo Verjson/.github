@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   app-key-policy:
-    if: github.event.action != 'edited' || github.event.changes.title.from
+    if: ${{ github.event.action != 'edited' || (contains(github.event.changes.title.from, 'DO NOT MERGE') && !contains(github.event.changes.title.to, 'DO NOT MERGE')) }}
     # Absolute pinned reference, not a relative path: when this file runs as an
     # organization ruleset required workflow, a relative reusable call fails at
     # startup with zero jobs (canary receipt, 2026-09-11), so the policy check
@@ -42,10 +42,9 @@ jobs:
   arm:
     environment: ${{ inputs.ai_review_environment || 'ai-review-app' }}
     needs: app-key-policy
-    # Body/base-only edits cannot re-arm review or change a title hold. Skip
-    # them before runner placement and credential minting; title edits still
-    # reach the live hold checks, including adding DO NOT MERGE.
-    if: ${{ needs.app-key-policy.result == 'success' && (github.event.action != 'edited' || github.event.changes.title.from) }}
+    # Body/base-only edits and title changes that do not remove an existing
+    # marker skip runner placement and credential minting.
+    if: ${{ needs.app-key-policy.result == 'success' && (github.event.action != 'edited' || (contains(github.event.changes.title.from, 'DO NOT MERGE') && !contains(github.event.changes.title.to, 'DO NOT MERGE'))) }}
     # AI remains advisory under ADR 0090. A missing credential, App outage, or
     # authorization defect must fail this job visibly without turning the
     # ruleset workflow into a veto on an otherwise-authorized human merge.
@@ -72,6 +71,7 @@ jobs:
       EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       EVENT_NAME: ${{ github.event_name }}
       EVENT_OLD_TITLE: ${{ github.event.changes.title.from || '' }}
+      EVENT_NEW_TITLE: ${{ github.event.changes.title.to || '' }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
       REPOSITORY_ID: ${{ github.repository_id }}
       TARGET_REPO: ${{ github.repository }}
@@ -95,6 +95,32 @@ jobs:
           [[ "$APP_CLIENT_ID" =~ ^Iv[A-Za-z0-9.]{8,126}$ ]] || {
             echo "::error::AI_REVIEW_CLIENT_ID is unavailable or malformed"; exit 1;
           }
+
+      - name: Authorize draft and title hold clearing actor before App token mint
+        if: ${{ github.event.action == 'ready_for_review' || github.event.action == 'edited' }}
+        env:
+          ACTIONS_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          case "$EVENT_ACTION" in
+            ready_for_review) ;;
+            edited)
+              case "${EVENT_OLD_TITLE^^}" in *'DO NOT MERGE'*) ;; *) exit 1 ;; esac
+              case "${EVENT_NEW_TITLE^^}" in *'DO NOT MERGE'*) exit 1 ;; esac
+              ;;
+            *) echo "::error::unsupported hold-clearing event"; exit 1 ;;
+          esac
+          [[ "$REQUEST_ACTOR" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || {
+            echo "::error::hold-clearing actor is invalid"; exit 1;
+          }
+          actor_permission="$(GH_TOKEN="$ACTIONS_TOKEN" gh api \
+            "repos/$TARGET_REPO/collaborators/$REQUEST_ACTOR/permission" --jq '.permission // ""')" || {
+            echo "::error::could not authorize hold-clearing actor"; exit 1;
+          }
+          case "$actor_permission" in
+            admin|maintain) printf 'HOLD_CLEAR_ACTOR_PERMISSION=%s\n' "$actor_permission" >>"$GITHUB_ENV" ;;
+            *) echo "::error::$REQUEST_ACTOR lacks maintain/admin permission to clear a hold"; exit 1 ;;
+          esac
 
       - name: Mint dedicated authorization App token
         id: app-token
@@ -338,10 +364,20 @@ jobs:
           [ "$EVENT_ACTION" = ready_for_review ] && hold_removed=true
           if [ "$EVENT_ACTION" = edited ]; then
             case "${EVENT_OLD_TITLE^^}" in *'DO NOT MERGE'*) hold_removed=true ;; *) exit 0 ;; esac
+            case "$(jq -r '.title | ascii_upcase' <<<"$meta")" in
+              *'DO NOT MERGE'*) exit 0 ;;
+              *) hold_removed=true ;;
+            esac
           fi
           if [ "$EVENT_ACTION" = unlabeled ]; then
             removed_normalized="$(jq -nr --arg raw_label "$EVENT_LABEL" "\$raw_label | ascii_upcase | gsub(\"[ _-]+\";\" \")")"
             case "$removed_normalized" in HOLD|'DO NOT MERGE') hold_removed=true ;; *) exit 0 ;; esac
+          fi
+          if [ "$hold_removed" = true ] && { [ "$EVENT_ACTION" = ready_for_review ] || [ "$EVENT_ACTION" = edited ]; }; then
+            case "${HOLD_CLEAR_ACTOR_PERMISSION:-}" in
+              admin|maintain) ;;
+              *) echo "::error::draft or title hold removal lacks trusted actor authorization"; exit 1 ;;
+            esac
           fi
 
           latest="$(gh api "repos/$TARGET_REPO/commits/$head_sha/check-runs" \
