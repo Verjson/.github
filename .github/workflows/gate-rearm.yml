@@ -23,8 +23,32 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  event-policy:
+    runs-on: ${{ fromJSON(vars.CI_LANE_UNTRUSTED || '["ubuntu-24.04"]') }}
+    permissions: {}
+    outputs:
+      run_control_plane: ${{ steps.classify.outputs.run_control_plane }}
+    steps:
+      - id: classify
+        env:
+          EVENT_ACTION: ${{ github.event.action }}
+          EVENT_LABEL: ${{ github.event.label.name || '' }}
+        run: |
+          set -euo pipefail
+          run_control_plane=true
+          if [ "$EVENT_ACTION" = unlabeled ]; then
+            removed_normalized="$(jq -nr --arg raw_label "$EVENT_LABEL" '$raw_label | ascii_upcase | gsub("[ _-]+";" ")')"
+            case "$removed_normalized" in HOLD|'DO NOT MERGE') ;; *) run_control_plane=false ;; esac
+          elif [ "$EVENT_ACTION" = labeled ]; then
+            # Hold additions reach arm so it can disable native auto-merge.
+            added_normalized="$(jq -nr --arg raw_label "$EVENT_LABEL" '$raw_label | ascii_downcase | gsub("[ _-]+";"-")')"
+            case "$added_normalized" in ai-review|re-review|hold|do-not-merge) ;; *) run_control_plane=false ;; esac
+          fi
+          printf 'run_control_plane=%s\n' "$run_control_plane" >>"$GITHUB_OUTPUT"
+
   app-key-policy:
-    if: github.event.action != 'edited' || github.event.changes.title.from
+    needs: event-policy
+    if: ${{ needs.event-policy.outputs.run_control_plane == 'true' && (github.event.action != 'edited' || (github.event.changes.title.from != null && (contains(github.event.changes.title.from, 'DO NOT MERGE') != contains(github.event.pull_request.title, 'DO NOT MERGE')))) }}
     # Absolute pinned reference, not a relative path: when this file runs as an
     # organization ruleset required workflow, a relative reusable call fails at
     # startup with zero jobs (canary receipt, 2026-09-11), so the policy check
@@ -41,11 +65,10 @@ jobs:
 
   arm:
     environment: ${{ inputs.ai_review_environment || 'ai-review-app' }}
-    needs: app-key-policy
-    # Body/base-only edits cannot re-arm review or change a title hold. Skip
-    # them before runner placement and credential minting; title edits still
-    # reach the live hold checks, including adding DO NOT MERGE.
-    if: ${{ needs.app-key-policy.result == 'success' && (github.event.action != 'edited' || github.event.changes.title.from) }}
+    needs: [event-policy, app-key-policy]
+    # Body/base-only edits and title edits that do not change held state skip
+    # runner placement and credential minting.
+    if: ${{ needs.event-policy.outputs.run_control_plane == 'true' && needs.app-key-policy.result == 'success' && (github.event.action != 'edited' || (github.event.changes.title.from != null && (contains(github.event.changes.title.from, 'DO NOT MERGE') != contains(github.event.pull_request.title, 'DO NOT MERGE')))) }}
     # AI remains advisory under ADR 0090. A missing credential, App outage, or
     # authorization defect must fail this job visibly without turning the
     # ruleset workflow into a veto on an otherwise-authorized human merge.
@@ -72,6 +95,7 @@ jobs:
       EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       EVENT_NAME: ${{ github.event_name }}
       EVENT_OLD_TITLE: ${{ github.event.changes.title.from || '' }}
+      EVENT_NEW_TITLE: ${{ github.event.pull_request.title || '' }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
       REPOSITORY_ID: ${{ github.repository_id }}
       TARGET_REPO: ${{ github.repository }}
@@ -95,6 +119,60 @@ jobs:
           [[ "$APP_CLIENT_ID" =~ ^Iv[A-Za-z0-9.]{8,126}$ ]] || {
             echo "::error::AI_REVIEW_CLIENT_ID is unavailable or malformed"; exit 1;
           }
+
+      - name: Authorize hold-clearing actor before App token mint
+        if: "${{ github.event.action == 'ready_for_review' || github.event.action == 'edited' || github.event.action == 'unlabeled' || github.event.action == 'labeled' }}"
+        env:
+          ACTIONS_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          case "$EVENT_ACTION" in
+            ready_for_review) ;;
+            edited)
+              old_title_held=false
+              new_title_held=false
+              case "${EVENT_OLD_TITLE^^}" in *'DO NOT MERGE'*) old_title_held=true ;; esac
+              case "${EVENT_NEW_TITLE^^}" in *'DO NOT MERGE'*) new_title_held=true ;; esac
+              if [ "$old_title_held" = false ] && [ "$new_title_held" = true ]; then
+                exit 0
+              fi
+              [ "$old_title_held" = true ] && [ "$new_title_held" = false ] || {
+                echo "::error::title edit did not change hold state"; exit 1;
+              }
+              ;;
+            unlabeled)
+              removed_normalized="$(jq -nr --arg raw_label "$EVENT_LABEL" '$raw_label | ascii_upcase | gsub("[ _-]+";" ")')"
+              case "$removed_normalized" in HOLD|'DO NOT MERGE') ;; *) exit 0 ;; esac
+              ;;
+            labeled)
+              added_normalized="$(jq -nr --arg raw_label "$EVENT_LABEL" '$raw_label | ascii_downcase | gsub("[ _-]+";"-")')"
+              case "$added_normalized" in
+                ai-review|re-review) ;;
+                hold|do-not-merge) exit 0 ;;
+                *) echo "::error::unsupported labeled event reached hold authorization"; exit 1 ;;
+              esac
+              ;;
+            *) echo "::error::unsupported hold-clearing event"; exit 1 ;;
+          esac
+          [[ "$REQUEST_ACTOR" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || {
+            echo "::error::hold-clearing actor is invalid"; exit 1;
+          }
+          actor_permission_response="$(GH_TOKEN="$ACTIONS_TOKEN" gh api \
+            "repos/$TARGET_REPO/collaborators/$REQUEST_ACTOR/permission")" || {
+            echo "::error::could not authorize hold-clearing actor"; exit 1;
+          }
+          actor_role="$(jq -er '.role_name // ""' <<<"$actor_permission_response")" || {
+            echo "::error::could not read hold-clearing actor role"; exit 1;
+          }
+          case "$actor_role" in
+            admin|maintain)
+              if [ "$EVENT_ACTION" = labeled ]; then
+                exit 0
+              fi
+              printf 'HOLD_CLEAR_ACTOR_PERMISSION=%s\n' "$actor_role" >>"$GITHUB_ENV"
+              ;;
+            *) echo "::error::$REQUEST_ACTOR lacks maintain/admin permission to clear a hold"; exit 1 ;;
+          esac
 
       - name: Mint dedicated authorization App token
         id: app-token
@@ -260,7 +338,7 @@ jobs:
               GH_TOKEN="$ACTIONS_TOKEN" gh pr edit "$PR_NUMBER" --repo "$TARGET_REPO" --remove-label "$ai_review_label" 2>/dev/null || true
               echo "::error::AI review label actor is invalid"; return 1
             fi
-            actor_permission="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/collaborators/$actor/permission" --jq '.permission // ""')" || {
+            actor_permission="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/collaborators/$actor/permission" --jq '.role_name // ""')" || {
               echo "::error::could not authorize AI review actor"; return 1;
             }
             case "$actor_permission" in
@@ -282,7 +360,7 @@ jobs:
               echo "::error::explicit re-review policy is not fully configured; refusing before paid dispatch"; exit 1
             fi
             [[ "$rereview_actor" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || { echo "::error::re-review actor is invalid"; exit 1; }
-            actor_permission="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/collaborators/$rereview_actor/permission" --jq '.permission // ""')" || {
+            actor_permission="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/collaborators/$rereview_actor/permission" --jq '.role_name // ""')" || {
               echo "::error::could not authorize re-review actor"; exit 1;
             }
             case "$actor_permission" in admin|maintain) ;; *) echo "::error::$rereview_actor lacks maintain/admin permission for paid re-review"; exit 1 ;; esac
@@ -338,10 +416,20 @@ jobs:
           [ "$EVENT_ACTION" = ready_for_review ] && hold_removed=true
           if [ "$EVENT_ACTION" = edited ]; then
             case "${EVENT_OLD_TITLE^^}" in *'DO NOT MERGE'*) hold_removed=true ;; *) exit 0 ;; esac
+            case "$(jq -r '.title | ascii_upcase' <<<"$meta")" in
+              *'DO NOT MERGE'*) exit 0 ;;
+              *) hold_removed=true ;;
+            esac
           fi
           if [ "$EVENT_ACTION" = unlabeled ]; then
             removed_normalized="$(jq -nr --arg raw_label "$EVENT_LABEL" "\$raw_label | ascii_upcase | gsub(\"[ _-]+\";\" \")")"
             case "$removed_normalized" in HOLD|'DO NOT MERGE') hold_removed=true ;; *) exit 0 ;; esac
+          fi
+          if [ "$hold_removed" = true ] && { [ "$EVENT_ACTION" = ready_for_review ] || [ "$EVENT_ACTION" = edited ] || [ "$EVENT_ACTION" = unlabeled ]; }; then
+            case "${HOLD_CLEAR_ACTOR_PERMISSION:-}" in
+              admin|maintain) ;;
+              *) echo "::error::hold removal lacks trusted actor authorization"; exit 1 ;;
+            esac
           fi
 
           latest="$(gh api "repos/$TARGET_REPO/commits/$head_sha/check-runs" \

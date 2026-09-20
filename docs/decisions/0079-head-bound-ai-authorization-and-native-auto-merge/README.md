@@ -386,3 +386,7 @@ basenames as well as full paths, and a table column header ("Why the assertion i
 longer meaningful") is not a sentence that retires a file. Where a property survived the
 deletion, the table and the two bullets below it already name the registered suite that
 carries it now; none of that changes.
+
+## Amendment (2026-09-20, #1504) — authorize every hold removal
+
+Only a repository `maintain` or `admin` actor, determined from GitHub's `role_name` field, may clear a draft hold through `ready_for_review`, remove an existing `DO NOT MERGE` title marker, remove a recognized `hold` / `DO NOT MERGE` label, or add an `ai-review` / `re-review` label. The authorization check runs before minting the dedicated review App token. A permissionless untrusted-runner filter skips protected jobs for unrelated label additions and removals. Recognized hold-label additions still reach the protected arm because it must disable native auto-merge. A title edit that adds the marker reaches the trusted arm without hold-clear authorization so it can disable native auto-merge; a title edit that removes the marker requires maintainer/admin authorization. Title edits that leave held state unchanged skip the protected arm. All hold-clear paths retain the exact-head receipt requirement.
