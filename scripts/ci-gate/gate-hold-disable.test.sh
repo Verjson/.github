@@ -170,29 +170,31 @@ assert "needs.event-policy.outputs.run_control_plane == 'true'" in jobs["app-key
 assert jobs["arm"]["needs"] == ["event-policy", "app-key-policy"]
 assert "needs.event-policy.outputs.run_control_plane == 'true'" in jobs["arm"]["if"]
 
-title_clear = "(contains(github.event.changes.title.from, 'DO NOT MERGE') && !contains(github.event.pull_request.title, 'DO NOT MERGE'))"
-assert "github.event.action != 'edited' || " + title_clear in jobs["app-key-policy"]["if"]
-assert "needs.app-key-policy.result == 'success' && (github.event.action != 'edited' || " + title_clear in jobs["arm"]["if"]
+title_transition = "(github.event.changes.title.from != null && (contains(github.event.changes.title.from, 'DO NOT MERGE') != contains(github.event.pull_request.title, 'DO NOT MERGE')))"
+assert "github.event.action != 'edited' || " + title_transition in jobs["app-key-policy"]["if"]
+assert "needs.app-key-policy.result == 'success' && (github.event.action != 'edited' || " + title_transition in jobs["arm"]["if"]
 assert jobs["arm"]["env"]["EVENT_NEW_TITLE"] == "${{ github.event.pull_request.title || '' }}"
 
 def title_edit_enters_arm(old, new):
     marker = "do not merge"
-    return marker in old.casefold() and marker not in new.casefold()
+    return (marker in old.casefold()) != (marker in new.casefold())
 
 assert title_edit_enters_arm("DO NOT MERGE: hold", "ordinary title")
 assert not title_edit_enters_arm("DO NOT MERGE: hold", "DO NOT MERGE: keep")
 assert not title_edit_enters_arm("ordinary title", "new ordinary title")
-assert not title_edit_enters_arm("ordinary title", "DO NOT MERGE: add hold")
+assert title_edit_enters_arm("ordinary title", "DO NOT MERGE: add hold")
+assert title_edit_enters_arm("ordinary title", "dO nOt mErGe: add hold")
+assert title_edit_enters_arm("dO nOt mErGe: hold", "ordinary title")
 edited_event = {
     "changes": {"title": {"from": "DO NOT MERGE: hold"}},
     "pull_request": {"title": "ordinary title"},
 }
 assert title_edit_enters_arm(edited_event["changes"]["title"]["from"], edited_event["pull_request"]["title"])
 assert "to" not in edited_event["changes"]["title"]
-print("workflow hold-removal expressions and authorization ordering pass")
+print("workflow title-hold transition expressions and authorization ordering pass")
 PY
 then
-  pass "only actual title-hold removals reach the trusted arm and token steps"
+  pass "only actual title-hold transitions reach the trusted arm and token steps"
 else
   fail "workflow hold-removal entry gates are incomplete"
 fi
@@ -370,17 +372,40 @@ done
 export EVENT_ACTION=edited REQUEST_ACTOR=maintainer ACTOR_PERMISSION=maintain
 for old_title in 'chore: DO NOT MERGE QA' 'chore: QA'; do
   for new_title in 'chore: DO NOT MERGE QA' 'chore: new title'; do
-    if [[ "$old_title" == *'DO NOT MERGE'* && "$new_title" != *'DO NOT MERGE'* ]]; then
+    if [[ "$old_title" == *'DO NOT MERGE'* && "$new_title" != *'DO NOT MERGE'* ]] \
+      || [[ "$old_title" != *'DO NOT MERGE'* && "$new_title" == *'DO NOT MERGE'* ]]; then
       continue
     fi
     export EVENT_OLD_TITLE="$old_title" EVENT_NEW_TITLE="$new_title"
     if run_preauthorize >"$tmp/out" 2>&1; then
       fail "non-clearing title edit was authorized: $old_title -> $new_title"
     else
-      pass "non-clearing title edit is rejected before App-token mint"
+      pass "title edit without a hold-state transition is rejected before App-token mint"
     fi
   done
 done
+
+export EVENT_OLD_TITLE='chore: ordinary title' EVENT_NEW_TITLE='chore: dO nOt mErGe QA'
+: >"$GITHUB_ENV"
+: >"$CALLS"
+if run_preauthorize >"$tmp/out" 2>&1 && [ ! -s "$GITHUB_ENV" ] && ! grep -q 'collaborators/' "$CALLS"; then
+  pass "adding a mixed-case title hold skips hold-removal authorization"
+else
+  fail "adding a title hold attempted hold-removal authorization"
+fi
+
+write_hold
+jq '.labels=[] | .title="DO NOT MERGE: hold"' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"
+export EVENT_ACTION=edited EVENT_OLD_TITLE='ordinary title' EVENT_NEW_TITLE='DO NOT MERGE: hold' EVENT_LABEL=''
+export REQUEST_ACTOR=maintainer ACTOR_PERMISSION=triage
+: >"$CALLS"
+if run_arm >"$tmp/out" 2>&1 \
+  && grep -q 'disablePullRequestAutoMerge' "$CALLS" \
+  && ! grep -q 'collaborators/\|workflow run' "$CALLS"; then
+  pass "adding a title hold disables auto-merge without hold-clear authorization"
+else
+  fail "adding a title hold did not disable auto-merge safely"
+fi
 
 write_hold
 export EVENT_ACTION=labeled EVENT_LABEL=hold

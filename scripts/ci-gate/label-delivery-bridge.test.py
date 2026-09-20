@@ -28,14 +28,17 @@ def validate_event_admission(job):
     condition = job.get("if", "true").removeprefix("${{").removesuffix("}}").strip()
     cases = [
         ("body-only edit", {"action": "edited", "changes": {"body": {"from": "old body"}}}, False),
-        ("base-only edit", {"action": "edited", "changes": {"base": {"ref": {"from": "main"}}}}, False),
-        ("missing changes", {"action": "edited"}, False),
-        ("null previous title", {"action": "edited", "changes": {"title": {"from": None}}}, False),
+        ("body-only edit on held PR", {"action": "edited", "changes": {"body": {"from": "old body"}}, "pull_request": {"title": "DO NOT MERGE: held"}}, False),
+        ("base-only edit on held PR", {"action": "edited", "changes": {"base": {"ref": {"from": "main"}},}, "pull_request": {"title": "DO NOT MERGE: held"}}, False),
+        ("missing changes on held PR", {"action": "edited", "pull_request": {"title": "DO NOT MERGE: held"}}, False),
+        ("null previous title", {"action": "edited", "changes": {"title": {"from": None}}, "pull_request": {"title": "DO NOT MERGE: held"}}, False),
         ("empty previous title", {"action": "edited", "changes": {"title": {"from": ""}}}, False),
         ("ordinary title edit", {"action": "edited", "changes": {"title": {"from": "Old title"}}}, False),
         ("title removal", {"action": "edited", "changes": {"title": {"from": "Old title"}}, "pull_request": {"title": ""}}, False),
-        ("add title hold", {"action": "edited", "changes": {"title": {"from": "Old title"}}, "pull_request": {"title": "DO NOT MERGE: Old title"}}, False),
+        ("add title hold", {"action": "edited", "changes": {"title": {"from": "Old title"}}, "pull_request": {"title": "DO NOT MERGE: Old title"}}, True),
+        ("add mixed-case title hold", {"action": "edited", "changes": {"title": {"from": "Old title"}}, "pull_request": {"title": "dO nOt mErGe: Old title"}}, True),
         ("remove title hold", {"action": "edited", "changes": {"title": {"from": "do not merge: Old title"}}, "pull_request": {"title": "Old title"}}, True),
+        ("retain title hold", {"action": "edited", "changes": {"title": {"from": "do not merge: Old title"}}, "pull_request": {"title": "DO NOT MERGE: new title"}}, False),
     ]
     cases.extend((action, {"action": action}, True) for action in (
         "opened", "reopened", "synchronize", "labeled", "unlabeled",
@@ -43,7 +46,7 @@ def validate_event_admission(job):
     ))
     for name, event, expected in cases:
         context = copy.deepcopy(event)
-        context.setdefault("changes", {}).setdefault("title", {}).setdefault("from", "")
+        context.setdefault("changes", {}).setdefault("title", {})
         context.setdefault("pull_request", {}).setdefault("title", "")
         # GitHub's string contains() is case-insensitive; provide it to Node's VM.
         # The configured guard uses string inequality and truthiness, which have

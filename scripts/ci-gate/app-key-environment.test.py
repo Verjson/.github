@@ -240,11 +240,13 @@ class WorkflowBoundaryTests(unittest.TestCase):
         snapshot = next(job for job in jobs.values() if "changelog-release.yml@" in job.get("uses", ""))
         self.assertEqual(snapshot["secrets"], "inherit")
 
-    def test_body_only_edits_allocate_neither_policy_nor_key_job(self):
+    def test_body_only_edits_skip_jobs_but_title_hold_transitions_run(self):
         jobs = workflow("gate-rearm")["jobs"]
-        guard = "github.event.action != 'edited' || github.event.changes.title.from"
-        self.assertEqual(jobs["app-key-policy"]["if"], guard)
-        self.assertIn(guard, jobs["arm"]["if"])
+        title_hold_transition = "(github.event.changes.title.from != null && (contains(github.event.changes.title.from, 'DO NOT MERGE') != contains(github.event.pull_request.title, 'DO NOT MERGE')))"
+        policy_guard = "${{ needs.event-policy.outputs.run_control_plane == 'true' && (github.event.action != 'edited' || " + title_hold_transition + ") }}"
+        arm_guard = "${{ needs.event-policy.outputs.run_control_plane == 'true' && needs.app-key-policy.result == 'success' && (github.event.action != 'edited' || " + title_hold_transition + ") }}"
+        self.assertEqual(jobs["app-key-policy"]["if"], policy_guard)
+        self.assertEqual(jobs["arm"]["if"], arm_guard)
 
     def test_native_rearm_and_retry_defaults_are_only_canonical_role_environments(self):
         rearm = workflow("gate-rearm")["jobs"]
