@@ -32,9 +32,9 @@ def validate_event_admission(job):
         ("missing changes", {"action": "edited"}, False),
         ("null previous title", {"action": "edited", "changes": {"title": {"from": None}}}, False),
         ("empty previous title", {"action": "edited", "changes": {"title": {"from": ""}}}, False),
-        ("ordinary title edit", {"action": "edited", "changes": {"title": {"from": "Old title"}}}, True),
-        ("title removal", {"action": "edited", "changes": {"title": {"from": "Old title"}}, "pull_request": {"title": ""}}, True),
-        ("add title hold", {"action": "edited", "changes": {"title": {"from": "Old title"}}, "pull_request": {"title": "DO NOT MERGE: Old title"}}, True),
+        ("ordinary title edit", {"action": "edited", "changes": {"title": {"from": "Old title"}}}, False),
+        ("title removal", {"action": "edited", "changes": {"title": {"from": "Old title"}}, "pull_request": {"title": ""}}, False),
+        ("add title hold", {"action": "edited", "changes": {"title": {"from": "Old title"}}, "pull_request": {"title": "DO NOT MERGE: Old title"}}, False),
         ("remove title hold", {"action": "edited", "changes": {"title": {"from": "do not merge: Old title"}}, "pull_request": {"title": "Old title"}}, True),
     ]
     cases.extend((action, {"action": action}, True) for action in (
@@ -44,12 +44,14 @@ def validate_event_admission(job):
     for name, event, expected in cases:
         context = copy.deepcopy(event)
         context.setdefault("changes", {}).setdefault("title", {}).setdefault("from", "")
+        context.setdefault("pull_request", {}).setdefault("title", "")
+        # GitHub's string contains() is case-insensitive; provide it to Node's VM.
         # The configured guard uses string inequality and truthiness, which have
         # the same semantics in JavaScript for these GitHub event values.
         completed = subprocess.run([
             "node", "-e",
-            'const vm = require("node:vm"); process.stdout.write(JSON.stringify(Boolean(vm.runInNewContext(process.argv[1], {github: {event: JSON.parse(process.argv[2])}, needs: {"app-key-policy": {result: "success"}}}))));',
-            condition.replace("needs.app-key-policy", "needs[\"app-key-policy\"]"), json.dumps(context),
+            'const vm = require("node:vm"); process.stdout.write(JSON.stringify(Boolean(vm.runInNewContext(process.argv[1], {github: {event: JSON.parse(process.argv[2])}, needs: {"event-policy": {outputs: {run_control_plane: "true"}}, "app-key-policy": {result: "success"}}, contains: (search, item) => String(search ?? "").toLowerCase().includes(String(item).toLowerCase())}))));',
+            condition.replace("needs.event-policy", "needs[\"event-policy\"]").replace("needs.app-key-policy", "needs[\"app-key-policy\"]"), json.dumps(context),
         ], check=True, capture_output=True, text=True)
         assert json.loads(completed.stdout) is expected, name
 
