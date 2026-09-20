@@ -5,13 +5,25 @@ description: >-
   status — the release-age gate the merge gate also defers on — so CI runs once
   against the final base after Renovate rebases, instead of burning the suite on
   a PR that cannot merge and re-burning it on the rebase (Verjson/.github#133).
-  Fails OPEN (should-run=true) on any uncertainty, and never defers a
-  workflow_dispatch or push. Consumers gate their heavy jobs on the output via
-  `needs:` + `if: needs.<job>.outputs.should-run == 'true'`.
+  Fails OPEN (should-run=true) on any uncertainty about the STATUS — an API
+  error, a missing status — and never defers a workflow_dispatch or push.
+  Consumers gate their heavy jobs on the output via `needs:` +
+  `if: needs.<job>.outputs.should-run == 'true'`.
+
+  One exception, and it is adopter-visible: on the event paths that query the
+  status API, `head-sha` must be a 40-hex object name, and anything else fails
+  the action CLOSED rather than open (Verjson/.github#1464). That value is
+  interpolated into a `commits/<sha>/status` path segment, so an unconstrained
+  one addresses whatever it spells. A caller passing a branch name or an
+  abbreviated SHA here used to reach the API and now hard-fails.
 
 inputs:
   head-sha:
-    description: The PR head commit SHA whose statuses are checked.
+    description: >-
+      The PR head commit SHA whose statuses are checked. MUST be a full 40-hex
+      object name (lowercase); a branch name or abbreviated SHA is refused
+      before the status request, because this value reaches a
+      `commits/<sha>/status` path segment.
     required: true
   github-token:
     description: A token with read access to the repository's commit statuses.
@@ -57,6 +69,17 @@ runs:
         # condition that sets should-run=false. Adding a second defer reason
         # here turns that message into a lie, so generalize it in the same
         # change — it is the only explanation a deferred head ever gets.
+        # The head SHA reaches a `commits/<sha>` PATH segment on the next line, so constrain
+        # it HERE. node-ci-protected takes this value from a caller input, and the nearest
+        # other assert on it is in `acquire-secretless-dependencies`, which declares
+        # `needs: eligibility` and therefore runs strictly later. That job DOES revalidate
+        # ADMITTED_HEAD_SHA independently, and `build-test` is `if: always()`, so a failed
+        # eligibility job is not by itself what stands between a bad input and a run. Read
+        # this guard narrowly: it protects THIS request, which nothing earlier does. The
+        # three copies of this script are byte-identical by contract, so the guard is in all
+        # of them (Verjson/.github#1464).
+        [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] \
+          || { echo "::error::head-sha is not a 40-hex object name"; exit 1; }
         pending=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/status" \
           --jq '[.statuses[]? | select(.context == "renovate/stability-days" and .state == "pending")] | length' 2>/dev/null || echo 0)
         if [ "${pending:-0}" -gt 0 ]; then
