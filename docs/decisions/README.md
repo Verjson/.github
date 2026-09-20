@@ -12,6 +12,7 @@ Reverse-chronological index of org-level decisions.
 <!-- prettier-ignore -->
 | # | Date | Decision |
 |---|------|----------|
+| [0197](0197-pulumi-gitlab-mirror/README.md) | 2026-09-20 | Use Pulumi for the GitLab mirror artifact |
 | [0196](0196-decline-unclassified-command-position-constructs/README.md) | 2026-09-18 | The guard-liveness event stream declines what it cannot classify |
 | [0195](0195-an-indeterminate-authorization-answer-is-not-a-permissive-one/README.md) | 2026-09-18 | An indeterminate authorization answer is never decodable as a permissive one |
 | [0194](0194-a-ref-scan-anchored-on-two-shapes-reads-green-over-the-shapes-it-cannot-see/README.md) | 2026-09-18 | A ref-encoding scan anchored on two shapes reads green over every shape it cannot see |
