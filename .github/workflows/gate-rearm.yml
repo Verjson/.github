@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   event-policy:
-    runs-on: ${{ fromJSON(vars.CI_LANE_UNTRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    runs-on: ${{ fromJSON(vars.CI_LANE_UNTRUSTED || '["ubuntu-24.04"]') }}
     permissions: {}
     outputs:
       run_control_plane: ${{ steps.classify.outputs.run_control_plane }}
