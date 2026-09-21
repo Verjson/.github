@@ -460,9 +460,15 @@ jobs:
             local check_json="$1" check_id external_id details_url
             local scheme version receipt_repo receipt_pr receipt_head source_run_id source_attempt nonce extra
             local source_run completed_epoch now_epoch receipt_name artifacts receipt_count receipt_dir receipt_present
-            local expected_review_title review_pages owned_reviews owned_count owned_status current patch
+            local expected_review_title review_pages owned_reviews owned_count owned_status current patch check_app_id check_app_slug
 
             check_id="$(jq -er '.id | select(type == "number" and . > 0)' <<<"$check_json")" || return 1
+          check_app_id="$(jq -er '.app.id | select(type == "number" and . > 0)' <<<"$check_json")" || return 1
+          check_app_slug="$(jq -er '.app.slug | select(type == "string" and test("^[A-Za-z0-9-]+$"))' <<<"$check_json")" || return 1
+          case "$check_app_id:$check_app_slug" in
+            15368:github-actions|"$APP_ID:$APP_SLUG") ;;
+            *) return 1 ;;
+          esac
             external_id="$(jq -er '.external_id | select(type == "string")' <<<"$check_json")" || return 1
             details_url="$(jq -er '.details_url | select(type == "string")' <<<"$check_json")" || return 1
             IFS=: read -r scheme version receipt_repo receipt_pr receipt_head source_run_id source_attempt nonce extra <<<"$external_id"
@@ -511,12 +517,12 @@ jobs:
               fi
               jq -e --arg repo "$TARGET_REPO" --argjson pr "$PR_NUMBER" --arg head "$head_sha" \
                 --argjson check "$check_id" --argjson run "$source_run_id" --argjson attempt "$source_attempt" \
-                --arg external "$external_id" --arg url "$details_url" --argjson app "$APP_ID" --arg slug "$APP_SLUG" \
+                --arg external "$external_id" --arg url "$details_url" --argjson app "$APP_ID" --arg slug "$APP_SLUG" --argjson check_app_id "$check_app_id" --arg check_app_slug "$check_app_slug" \
                 --arg source_path "$(jq -r .path <<<"$source_run")" '
                 .schema == (if $source_path == ".github/workflows/ai-review-label-rearm.yml" then 2 else 1 end) and
                   .repository == $repo and .pr_number == $pr and .head_sha == $head and
                   .check_run_id == $check and .arm_run_id == $run and .arm_run_attempt == $attempt and
-                  .external_id == $external and .details_url == $url and .app_id == $app and .app_slug == $slug
+                  .external_id == $external and .details_url == $url and .app_id == $app and .app_slug == $slug and (.check_app_id // .app_id) == $check_app_id and (.check_app_slug // .app_slug) == $check_app_slug
                 ' "$receipt_dir/receipt.json" >/dev/null || { rm -rf "$receipt_dir"; return 1; }
               if [ "$(jq -r .path <<<"$source_run")" = .github/workflows/ai-review-label-rearm.yml ]; then
                 local receipt_workflow_sha protected_blob receipt_blob branch_ref
@@ -568,7 +574,7 @@ jobs:
             fi
 
             current="$(GH_TOKEN="$GH_TOKEN" gh api "repos/$TARGET_REPO/check-runs/$check_id")" || return 1
-            jq -e --argjson id "$check_id" --argjson app 15368 --arg slug github-actions \
+            jq -e --argjson id "$check_id" --argjson app "$check_app_id" --arg slug "$check_app_slug" \
               --arg external "$external_id" --arg head "$head_sha" '
                 .id == $id and .app.id == $app and .app.slug == $slug and .external_id == $external and
                 .head_sha == $head and .status == "in_progress" and .conclusion == null
@@ -577,7 +583,7 @@ jobs:
               -f status=completed -f conclusion=failure \
               -f 'output[title]=Orphaned authorization recovered' \
               -f "output[summary]=The source arm is terminal and no active receipt-bound review owns this exact check. Recovery run $GITHUB_RUN_ID closed it without granting authorization.")" || return 1
-            jq -e --argjson id "$check_id" --argjson app 15368 --arg slug github-actions \
+            jq -e --argjson id "$check_id" --argjson app "$check_app_id" --arg slug "$check_app_slug" \
               --arg external "$external_id" '
                 .id == $id and .app.id == $app and .app.slug == $slug and .external_id == $external and
                 .status == "completed" and .conclusion == "failure" and .output.title == "Orphaned authorization recovered"
