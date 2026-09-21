@@ -3,6 +3,6 @@
   "version": "1.0.0",
   "private": true,
   "dependencies": {
-    "@verjson/cli-cloud": "1.0.0"
+    "@verjson/cli-cloud": "1.1.0"
   }
 }

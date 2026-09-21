@@ -386,6 +386,41 @@ def _write_private_file(path, contents, maximum, description):
         os.fsync(stream.fileno())
 
 
+def _validate_runner_roster(fleet, lane, expected_names):
+    require(
+        isinstance(fleet, dict) and fleet.get('lane') == lane,
+        'host export lane differs',
+    )
+    runners = fleet.get('runners')
+    require(
+        isinstance(runners, list)
+        and len(runners) == len(expected_names)
+        and all(
+            isinstance(runner, dict) and isinstance(runner.get('name'), str)
+            for runner in runners
+        )
+        and sorted(runner['name'] for runner in runners) == sorted(expected_names),
+        'host export runner identities differ',
+    )
+    return runners
+
+
+def _validate_capacity_report(report, lane, expected_names):
+    runners = _validate_runner_roster(report.get('fleet'), lane, expected_names)
+    require(
+        all(type(runner.get('available')) is bool for runner in runners),
+        'host capacity runner availability is invalid',
+    )
+    available_capacity = report.get('availableCapacity')
+    require(
+        type(available_capacity) is int
+        and available_capacity >= 0
+        and available_capacity == sum(runner['available'] for runner in runners),
+        'host capacity count differs from runner availability',
+    )
+    return available_capacity
+
+
 def _deployment_cli():
     executable = os.environ.get('VERJSON_DEPLOYMENT_CLI')
     root = os.environ.get('VERJSON_DEPLOYMENT_CLI_ROOT')
@@ -550,35 +585,26 @@ def host_export(value, token, manifest_result=None, *, run=subprocess.run, clock
         current_time = clock()
         require(observed <= current_time and current_time - observed <= host['maxAgeSeconds'],
                 'host export response is stale')
-        if purpose == 'capacity':
-            require(type(report.get('availableCapacity')) is int
-                    and report['availableCapacity'] >= 0,
-                    'host capacity response is invalid')
-        else:
+        if purpose != 'capacity':
             require(report.get('manifestIdentity') == value['release']['manifestDigest']
                     and report.get('manifestBytes') == manifest_result['manifestBytes']
                     and report.get('manifest') == manifest_result['manifest'],
                     'host export release identity differs')
-            if purpose == 'baseline':
-                fleet = report.get('fleet')
-                require(isinstance(fleet, dict) and fleet.get('lane') == value['lane'],
-                        'host export lane differs')
-                runners = fleet.get('runners')
-                require(isinstance(runners, list)
-                        and len(runners) == len(host['runnerNames'])
-                        and sorted(runner.get('name') for runner in runners
-                                   if isinstance(runner, dict)) == sorted(host['runnerNames']),
-                        'host export runner identities differ')
-            else:
-                runners = [report]
-                require(report.get('name') == host['runnerName'],
-                        'post-update host identity differs')
-            require(all(isinstance(runner, dict) for runner in runners),
-                    'host export runner record is invalid')
-            for runner in runners:
-                attestations.append(_verify_host_baseline(
-                    runner.get('releaseManifestBytes'), runner, value, token, home, run
-                ))
+        if purpose == 'capacity':
+            _validate_capacity_report(report, value['lane'], host['runnerNames'])
+            runners = []
+        elif purpose == 'baseline':
+            runners = _validate_runner_roster(
+                report.get('fleet'), value['lane'], host['runnerNames'],
+            )
+        else:
+            runners = [report]
+            require(report.get('name') == host['runnerName'],
+                    'post-update host identity differs')
+        for runner in runners:
+            attestations.append(_verify_host_baseline(
+                runner.get('releaseManifestBytes'), runner, value, token, home, run
+            ))
 
     return {
         'schemaVersion': 1,

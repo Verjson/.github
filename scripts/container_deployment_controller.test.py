@@ -680,6 +680,13 @@ class DeploymentPlannerTests(unittest.TestCase):
         with self.assertRaisesRegex(controller.DeploymentError, "capacity"):
             controller.build_plan(insufficient, insufficient_evidence, "production")
 
+        boolean_policy = configuration()
+        boolean_policy["fleets"]["production"]["minimumAvailable"] = True
+        boolean_evidence = evidence()
+        refresh_host_export_binding(boolean_evidence, boolean_policy)
+        with self.assertRaisesRegex(controller.DeploymentError, "minimum fleet capacity"):
+            controller.build_plan(boolean_policy, boolean_evidence, "production")
+
     def test_rejects_unexpected_fleet_baseline(self):
         candidate = evidence()
         candidate["fleet"]["runners"][2]["release"] = release("0.9.0", "9")
@@ -914,6 +921,7 @@ class DeploymentExecutionTests(unittest.TestCase):
             ({"healthy": False}, "health"),
             ({"transactionLocked": True}, "transaction lock"),
             ({"afterDigest": "sha256:" + "4" * 64}, "digest"),
+            ({"availableCapacity": True}, "available capacity"),
         )
         for overrides, expected in cases:
             with self.subTest(expected=expected):
@@ -1775,6 +1783,17 @@ class DeploymentExecutionTests(unittest.TestCase):
                 deployment_contract_ref="a" * 40,
                 rollback_source=source,
             )
+
+    def test_process_adapter_rejects_boolean_capacity_evidence(self):
+        config = configuration()
+        adapter = controller.ProcessAdapter(config, config["fleets"]["production"])
+        with mock.patch.object(
+            adapter,
+            "_host_export",
+            return_value={"hostEvidence": {"availableCapacity": True}},
+        ):
+            with self.assertRaisesRegex(controller.DeploymentError, "capacity evidence is malformed"):
+                adapter.available_capacity()
 
     def test_process_adapter_rejects_cli_outside_immutable_acquisition_root(self):
         with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as outside:

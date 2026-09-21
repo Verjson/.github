@@ -206,7 +206,133 @@ class RequestTests(unittest.TestCase):
                     api.assert_not_called()
 
 
+class HostCapacityReportTests(unittest.TestCase):
+    def setUp(self):
+        self.lane = 'gate'
+        self.runner_names = ['gha-gate-1', 'gha-gate-2']
+        self.report = {
+            'availableCapacity': 1,
+            'fleet': {
+                'lane': self.lane,
+                'runners': [
+                    {'name': 'gha-gate-1', 'available': True},
+                    {'name': 'gha-gate-2', 'available': False},
+                ],
+            },
+        }
+
+    def test_capacity_report_matches_requested_lane_roster_and_count(self):
+        self.assertEqual(
+            t._validate_capacity_report(self.report, self.lane, self.runner_names),
+            1,
+        )
+
+    def test_capacity_report_rejects_wrong_lane(self):
+        report = copy.deepcopy(self.report)
+        report['fleet']['lane'] = 'other'
+        with self.assertRaisesRegex(t.TransportError, 'lane differs'):
+            t._validate_capacity_report(report, self.lane, self.runner_names)
+
+    def test_capacity_report_rejects_incomplete_or_duplicate_roster(self):
+        report = copy.deepcopy(self.report)
+        report['fleet']['runners'][1]['name'] = 'gha-gate-1'
+        with self.assertRaisesRegex(t.TransportError, 'runner identities differ'):
+            t._validate_capacity_report(report, self.lane, self.runner_names)
+
+    def test_capacity_report_rejects_missing_roster(self):
+        report = copy.deepcopy(self.report)
+        del report['fleet']['runners']
+        with self.assertRaisesRegex(t.TransportError, 'runner identities differ'):
+            t._validate_capacity_report(report, self.lane, self.runner_names)
+
+    def test_capacity_report_rejects_unconfigured_runner_name(self):
+        report = copy.deepcopy(self.report)
+        report['fleet']['runners'][1]['name'] = 'gha-gate-3'
+        with self.assertRaisesRegex(t.TransportError, 'runner identities differ'):
+            t._validate_capacity_report(report, self.lane, self.runner_names)
+
+    def test_capacity_report_rejects_non_object_runner(self):
+        report = copy.deepcopy(self.report)
+        report['fleet']['runners'][1] = None
+        with self.assertRaisesRegex(t.TransportError, 'runner identities differ'):
+            t._validate_capacity_report(report, self.lane, self.runner_names)
+
+    def test_capacity_report_rejects_non_boolean_runner_availability(self):
+        report = copy.deepcopy(self.report)
+        report['fleet']['runners'][0]['available'] = 1
+        with self.assertRaisesRegex(t.TransportError, 'availability is invalid'):
+            t._validate_capacity_report(report, self.lane, self.runner_names)
+
+    def test_capacity_report_rejects_count_that_disagrees_with_runner_states(self):
+        report = copy.deepcopy(self.report)
+        report['availableCapacity'] = 2
+        with self.assertRaisesRegex(t.TransportError, 'count differs'):
+            t._validate_capacity_report(report, self.lane, self.runner_names)
+
+    def test_capacity_report_rejects_boolean_count(self):
+        report = copy.deepcopy(self.report)
+        report['availableCapacity'] = True
+        with self.assertRaisesRegex(t.TransportError, 'count differs'):
+            t._validate_capacity_report(report, self.lane, self.runner_names)
+
+
 class HostExportTests(unittest.TestCase):
+    def _run_capacity_export(self, report):
+        value = host_request()
+        value['hostExport']['purpose'] = 'capacity'
+        with tempfile.TemporaryDirectory() as directory:
+            cli = Path(directory) / 'node_modules/.bin/verjson-cloud'
+            cli.parent.mkdir(parents=True)
+            cli.write_text('#!/bin/sh\n', encoding='utf-8')
+            cli.chmod(0o700)
+            environment = {
+                'VERJSON_DEPLOYMENT_CLI': str(cli),
+                'VERJSON_DEPLOYMENT_CLI_ROOT': directory,
+                'RUNNER_HOST_EVIDENCE_SSH_PRIVATE_KEY': 'ssh-private-key-secret',
+                'RUNNER_HOST_EVIDENCE_DOCTL_CONFIG': 'doctl-read-token-secret',
+                'RUNNER_HOST_EVIDENCE_KNOWN_HOSTS': 'preprovisioned-host-pin',
+            }
+            with mock.patch.dict(os.environ, environment, clear=True):
+                return t.host_export(
+                    value,
+                    'installation-read-token',
+                    run=lambda command, **kwargs: subprocess.CompletedProcess(
+                        command, 0, stdout=json.dumps(report), stderr='',
+                    ),
+                    clock=lambda: NOW,
+                )
+
+    def test_capacity_export_returns_a_validated_fleet_report(self):
+        report = {
+            'schemaVersion': 1,
+            'operation': 'host-export',
+            'observedAt': stamp(NOW),
+            'availableCapacity': 1,
+            'fleet': {
+                'lane': 'gate',
+                'runners': [{'name': 'gha-gate-1', 'available': True}],
+            },
+        }
+        result = self._run_capacity_export(report)
+        self.assertEqual(result['outcome'], 'passed')
+        self.assertEqual(result['hostEvidence'], report)
+        self.assertIsNone(result['releaseManifest'])
+        self.assertEqual(result['baselineAttestations'], [])
+
+    def test_capacity_export_fails_closed_when_count_disagrees_with_roster(self):
+        report = {
+            'schemaVersion': 1,
+            'operation': 'host-export',
+            'observedAt': stamp(NOW),
+            'availableCapacity': 0,
+            'fleet': {
+                'lane': 'gate',
+                'runners': [{'name': 'gha-gate-1', 'available': True}],
+            },
+        }
+        with self.assertRaisesRegex(t.TransportError, 'count differs'):
+            self._run_capacity_export(report)
+
     def test_host_export_routes_read_only_credentials_outside_request_and_receipt(self):
         value = host_request()
         manifest = {
