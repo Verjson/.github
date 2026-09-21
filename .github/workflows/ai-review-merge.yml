@@ -419,6 +419,18 @@ jobs:
             return 1
           }
 
+          read_mergeable() {
+            local payload
+            payload="$(pr_json mergeable)" || return 1
+            jq -r '.mergeable // "UNKNOWN"' <<<"$payload"
+          }
+
+          hold_unreadable_mergeable() {
+            out proceed false
+            echo "::error::Could not read PR mergeability after bounded retries; holding rather than proceeding on an unverified state."
+            exit 1
+          }
+
           # An unreadable PR metadata read is indeterminate, not permissive.
           # This used to emit a ::warning:: and `out proceed true; exit 0`,
           # which skipped the freshness evaluation entirely — so a total API
@@ -447,9 +459,10 @@ jobs:
           for _ in 1 2 3 4 5 6; do
             [ "$mrg" != "UNKNOWN" ] && break
             : # bounded retry without runner-held delay
-            mrg="$(jq -r '.mergeable // "UNKNOWN"' <<<"$(pr_json mergeable || echo '{}')")"
+            mrg="$(read_mergeable)" || hold_unreadable_mergeable
           done
           echo "mergeable=$mrg"
+          [ "$mrg" != "UNKNOWN" ] || hold_unreadable_mergeable
 
           # Base conflict. Try the same non-destructive update-branch (merge base
           # into head) the BEHIND path uses BEFORE giving up: a branch reported
@@ -464,13 +477,14 @@ jobs:
           if [ "$mrg" = "CONFLICTING" ]; then
             if gh api --method PUT "repos/$REPO/pulls/$PR_NUMBER/update-branch" >/dev/null 2>&1; then
               # Re-read mergeable, again waiting out the async UNKNOWN window.
-              mrg="$(jq -r '.mergeable // "UNKNOWN"' <<<"$(pr_json mergeable || echo '{}')")"
+              mrg="$(read_mergeable)" || hold_unreadable_mergeable
               for _ in 1 2 3 4 5 6; do
                 [ "$mrg" != "UNKNOWN" ] && break
                 : # bounded retry without runner-held delay
-                mrg="$(jq -r '.mergeable // "UNKNOWN"' <<<"$(pr_json mergeable || echo '{}')")"
+                mrg="$(read_mergeable)" || hold_unreadable_mergeable
               done
               echo "post-update mergeable=$mrg"
+              [ "$mrg" != "UNKNOWN" ] || hold_unreadable_mergeable
               if [ "$mrg" != "CONFLICTING" ]; then
                 echo "Conflict was base drift; update-branch cleared it — a fresh run will merge against the current base."
                 out proceed false; exit 0
