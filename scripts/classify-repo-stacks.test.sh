@@ -31,6 +31,7 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 done
 case "$*" in
   *"contents/.github/workflows/"*)
+    [ "${CONTENT_FAIL:-false}" = true ] && { echo "content read failed" >&2; exit 1; }
     # One file per repo fixture; return it base64 in a `.content` field.
     # Find the argument that carries the path. `${*##...}` would strip
     # element-wise and yield the FIRST word ("api"), which silently resolves to
@@ -43,6 +44,7 @@ case "$*" in
     jq -n --arg c "$(base64 -w0 <"$f")" '{content:$c}' | { [ -n "$filter" ] && jq -r "$filter" || cat; }
     exit 0 ;;
   *"contents/.github/workflows"*)
+    [ "${WORKFLOW_LIST_FAIL:-false}" = true ] && { echo "workflow inventory failed" >&2; exit 1; }
     [ "${NO_WORKFLOWS:-false}" = true ] && { echo '[]' | { [ -n "$filter" ] && jq -r "$filter" || cat; }; exit 0; }
     for f in "$WFDIR"/*.yml; do
       [ -e "$f" ] || continue
@@ -83,6 +85,18 @@ rc="$(run_crs)"
 { [ "$rc" = "rc=0" ] && said 'stack=node' && said 'result=conformant'; } \
   && pass "a repository calling node-ci from a job named 'ci' is node and conformant" \
   || { fail "node stack not detected ($rc)"; out; }
+
+reset_wf; caller ci node-ci.yml ci
+rc="$(CONTENT_FAIL=true run_crs)"
+{ [ "$rc" = "rc=2" ] && said 'result=classify-read-failed'; } \
+  && pass "a workflow content read failure is visible instead of classifying none" \
+  || { fail "a workflow content read failure was swallowed ($rc)"; out; }
+
+reset_wf; caller ci node-ci.yml ci
+rc="$(WORKFLOW_LIST_FAIL=true run_crs)"
+{ [ "$rc" = "rc=2" ] && said 'result=classify-read-failed'; } \
+  && pass "a workflow inventory read failure is visible instead of classifying none" \
+  || { fail "a workflow inventory read failure was swallowed ($rc)"; out; }
 
 reset_wf; caller ci helm-ci.yml ci
 run_crs >/dev/null
