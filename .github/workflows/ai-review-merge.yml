@@ -529,6 +529,7 @@ jobs:
             # single path segment (`@uri`, no gsub back to "/"): a base ref named
             # `release/1.x` must address a branch, not a deeper path (Verjson/.github#1464).
             base_ref_path="$(jq -rn --arg base_ref "$base_ref" '$base_ref|@uri')"
+            readonly base_ref_path
             raw="$(gh api "repos/$REPO/compare/$base_ref_path...$head_sha" --jq '.behind_by' 2>/dev/null)" || return 1
             [[ "$raw" =~ ^[0-9]+$ ]] || return 1
             printf '%s' "$raw"

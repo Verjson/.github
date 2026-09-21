@@ -2319,6 +2319,47 @@ encoder_program() {
     | grep '@uri' || true
 }
 
+shell_assignment_count() { # $1 = shell variable, $2 = source slice -> assignment count
+  local variable="$1" source="$2"
+  [[ "$variable" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 2
+  sed '/^[[:space:]]*#/d' <<<"$source" \
+    | grep -oE "(^|[[:space:];|&])${variable}[[:space:]]*(\\+?=)" \
+    | wc -l
+}
+
+ref_locked_after_encoding() {
+  awk '
+    /^[[:space:]]*base_ref_path=/ && /@uri/ {
+      if (getline next_line > 0 && next_line ~ /^[[:space:]]*readonly[[:space:]]+base_ref_path[[:space:]]*$/) {
+        found = 1
+      } else {
+        exit 1
+      }
+    }
+    END { exit !found }
+  ' <<<"$1"
+}
+
+# Keep the ref gate sensitive to the direct, conditional, and AND-list clobbers observed
+# in #1508. Full-line comments do not count as executable assignments.
+encoded_assignment='base_ref_path="encoded"'
+comment_fixture="$(printf '%s\n' "$encoded_assignment" '# base_ref_path=comment')"
+[ "$(shell_assignment_count base_ref_path "$comment_fixture")" -eq 1 ] \
+  || fail "a comment was counted as a shell assignment"
+ref_locked_after_encoding $'base_ref_path="encoded @uri"\nreadonly base_ref_path' \
+  || fail "the encoded ref is not locked immediately after assignment"
+if ref_locked_after_encoding $'base_ref_path="encoded @uri"\nread base_ref_path\nreadonly base_ref_path'; then
+  fail "a command can run between encoding the ref and locking it"
+fi
+for clobber in \
+  'base_ref_path="$base_ref"' \
+  'if [ -z "$base_ref_path" ]; then base_ref_path="$base_ref"; fi' \
+  '[ -z "$base_ref_path" ] && base_ref_path="$base_ref"'; do
+  assignments="$(shell_assignment_count base_ref_path "$(printf '%s\n' "$encoded_assignment" "$clobber")")"
+  [ "$assignments" -eq 2 ] \
+    || fail "the ref-assignment scan missed a clobber form: $clobber"
+done
+
 # A Python encoder proves itself the same way a jq program does: the call this repository
 # actually ships is evaluated, with only its first argument replaced by the fixture. Nothing
 # here pattern-matches `safe=`, so a novel spelling is judged by what it produces.
@@ -2515,6 +2556,13 @@ while IFS=$'\t' read -r file line kind var syntax; do
   IFS=$'\t' read -r jq_arg program < <(encoder_program "$slice" "$var") || true
   if [ -n "${program:-}" ]; then
     encoders=$((encoders + 1))
+    if [ "$file" = ".github/workflows/ai-review-merge.yml" ] && [ "$var" = "base_ref_path" ]; then
+      assignments="$(shell_assignment_count "$var" "$slice")"
+      [ "$assignments" -eq 1 ] \
+        || fail "$label is assigned $assignments times before its URL use; require one encoded assignment"
+      ref_locked_after_encoding "$slice" \
+        || fail "$label is not made readonly immediately after encoding"
+    fi
     assert_encoder "$label" "$program" "$kind" "$jq_arg"
     continue
   fi
@@ -2523,19 +2571,10 @@ while IFS=$'\t' read -r file line kind var syntax; do
   fail "$label reaches a gh api $kind position without a percent-encoding or a 40-hex constraint in its block"
 done < <(ref_sites)
 
-# Stated ceiling: this acceptance is POSITIONAL, not a dataflow fact. It requires an
-# encoding assignment to the ref variable above the use within the block; it does not
-# track the value that actually reaches the URL. So a later assignment to the same
-# variable defeats it silently -- inserting `base_ref_path="$base_ref"` between the
-# `@uri` encoding and the `gh api` line in ai-review-merge.yml leaves the ref fully
-# unencoded and this gate still exits 0. Guarding the clobber does not change that:
-# an `if [ -z "$base_ref_path" ]; then base_ref_path="$base_ref"; fi` arm and the
-# `[ -z … ] && base_ref_path="$base_ref"` form were each measured at exit 0 too. No
-# second-assignment form is known to be caught -- do not read a narrower exception
-# into this ceiling. That is the same class as the concatenation/relocation drains
-# pinned below, but it is worse in kind: those lower a count, while this one passes a
-# site that is genuinely unencoded. Tracked as Verjson/.github#1508. Do not cite this
-# gate as establishing encoding of a ref whose variable is assigned more than once.
+# The compare_behind ref segment is single-assignment and readonly after encoding. The
+# exact function slice is checked at the URL use, so a later direct or guarded assignment
+# cannot replace the encoded value while the gate remains green. The readonly declaration
+# also prevents indirect shell writes from changing the value at runtime.
 #
 # Corollary, found while trying to harden the other direction: the recognizer accepts
 # the encoding only as the ENTIRE assignment. Appending a guard to it --
