@@ -3,7 +3,7 @@
 - **Date:** 2026-08-18
 - **Status:** Accepted
 - **Issue:** [#889](https://github.com/Verjson/.github/issues/889)
-- **Related:** [ADR 0038](../0038-canonical-changelog-contract/README.md), [ADR 0069](../0069-publish-only-node-release-workflow/README.md)
+- **Related:** [ADR 0038](../0038-canonical-changelog-contract/README.md), [ADR 0069](../0069-node-publication-consumes-contract-version/README.md)
 - **Category:** Destructive package lifecycle
 
 ## Context

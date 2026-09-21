@@ -4,7 +4,7 @@
 - **Status:** Accepted
 - **Issue:** [#1038](https://github.com/Verjson/.github/issues/1038)
 - **Category:** CI authority and package publication (sensitive class)
-- **Extends:** [ADR 0095](../0095-build-container-candidates-before-release/README.md), [ADR 0122](../0122-split-release-proposal-authority-entrypoints/README.md)
+- **Extends:** [ADR 0095](../0095-bounded-secretless-node-cache-transfer/README.md), [ADR 0122](../0122-split-release-proposal-authority-entrypoints/README.md)
 
 ## Context
 

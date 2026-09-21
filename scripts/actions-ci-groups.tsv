@@ -24,6 +24,7 @@ platform	bash scripts/ci-gate/node-ci-secretless-consumer.test.sh
 platform	bash scripts/ci-gate/node-ci-secretless-transfer.test.sh
 platform	bash scripts/ci-gate/node-ci-secretless-nested-manifests.test.sh
 platform	bash scripts/immutable-release-docs.test.sh
+platform	python3 scripts/adr-relative-links.test.py
 platform	bash scripts/ci-gate/node-ci-db-service.test.sh
 platform	bash scripts/ci-gate/node-ci-cache-service.test.sh
 platform	bash scripts/ci-gate/ci-eligibility.test.sh
