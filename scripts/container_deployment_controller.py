@@ -16,8 +16,10 @@ from pathlib import Path
 from typing import Any
 
 from container_deployment_preflight import (
+    PreflightError,
     receipt_digest,
     validate_attempt_revision,
+    validate_authorization,
     validate_receipt,
     validate_receipt_chain,
     validate_rollback,
@@ -55,6 +57,13 @@ class DeploymentError(ValueError):
 
 class DeploymentInterrupted(DeploymentError):
     pass
+
+
+def _validate_deployment_authorization(evidence: dict[str, Any]) -> None:
+    try:
+        validate_authorization(evidence)
+    except PreflightError as error:
+        raise DeploymentError(f"deployment authorization is invalid: {error}") from error
 
 
 def validate_environment_policy(environment: dict[str, Any]) -> None:
@@ -636,6 +645,7 @@ def build_plan(
     deployment_contract_ref: str = "0000000000000000000000000000000000000000",
 ) -> dict[str, Any]:
     now = now or datetime.now(timezone.utc)
+    _validate_deployment_authorization(evidence)
     _validate_commands(config)
     if re.fullmatch(r"[0-9a-f]{40}", deployment_contract_ref) is None:
         raise DeploymentError("deployment contract ref must be an immutable commit")
@@ -750,6 +760,65 @@ def build_plan(
             for index, runner in enumerate(ordered)
         ],
     }
+
+
+def validate_deployment_plan(
+    plan: dict[str, Any],
+    config: dict[str, Any],
+    evidence: dict[str, Any],
+    now: datetime,
+    *,
+    fleet_selector: str,
+    action: str,
+    deployment_contract_ref: str,
+) -> None:
+    plan = _object(plan, "deployment plan")
+    if (
+        plan.get("fleetSelector") != fleet_selector
+        or plan.get("action") != action
+        or plan.get("deploymentContractCommit") != deployment_contract_ref
+    ):
+        raise DeploymentError("deployment plan selectors differ from the reviewed request")
+    planned_at = _date_time(plan.get("plannedAt"), "plan.plannedAt")
+    requested_at = _date_time(evidence.get("requestedAt"), "requestedAt")
+    is_retained_plan = evidence.get("retainedPlan") is not None
+    if (
+        (not is_retained_plan and planned_at > now)
+        or (
+            not is_retained_plan
+            and (now - planned_at).total_seconds() > MAX_REQUEST_AGE_SECONDS
+        )
+        or requested_at > now
+        or (now - requested_at).total_seconds() > MAX_REQUEST_AGE_SECONDS
+    ):
+        raise DeploymentError("deployment plan or request is stale")
+
+    if is_retained_plan:
+        _validate_deployment_authorization(evidence)
+        expected = retained_plan(
+            config,
+            evidence,
+            fleet_selector,
+            action,
+            deployment_contract_ref,
+        )
+        if expected is None:
+            raise DeploymentError("retained plan authority is unavailable")
+    else:
+        rollback_source = (
+            evidence.get("rollbackSource") if plan.get("action") == "rollback" else None
+        )
+        expected = build_plan(
+            config,
+            evidence,
+            fleet_selector,
+            now=planned_at,
+            action=action,
+            rollback_source=rollback_source,
+            deployment_contract_ref=deployment_contract_ref,
+        )
+    if plan != expected:
+        raise DeploymentError("deployment plan differs from reviewed configuration and evidence")
 
 
 def _timestamp(value: datetime) -> str:
@@ -1929,6 +1998,9 @@ def main() -> int:
     plan_parser.add_argument("--output", required=True, type=Path)
 
     admit = subparsers.add_parser("admit")
+    admit.add_argument("--fleet", required=True)
+    admit.add_argument("--action", choices=("deploy", "rollback"), required=True)
+    admit.add_argument("--contract-ref", required=True)
     reconcile = subparsers.add_parser("reconcile")
     for target in (admit, reconcile):
         target.add_argument("--plan", required=True, type=Path)
@@ -1993,6 +2065,15 @@ def main() -> int:
             plan = _load(args.plan)
             config = _load(args.config)
             evidence = _load(args.evidence)
+            validate_deployment_plan(
+                plan,
+                config,
+                evidence,
+                datetime.now(timezone.utc),
+                fleet_selector=args.fleet,
+                action=args.action,
+                deployment_contract_ref=args.contract_ref,
+            )
             receipt = _restore_receipts(evidence, plan, args.receipt_dir)
             if receipt is None:
                 receipt = admitted_receipt(plan, config, evidence, datetime.now(timezone.utc))

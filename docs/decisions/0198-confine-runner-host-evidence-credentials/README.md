@@ -71,3 +71,9 @@ failure. The controller also verifies that the host-export request's `planDigest
 the canonical digest of the admitted plan before invoking transport. These checks
 complete the accepted boundary without changing credential authority or the supported
 observation API. Follow-ups #1526 and #1527 are delivered under #1451.
+
+The reusable workflow rejects non-default-branch calls in a credential-free job
+before either production-environment job starts. The controller validates all three
+review gates and reconstructs a submitted plan from reviewed configuration and
+admission evidence before persisting its receipt; a caller-supplied plan digest
+alone is not admission authority.

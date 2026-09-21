@@ -432,6 +432,37 @@ with open(sys.argv[1], encoding="utf-8") as stream:
 trigger = workflow.get("on", workflow.get(True))
 assert set(trigger) == {"workflow_call"}
 jobs = workflow["jobs"]
+entry_guard = jobs["verify-default-branch"]
+assert entry_guard.get("environment") is None
+assert entry_guard.get("permissions") == {}
+entry_step = entry_guard["steps"][0]
+assert entry_step["env"] == {
+    "DEFAULT_BRANCH": "${{ github.event.repository.default_branch }}",
+    "ENTRY_REF": "${{ github.ref }}",
+}
+for entry_ref, expected_status in (
+    ("refs/heads/main", 0),
+    ("refs/heads/feature", 1),
+):
+    result = subprocess.run(
+        ["bash", "-c", entry_step["run"]],
+        env={**os.environ, "DEFAULT_BRANCH": "main", "ENTRY_REF": entry_ref},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == expected_status, result.stderr
+for job_name in ("dry-run", "deploy"):
+    assert jobs[job_name]["needs"] == "verify-default-branch"
+admit_step = next(
+    step for step in jobs["deploy"]["steps"]
+    if step.get("name") == "Admit immutable sequential plan"
+)
+for expected_argument in (
+    '--fleet "$FLEET_SELECTOR"',
+    '--action "$ACTION"',
+    '--contract-ref "$CONTRACT_REF"',
+):
+    assert expected_argument in admit_step["run"]
 assert jobs["deploy"]["environment"] == "production"
 assert jobs["dry-run"]["environment"] == "production"
 assert workflow["concurrency"]["cancel-in-progress"] is False
