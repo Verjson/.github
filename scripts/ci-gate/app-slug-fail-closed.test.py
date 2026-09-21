@@ -29,8 +29,8 @@ complete = review["jobs"]["complete-authorization"]
 app_token = next(step for step in complete["steps"] if step.get("name") == "Mint dedicated authorization App token")
 complete_step = next(step for step in complete["steps"] if step.get("name") == "Complete exact head authorization")
 assert app_token.get("if") == "${{ needs.app-key-policy.result == 'success' }}"
-assert "permission-checks" not in app_token["with"]
+assert app_token["with"].get("permission-checks") == "write"
 assert complete_step["env"]["MINTED_APP_SLUG"] == "${{ steps.app-token.outputs.app-slug }}"
 assert '"$MINTED_APP_SLUG" = "$EXPECTED_APP_SLUG"' in complete_step["run"]
-assert 'GH_TOKEN="$ACTIONS_TOKEN" gh api --method PATCH "repos/$TARGET_REPO/check-runs/$AUTHORIZATION_CHECK_ID"' in complete_step["run"]
-print("PASS - GitHub Actions owns check completion; AI App key is validated before review token mint and dispatch")
+assert 'GH_TOKEN="$check_token" gh api --method PATCH "repos/$TARGET_REPO/check-runs/$AUTHORIZATION_CHECK_ID"' in complete_step["run"]
+print("PASS - check completion selects the verified owner token; AI App key is validated before review token mint and dispatch")

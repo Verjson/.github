@@ -336,7 +336,7 @@ def main() -> int:
             continue
         raise AssertionError(f"mutation escaped App-token pin contract: {invalid_pins}")
     require(review["jobs"]["complete-authorization"]["permissions"].get("checks") == "write",
-            "completion must use the Actions token to terminalize its owned check")
+            "completion must retain Checks write permission for the owner-selected terminalizer")
     require(all(job.get("permissions", {}).get("checks") != "write"
                 for name, job in rearm["jobs"].items() if name != "arm"),
             "only the trusted arm may create and terminalize authorization checks")
@@ -349,10 +349,10 @@ def main() -> int:
     completion_steps = review["jobs"]["complete-authorization"]["steps"]
     app_token = next(step for step in completion_steps
                      if step.get("name") == "Mint dedicated authorization App token")
-    require("permission-checks" not in app_token["with"] and
+    require(app_token["with"].get("permission-checks") == "write" and
             app_token["with"].get("permission-contents") == "read" and
             app_token["with"].get("permission-pull-requests") == "write",
-            "dedicated approval App token must not have check-run write authority")
+            "dedicated App token must have only the required check, content, and pull-request permissions")
     require('check-runs/$AUTHORIZATION_CHECK_ID' in review_text,
             "review must complete the exact check-run supplied by the trusted arm")
     require('head_sha:$sha' in rearm_text and '--arg sha "$head_sha"' in rearm_text,
