@@ -9,8 +9,9 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +41,12 @@ CAPACITY_EVIDENCE_SECONDS = 120
 ADMISSION_EVIDENCE_SECONDS = 120
 PROBE_COMMAND_OVERHEAD_SECONDS = 30
 MAX_ADAPTER_JSON_SECONDS = MAX_PROBE_SECONDS + PROBE_COMMAND_OVERHEAD_SECONDS
+HOST_EXPORT_SECRET_ENV = (
+    "RUNNER_HOST_EVIDENCE_APP_PRIVATE_KEY",
+    "RUNNER_HOST_EVIDENCE_SSH_PRIVATE_KEY",
+    "RUNNER_HOST_EVIDENCE_DOCTL_CONFIG",
+    "RUNNER_HOST_EVIDENCE_KNOWN_HOSTS",
+)
 
 
 class DeploymentError(ValueError):
@@ -178,13 +185,13 @@ def _manifest_with_identity(
         if len(encoded) > MAX_MANIFEST_BYTES:
             raise DeploymentError(f"{field} bytes exceed {MAX_MANIFEST_BYTES} bytes")
         if "sha256:" + hashlib.sha256(encoded).hexdigest() != digest:
-            raise DeploymentError(f"{field} bytes differ from release identity")
+            raise DeploymentError(f"{field} canonical bytes differ from release identity")
         parsed = _object(json.loads(
             manifest_bytes, object_pairs_hook=unique_object,
             parse_constant=reject_constant, parse_float=finite_float,
         ), field)
         if canonical_digest(parsed) != canonical_digest(manifest):
-            raise DeploymentError(f"{field} bytes differ from structured manifest")
+            raise DeploymentError(f"{field} canonical bytes differ from structured manifest")
     except DeploymentError:
         raise
     except (ValueError, RecursionError) as error:
@@ -397,7 +404,90 @@ def _validate_runner_admission(fleet: dict[str, Any], inventory: Any) -> None:
             raise DeploymentError(f"runner {runner.get('name')} tools are incomplete")
 
 
+def _validate_host_export_binding(
+    config: dict[str, Any],
+    fleet: dict[str, Any],
+    evidence: dict[str, Any],
+    inventory: list[dict[str, Any]],
+) -> None:
+    request = _object(evidence.get("hostExportRequest"), "host export request")
+    result = _object(evidence.get("hostExport"), "host export result")
+    host_request = _object(request.get("hostExport"), "host export request details")
+    authority = _object(config.get("hostEvidenceAuthority"), "hostEvidenceAuthority")
+    github = _object(request.get("github"), "host export GitHub authority")
+    release_request = _object(request.get("release"), "host export release")
+    release_evidence = _object(evidence.get("attestation"), "release attestation")
+    if (
+        request.get("operation") != "host-export"
+        or request.get("lane") != fleet.get("lane")
+        or host_request.get("purpose") != "baseline"
+        or host_request.get("runnerNames") != fleet.get("runners")
+        or request.get("configDigest") != canonical_digest(config)
+        or github.get("repository") != release_evidence.get("repository")
+        or github.get("repositoryId") != _object(evidence.get("authorization"), "authorization").get("repositoryId")
+        or github.get("appId") != authority.get("appId")
+        or github.get("installationId") != authority.get("installationId")
+        or release_request.get("manifestDigest") != evidence.get("manifestIdentity")
+        or release_request.get("repository") != release_evidence.get("repository")
+        or release_request.get("sourceRef") != release_evidence.get("sourceRef")
+        or release_request.get("signerWorkflow") != release_evidence.get("signerWorkflow")
+        or result.get("schemaVersion") != 1
+        or result.get("outcome") != "passed"
+        or result.get("requestDigest") != canonical_digest(request)
+    ):
+        raise DeploymentError("host export receipt is not bound to the reviewed fleet request")
+    report = _object(result.get("hostEvidence"), "host export report")
+    if (
+        report.get("fleet") != evidence.get("fleet")
+        or report.get("manifestIdentity") != evidence.get("manifestIdentity")
+        or report.get("manifestBytes") != evidence.get("manifestBytes")
+        or report.get("manifest") != evidence.get("manifest")
+    ):
+        raise DeploymentError("host export baseline fleet differs retained evidence")
+    attestations = result.get("baselineAttestations")
+    if not isinstance(attestations, list) or len(attestations) != len(inventory):
+        raise DeploymentError("host export baseline attestation set is incomplete")
+    by_name = {
+        item.get("runnerName"): item
+        for item in attestations
+        if isinstance(item, dict) and isinstance(item.get("runnerName"), str)
+    }
+    expected_names = {runner.get("name") for runner in inventory}
+    if set(by_name) != expected_names:
+        raise DeploymentError("host export baseline attestation identities differ")
+    source_attestation = release_evidence
+    for runner in inventory:
+        name = runner.get("name")
+        raw = runner.get("releaseManifestBytes")
+        identity = runner.get("manifestIdentity")
+        if not isinstance(raw, str) or not isinstance(identity, str):
+            raise DeploymentError(f"runner {name} baseline manifest bytes are unavailable")
+        identity_match = MANIFEST_IDENTITY.fullmatch(identity)
+        if identity_match is None:
+            raise DeploymentError(f"runner {name} baseline manifest identity is invalid")
+        _manifest_with_identity(
+            runner.get("releaseManifest"), identity_match.group("digest"),
+            f"runner {name} release manifest", raw,
+        )
+        manifest = _object(runner.get("releaseManifest"), f"runner {name} release manifest")
+        workflow = _object(
+            _object(manifest.get("release"), f"runner {name} manifest release").get("workflow"),
+            f"runner {name} manifest workflow",
+        )
+        proof = by_name[name]
+        if (
+            proof.get("verified") is not True
+            or proof.get("manifestIdentity") != identity
+            or proof.get("repository") != source_attestation.get("repository")
+            or proof.get("sourceRef") != source_attestation.get("sourceRef")
+            or proof.get("signerWorkflow") != source_attestation.get("signerWorkflow")
+            or proof.get("signerCommit") != workflow.get("contractCommit")
+        ):
+            raise DeploymentError(f"runner {name} baseline attestation binding differs")
+
+
 def _validate_inventory(
+    config: dict[str, Any],
     fleet: dict[str, Any],
     evidence: dict[str, Any],
     rollback_source: dict[str, Any] | None = None,
@@ -444,6 +534,7 @@ def _validate_inventory(
         baseline_identity = inventory[0]["manifestIdentity"]
     else:
         baseline_identity = _text(evidence.get("manifestIdentity"), "rollback manifestIdentity")
+    _validate_host_export_binding(config, fleet, evidence, inventory)
 
     minimum_available = fleet.get("minimumAvailable")
     if (
@@ -589,7 +680,7 @@ def build_plan(
         raise DeploymentError("concurrent deployment is already active")
 
     _, observed_release, baseline_identity = _validate_inventory(
-        fleet, evidence, rollback_source if action == "rollback" else None
+        config, fleet, evidence, rollback_source if action == "rollback" else None
     )
     authorization = _object(evidence.get("authorization"), "authorization")
     head_commit = evidence.get("headCommit")
@@ -1363,9 +1454,32 @@ def _child_environment(
 
 
 class ProcessAdapter:
-    def __init__(self, config: dict[str, Any], fleet: dict[str, Any]):
+    def __init__(
+        self,
+        config: dict[str, Any],
+        fleet: dict[str, Any],
+        evidence: dict[str, Any] | None = None,
+        plan: dict[str, Any] | None = None,
+    ):
         self.config = config
         self.fleet = fleet
+        self.evidence = evidence
+        self.plan = plan
+
+    def _host_export(
+        self, purpose: str, runner_name: str | None = None
+    ) -> dict[str, Any]:
+        if self.evidence is None or self.plan is None:
+            raise DeploymentError("host export requires the admitted plan and evidence")
+        request = _build_host_export_request(
+            self.config,
+            self.evidence,
+            self.plan["fleetSelector"],
+            purpose=purpose,
+            runner_name=runner_name,
+            plan=self.plan,
+        )
+        return _run_host_export_transport(request)
 
     @staticmethod
     def _invoke(
@@ -1449,29 +1563,15 @@ class ProcessAdapter:
             raise DeploymentInterrupted(
                 f"runner update did not return verified terminal evidence for {runner}"
             ) from error
-        return self._run(
-            [
-                *_command(self.config, "evidenceCommand"),
-                "--runner",
-                runner,
-                "--manifest-identity",
-                manifest_identity,
-                "--fleet",
-                self.fleet["lane"],
-                "--post-update",
-            ],
-            timeout_seconds=POST_UPDATE_EVIDENCE_SECONDS,
+        return _object(
+            self._host_export("post-update", runner).get("hostEvidence"),
+            "post-update host evidence",
         )
 
     def available_capacity(self) -> int:
-        result = self._run(
-            [
-                *_command(self.config, "evidenceCommand"),
-                "--fleet",
-                self.fleet["lane"],
-                "--capacity-only",
-            ],
-            timeout_seconds=CAPACITY_EVIDENCE_SECONDS,
+        result = _object(
+            self._host_export("capacity").get("hostEvidence"),
+            "host capacity evidence",
         )
         capacity = result.get("availableCapacity")
         if not isinstance(capacity, int) or capacity < 0:
@@ -1550,6 +1650,177 @@ def _restore_receipts(
     return latest
 
 
+def _build_host_export_request(
+    config: dict[str, Any],
+    evidence: dict[str, Any],
+    fleet_selector: str,
+    purpose: str = "baseline",
+    runner_name: str | None = None,
+    plan: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if purpose not in ("baseline", "post-update", "capacity"):
+        raise DeploymentError("host export purpose is invalid")
+    fleet = _object(config.get("fleets"), "fleets").get(fleet_selector)
+    fleet = _object(fleet, f"fleet {fleet_selector}")
+    host_config = _object(fleet.get("hostEvidence"), "hostEvidence")
+    if set(host_config) != {"doContext", "doSshKey", "maxAgeSeconds"}:
+        raise DeploymentError("hostEvidence fields differ from reviewed configuration")
+    do_context = _safe_token(host_config.get("doContext"), "hostEvidence.doContext", r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
+    do_ssh_key = _safe_token(host_config.get("doSshKey"), "hostEvidence.doSshKey", r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
+    max_age = host_config.get("maxAgeSeconds")
+    if not isinstance(max_age, int) or isinstance(max_age, bool) or not 1 <= max_age <= 3600:
+        raise DeploymentError("hostEvidence.maxAgeSeconds is invalid")
+    runners = fleet.get("runners")
+    if (
+        not isinstance(runners, list)
+        or not runners
+        or any(not isinstance(name, str) for name in runners)
+        or len(set(runners)) != len(runners)
+    ):
+        raise DeploymentError("reviewed fleet runner names are invalid")
+    if purpose == "post-update" and runner_name not in runners:
+        raise DeploymentError("post-update host runner is outside the reviewed fleet")
+    if purpose != "post-update" and runner_name is not None:
+        raise DeploymentError("host runner selection is only valid for post-update evidence")
+
+    authority = _object(config.get("hostEvidenceAuthority"), "hostEvidenceAuthority")
+    if set(authority) != {"appId", "installationId"}:
+        raise DeploymentError("hostEvidenceAuthority fields differ")
+    app_id, installation_id = authority.get("appId"), authority.get("installationId")
+    if (
+        not isinstance(app_id, int) or isinstance(app_id, bool) or app_id < 1
+        or not isinstance(installation_id, int) or isinstance(installation_id, bool)
+        or installation_id < 1
+    ):
+        raise DeploymentError("reviewed host observation App identities are unavailable")
+
+    expected = _object(config.get("expectedRelease"), "expectedRelease")
+    identity = _text(evidence.get("manifestIdentity"), "manifestIdentity")
+    identity_match = MANIFEST_IDENTITY.fullmatch(identity)
+    if identity_match is None:
+        raise DeploymentError("host export manifest identity is invalid")
+    if plan is not None and plan.get("manifestIdentity") != identity:
+        raise DeploymentError("host export manifest identity differs admitted plan")
+    manifest = _object(evidence.get("manifest"), "release manifest")
+    source = _object(manifest.get("source"), "release manifest source")
+    workflow = _object(_object(manifest.get("release"), "release manifest release").get("workflow"), "release manifest workflow")
+    source_commit = source.get("commit")
+    asset_id = evidence.get("releaseAssetId")
+    if not isinstance(source_commit, str) or re.fullmatch(r"[0-9a-f]{40}", source_commit) is None:
+        raise DeploymentError("release manifest source commit is unavailable")
+    if not isinstance(asset_id, int) or isinstance(asset_id, bool) or asset_id < 1:
+        raise DeploymentError("release manifest asset identity is unavailable")
+    manifest_bytes = evidence.get("manifestBytes")
+    if not isinstance(manifest_bytes, str):
+        raise DeploymentError("exact release manifest bytes are unavailable")
+    _manifest_with_identity(manifest, identity, "release manifest", manifest_bytes)
+
+    authorization = _object(evidence.get("authorization"), "authorization")
+    repository = _text(authorization.get("repository"), "authorization.repository")
+    repository_id = authorization.get("repositoryId")
+    if repository != expected.get("sourceRepository") or not isinstance(repository_id, int) or isinstance(repository_id, bool) or repository_id < 1:
+        raise DeploymentError("host observation repository identity is unavailable")
+    attempt_id = plan.get("attemptId") if plan else None
+    if not attempt_id:
+        workflow_run_id = authorization.get("workflowRunId")
+        workflow_attempt = authorization.get("workflowRunAttempt", evidence.get("workflowRunAttempt", 1))
+        if (
+            not isinstance(workflow_run_id, int) or isinstance(workflow_run_id, bool) or workflow_run_id < 1
+            or not isinstance(workflow_attempt, int) or isinstance(workflow_attempt, bool) or workflow_attempt < 1
+        ):
+            raise DeploymentError("host observation workflow attempt identity is unavailable")
+        attempt_id = f"{workflow_run_id}.{workflow_attempt}"
+    action = plan.get("action") if plan else ("rollback" if evidence.get("rollbackSource") else "deploy")
+    rollback_of = plan.get("rollbackOfAttempt") if plan else None
+    if action == "rollback" and rollback_of is None:
+        rollback_source = _object(evidence.get("rollbackSource"), "rollbackSource")
+        rollback_of = rollback_source.get("attemptId")
+    contract_ref = plan.get("deploymentContractCommit") if plan else os.environ.get("VERJSON_DEPLOYMENT_CONTRACT_REF")
+    if not isinstance(contract_ref, str) or re.fullmatch(r"[0-9a-f]{40}", contract_ref) is None:
+        raise DeploymentError("immutable deployment contract identity is unavailable")
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    release = _release(
+        manifest.get("releaseVersion"), identity, "host export release"
+    )
+    variant = expected.get("variant")
+    release.update({
+        "repository": expected.get("sourceRepository"),
+        "assetId": asset_id,
+        "variant": variant,
+        "imageDigest": _release_variant_digest(
+            manifest, release, variant, "release manifest", manifest_bytes
+        ),
+        "sourceCommit": source_commit,
+        "sourceRef": expected.get("sourceRef"),
+        "signerWorkflow": expected.get("signerWorkflow"),
+        "signerCommit": workflow.get("contractCommit"),
+    })
+    host = {
+        "project": fleet.get("project"),
+        "doContext": do_context,
+        "doSshKey": do_ssh_key,
+        "runnerNames": runners,
+        "maxAgeSeconds": max_age,
+        "purpose": purpose,
+        "runnerName": runner_name,
+    }
+    return {
+        "schemaVersion": 1,
+        "operation": "host-export",
+        "attemptId": attempt_id,
+        "fleetSelector": fleet_selector,
+        "lane": fleet.get("lane"),
+        "issuedAt": _timestamp(now),
+        "expiresAt": _timestamp(now + timedelta(minutes=15)),
+        "deploymentContractCommit": contract_ref,
+        "configDigest": canonical_digest(config),
+        "planDigest": canonical_digest(plan) if plan else None,
+        "action": action,
+        "rollbackOfAttempt": rollback_of,
+        "github": {
+            "repository": repository,
+            "repositoryId": repository_id,
+            "appId": app_id,
+            "installationId": installation_id,
+        },
+        "release": release,
+        "hostExport": host,
+    }
+
+
+def _run_host_export_transport(
+    request: dict[str, Any], timeout_seconds: int = ADMISSION_EVIDENCE_SECONDS
+) -> dict[str, Any]:
+    missing = [name for name in HOST_EXPORT_SECRET_ENV if not os.environ.get(name)]
+    if missing:
+        raise DeploymentError("read-only host observation authority is not provisioned")
+    with tempfile.TemporaryDirectory(prefix="deployment-host-request-") as temporary:
+        root = Path(temporary)
+        request_path = root / "request.json"
+        output_path = root / "host-evidence.json"
+        _write(request_path, request)
+        try:
+            ProcessAdapter._invoke(
+                [
+                    "python3", "scripts/container_deployment_transport.py",
+                    "--request", str(request_path), "--output", str(output_path),
+                ],
+                {name: os.environ[name] for name in HOST_EXPORT_SECRET_ENV},
+                control=True,
+                timeout_seconds=timeout_seconds,
+            )
+        except (OSError, subprocess.SubprocessError, DeploymentError):
+            raise DeploymentError("canonical host evidence transport failed") from None
+        result = _load(output_path)
+    if (
+        result.get("schemaVersion") != 1
+        or result.get("requestDigest") != canonical_digest(request)
+        or result.get("outcome") != "passed"
+    ):
+        raise DeploymentError("canonical host evidence receipt differs from request")
+    return result
+
+
 def _collect_evidence(
     config: dict[str, Any],
     manifest_identity: str,
@@ -1560,6 +1831,19 @@ def _collect_evidence(
     if MANIFEST_IDENTITY.fullmatch(manifest_identity) is None:
         raise DeploymentError("manifest identity must be an immutable digest reference")
     _safe_token(fleet_selector, "fleet selector", r"[a-z][a-z0-9_-]{1,31}")
+    if any(not os.environ.get(name) for name in HOST_EXPORT_SECRET_ENV):
+        raise DeploymentError("read-only host observation authority not provisioned")
+    authority = _object(config.get("hostEvidenceAuthority"), "hostEvidenceAuthority")
+    if set(authority) != {"appId", "installationId"} or any(
+        type(authority.get(name)) is not int or authority[name] < 1
+        for name in ("appId", "installationId")
+    ):
+        raise DeploymentError("host evidence authority identities are unavailable")
+    fleet_config = _object(config.get("fleets"), "fleets").get(fleet_selector)
+    fleet_config = _object(fleet_config, f"fleet {fleet_selector}")
+    host_config = _object(fleet_config.get("hostEvidence"), "hostEvidence")
+    if set(host_config) != {"doContext", "doSshKey", "maxAgeSeconds"}:
+        raise DeploymentError("hostEvidence fields differ")
     command = [
         *_command(config, "evidenceCommand"),
         "--manifest-identity",
@@ -1602,6 +1886,20 @@ def _collect_evidence(
         if receipt_digest(source) != rollback_receipt:
             raise DeploymentError("retrieved rollback receipt differs from requested digest")
         evidence["rollbackReceiptIdentity"] = rollback_receipt
+    request = _build_host_export_request(config, evidence, fleet_selector)
+    host_result = _run_host_export_transport(request)
+    release = _object(host_result.get("releaseManifest"), "verified release manifest")
+    if release.get("manifestIdentity") != request["release"]["manifestDigest"]:
+        raise DeploymentError("verified release manifest identity differs request")
+    evidence["manifestIdentity"] = release["manifestIdentity"]
+    evidence["manifestBytes"] = release["manifestBytes"]
+    evidence["manifest"] = release["manifest"]
+    evidence["attestation"] = release["attestation"]
+    host_report = _object(host_result.get("hostEvidence"), "host evidence report")
+    host_fleet = _object(host_report.get("fleet"), "host evidence fleet")
+    evidence["fleet"] = host_fleet
+    evidence["hostExportRequest"] = request
+    evidence["hostExport"] = host_result
     return evidence
 
 
@@ -1762,7 +2060,7 @@ def main() -> int:
                     plan,
                     config,
                     evidence,
-                    ProcessAdapter(config, fleet),
+                    ProcessAdapter(config, fleet, evidence, plan),
                     _persist_directory(args.receipt_dir, len(existing)),
                     previous_receipt=final_receipt,
                     max_hosts=1,

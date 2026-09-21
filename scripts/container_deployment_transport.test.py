@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import contextlib
+import base64
 import copy
 from datetime import datetime, timezone
 import importlib.util
@@ -39,6 +40,18 @@ def request(operation='probe'):
             'probe': {'runnerId': 55, 'runnerName': 'gha-gate-1', 'runnerLabel': 'canary-private',
                       'transactionNonce': '11111111-2222-3333-4444-555555555555', 'workflowId': 66,
                       'workflowRef': 'refs/tags/runner-canary-v1.0.1', 'workflowCommit': 'c' * 40}}
+
+
+def host_request():
+    value = request('manifest')
+    value['operation'] = 'host-export'
+    value.pop('probe')
+    value['hostExport'] = {
+        'project': 'runner-project', 'doContext': 'readonly', 'doSshKey': 'runner-key',
+        'runnerNames': ['gha-gate-1'], 'maxAgeSeconds': 300,
+        'purpose': 'baseline', 'runnerName': None,
+    }
+    return value
 
 
 class ProbeAPI:
@@ -193,6 +206,173 @@ class RequestTests(unittest.TestCase):
                     api.assert_not_called()
 
 
+class HostExportTests(unittest.TestCase):
+    def test_host_export_routes_read_only_credentials_outside_request_and_receipt(self):
+        value = host_request()
+        manifest = {
+            'releaseVersion': '1.0.0',
+            'source': {'repository': 'Verjson/runners', 'commit': 'a' * 40},
+            'release': {'workflow': {
+                'path': '.github/workflows/container-release.yml', 'contractCommit': 'b' * 40,
+            }},
+            'images': [{'variant': 'pwsh', 'indexDigest': 'sha256:' + '2' * 64}],
+        }
+        raw = json.dumps(manifest, sort_keys=True, separators=(',', ':'))
+        identity = t.digest(raw.encode())
+        value['release']['manifestDigest'] = identity
+        runner = {
+            'name': 'gha-gate-1', 'dropletId': '901', 'runnerId': 55,
+            'manifestIdentity': identity,
+            'release': {'releaseVersion': '1.0.0', 'manifestDigest': identity},
+            'releaseManifest': manifest, 'releaseManifestBytes': raw,
+            'deployedDigest': 'sha256:' + '2' * 64,
+        }
+        report = {
+            'schemaVersion': 1, 'operation': 'host-export', 'observedAt': stamp(NOW - 1),
+            'manifestIdentity': identity, 'manifestBytes': raw, 'manifest': manifest,
+            'availableCapacity': 2, 'fleet': {'lane': 'gate', 'runners': [runner]},
+        }
+        secret_values = {
+            'RUNNER_HOST_EVIDENCE_SSH_PRIVATE_KEY': 'ssh-private-key-secret',
+            'RUNNER_HOST_EVIDENCE_DOCTL_CONFIG': 'doctl-read-token-secret',
+            'RUNNER_HOST_EVIDENCE_KNOWN_HOSTS': 'preprovisioned-host-pin',
+            'DIGITALOCEAN_RUNNER_FLEET_TOKEN': 'fleet-write-token',
+            'GH_RUNNER_CONTROL_TOKEN': 'runner-control-token',
+        }
+        completed_roots = []
+        calls = []
+        with tempfile.TemporaryDirectory() as directory:
+            contract_root = Path(directory) / 'contract'
+            contract_root.mkdir()
+            executable = contract_root / 'verjson-cloud'
+            executable.write_text('#!/bin/sh\nexit 0\n')
+            executable.chmod(0o700)
+            secret_values.update({
+                'VERJSON_DEPLOYMENT_CLI': str(executable),
+                'VERJSON_DEPLOYMENT_CLI_ROOT': str(contract_root),
+            })
+
+            def run(command, **kwargs):
+                calls.append((command, kwargs))
+                if command[0] == 'gh':
+                    return subprocess.CompletedProcess(command, 0, stdout='[]', stderr='')
+                key_path = Path(command[command.index('--read-only-ssh-private-key') + 1])
+                completed_roots.append(key_path.parent)
+                self.assertEqual(key_path.read_text(), 'ssh-private-key-secret')
+                self.assertEqual(key_path.stat().st_mode & 0o777, 0o600)
+                self.assertNotIn('ssh-private-key-secret', command)
+                self.assertEqual(kwargs['env']['GH_TOKEN'], 'installation-read-token')
+                self.assertNotIn('DIGITALOCEAN_RUNNER_FLEET_TOKEN', kwargs['env'])
+                self.assertNotIn('GH_RUNNER_CONTROL_TOKEN', kwargs['env'])
+                self.assertNotIn('RUNNER_HOST_EVIDENCE_SSH_PRIVATE_KEY', kwargs['env'])
+                self.assertEqual(
+                    (Path(kwargs['env']['HOME']) / '.config/doctl/config.yaml').read_text(),
+                    'doctl-read-token-secret',
+                )
+                self.assertEqual(
+                    (Path(kwargs['env']['HOME']) / '.verjson-digitalocean-known-hosts').read_text(),
+                    'preprovisioned-host-pin',
+                )
+                return subprocess.CompletedProcess(command, 0, stdout=json.dumps(report), stderr='')
+
+            with mock.patch.dict(os.environ, secret_values, clear=True):
+                result = t.host_export(
+                    value, 'installation-read-token',
+                    {
+                        'manifestIdentity': identity,
+                        'manifestBytes': raw,
+                        'manifest': manifest,
+                        'attestation': {'verified': True, 'subjectDigest': identity},
+                    },
+                    run=run, clock=lambda: NOW,
+                )
+        self.assertEqual(result['outcome'], 'passed')
+        self.assertEqual(result['hostEvidence'], report)
+        self.assertEqual(result['releaseManifest']['manifestIdentity'], identity)
+        self.assertTrue(result['releaseManifest']['attestation']['verified'])
+        self.assertEqual(result['baselineAttestations'][0]['manifestIdentity'], identity)
+        self.assertEqual([call[0][0] for call in calls], [str(executable), 'gh'])
+        self.assertEqual(calls[0][1]['timeout'], 900)
+        self.assertFalse(completed_roots[0].exists())
+        self.assertNotIn('ssh-private-key-secret', json.dumps(value))
+        self.assertNotIn('ssh-private-key-secret', json.dumps(result))
+
+    def test_host_export_rejects_credentials_echoed_in_child_output(self):
+        value = host_request()
+        value["hostExport"]["purpose"] = "capacity"
+        report = {
+            "schemaVersion": 1,
+            "operation": "host-export",
+            "observedAt": stamp(NOW),
+            "availableCapacity": 2,
+            "unexpected": "ssh-private-key-secret",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cli = root / "node_modules/.bin/verjson-cloud"
+            cli.parent.mkdir(parents=True)
+            cli.write_text("#!/bin/sh\n", encoding="utf-8")
+            cli.chmod(0o700)
+            environment = {
+                "VERJSON_DEPLOYMENT_CLI": str(cli),
+                "VERJSON_DEPLOYMENT_CLI_ROOT": directory,
+                "RUNNER_HOST_EVIDENCE_SSH_PRIVATE_KEY": "ssh-private-key-secret",
+                "RUNNER_HOST_EVIDENCE_DOCTL_CONFIG": "doctl-read-token-secret",
+                "RUNNER_HOST_EVIDENCE_KNOWN_HOSTS": "preprovisioned-host-pin",
+            }
+            with mock.patch.dict(os.environ, environment, clear=True):
+                with self.assertRaisesRegex(t.TransportError, "credential material"):
+                    t.host_export(
+                        value,
+                        "installation-read-token",
+                        run=mock.Mock(
+                            return_value=subprocess.CompletedProcess(
+                                [], 0, stdout=json.dumps(report), stderr=""
+                            )
+                        ),
+                        clock=lambda: NOW,
+                    )
+
+    def test_host_export_fails_closed_when_observation_credentials_are_missing(self):
+        value = host_request()
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(t.TransportError, 'credentials are unavailable'):
+                t.host_export(
+                    value, 'read-only-token',
+                    {'manifestIdentity': value['release']['manifestDigest']},
+                    run=mock.Mock(), clock=lambda: NOW,
+                )
+
+
+class HostExportJwtTests(unittest.TestCase):
+    def test_host_export_jwt_is_short_lived_and_private_key_stays_in_temp_file(self):
+        private_key = "-----BEGIN PRIVATE KEY-----\nprivate-key-material\n-----END PRIVATE KEY-----\n"
+        calls = []
+        key_paths = []
+
+        def sign(command, **kwargs):
+            calls.append((command, kwargs))
+            key_path = Path(command[-1])
+            key_paths.append(key_path)
+            self.assertEqual(private_key, key_path.read_text(encoding="utf-8"))
+            self.assertEqual(0o600, key_path.stat().st_mode & 0o777)
+            self.assertNotIn(private_key, command)
+            self.assertEqual({"PATH": os.environ.get("PATH", "/usr/bin:/bin")}, kwargs["env"])
+            return subprocess.CompletedProcess(command, 0, stdout=b"signed-fixture", stderr=b"")
+
+        token = t.mint_host_export_app_jwt(204, private_key, NOW, run=sign)
+        header, payload, signature = token.split(".")
+        decode = lambda value: json.loads(
+            base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+        )
+        self.assertEqual({"alg": "RS256", "typ": "JWT"}, decode(header))
+        self.assertEqual({"iat": NOW - 30, "exp": NOW + 510, "iss": "204"}, decode(payload))
+        self.assertEqual(t._base64url(b"signed-fixture"), signature)
+        self.assertNotIn("private-key-material", token)
+        self.assertEqual(1, len(calls))
+        self.assertFalse(key_paths[0].exists())
+
+
 class AuthTests(unittest.TestCase):
     def api(self, value):
         permissions = copy.deepcopy(t.PERMISSIONS[value['operation']])
@@ -204,8 +384,9 @@ class AuthTests(unittest.TestCase):
         ]))
 
     def test_role_credential_mints_exact_repository_and_permissions(self):
-        for operation in ('manifest', 'probe'):
-            value = request(operation); api = self.api(value)
+        for operation in ('manifest', 'probe', 'host-export'):
+            value = host_request() if operation == 'host-export' else request(operation)
+            api = self.api(value)
             self.assertEqual(t.installation_token(api, value, 'explicit-app-jwt', NOW), 'installation-secret')
             self.assertEqual(api.call.call_args_list[2].args[3], {'repository_ids': [11], 'permissions': t.PERMISSIONS[operation]})
 
