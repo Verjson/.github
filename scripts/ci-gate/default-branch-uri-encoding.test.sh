@@ -2571,6 +2571,32 @@ while IFS=$'\t' read -r file line kind var syntax; do
   fail "$label reaches a gh api $kind position without a percent-encoding or a 40-hex constraint in its block"
 done < <(ref_sites)
 
+# Exercise the actual workflow function with the repository's `gh` stub. This checks the
+# value sent to the API, not just a matching encoder line in the source slice.
+compare_workflow=".github/workflows/ai-review-merge.yml"
+compare_url_line="$(grep -nF 'raw="$(gh api "repos/$REPO/compare/$base_ref_path...$head_sha"' \
+  "$root/$compare_workflow" | cut -d: -f1 | head -1)"
+[ -n "$compare_url_line" ] || fail "the compare API call was not found in ai-review-merge.yml"
+block_slice "$compare_workflow" "$compare_url_line" >"$tmp/compare-behind.sh"
+printf '}\n' >>"$tmp/compare-behind.sh"
+bash -n "$tmp/compare-behind.sh" || fail "the extracted compare_behind function is not valid Bash"
+# shellcheck source=/dev/null
+source "$tmp/compare-behind.sh"
+
+: >"$GH_CALLS"
+REPO="$TARGET_REPO" base_ref="$HOSTILE_BRANCH" head_sha="$BLOB_SHA" GH_STUB_STDOUT=0 \
+  compare_behind >/dev/null || fail "compare_behind failed for the hostile ref fixture"
+grep -qF "compare/$HOSTILE_ENCODED...$BLOB_SHA" "$GH_CALLS" \
+  || fail "the actual compare API call did not use the encoded ref: $(cat "$GH_CALLS")"
+! grep -qF "compare/$HOSTILE_BRANCH...$BLOB_SHA" "$GH_CALLS" \
+  || fail "the actual compare API call used the unencoded ref"
+
+: >"$GH_CALLS"
+REPO="$TARGET_REPO" base_ref="$NESTED_BRANCH" head_sha="$BLOB_SHA" GH_STUB_STDOUT=0 \
+  compare_behind >/dev/null || fail "compare_behind failed for the slash-bearing ref fixture"
+grep -qF "compare/$NESTED_PATH_ENCODED...$BLOB_SHA" "$GH_CALLS" \
+  || fail "the actual compare API call did not encode a slash-bearing ref: $(cat "$GH_CALLS")"
+
 # The compare_behind ref segment is single-assignment and readonly after encoding. The
 # exact function slice is checked at the URL use, so a later direct or guarded assignment
 # cannot replace the encoded value while the gate remains green. The readonly declaration

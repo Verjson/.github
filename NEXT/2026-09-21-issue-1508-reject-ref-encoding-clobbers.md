@@ -7,5 +7,6 @@ title: Reject ref-encoding clobbers in the merge gate
 
 The default-branch URI encoding gate now rejects repeated assignments to the
 merge workflow's encoded compare ref, and the workflow makes that encoded value
-readonly before use. This closes direct and guarded clobber paths that could
-otherwise send an unencoded branch ref to the compare API.
+readonly before use. Regression coverage checks direct and guarded clobbers and
+executes the actual compare function against a stubbed API to verify the emitted
+URL keeps hostile and slash-bearing refs encoded.
