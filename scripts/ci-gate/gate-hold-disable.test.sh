@@ -178,7 +178,7 @@ assert jobs["arm"]["if"] == "${{ needs.event-policy.outputs.run_control_plane ==
 assert "old_title_held" in jobs["event-policy"]["outputs"]
 assert "new_title_held" in jobs["event-policy"]["outputs"]
 assert "EVENT_TITLE_CHANGED" in jobs["event-policy"]["steps"][0]["env"]
-marker = r"(^|[^A-Z0-9_])DO\ NOT\ MERGE([^A-Z0-9_]|$)"
+marker = r"(^|[^ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_])DO\ NOT\ MERGE([^ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]|$)"
 assert marker in jobs["event-policy"]["steps"][0]["run"]
 review_jobs = yaml.safe_load(Path(sys.argv[1]).with_name("ai-review-merge.yml").read_text())["jobs"]
 assert review_jobs["title-policy"]["permissions"] == {}
@@ -187,7 +187,7 @@ assert "needs.title-policy.outputs.title_held != 'true'" in review_jobs["preflig
 assert marker in review_jobs["title-policy"]["steps"][0]["run"]
 for filename in ("ai-review-merge.yml", "ai-privileged-merge.yml", "gate-rearm.yml"):
     source = Path(sys.argv[1]).with_name(filename).read_text()
-    assert 'test("(^|[^A-Z0-9_])DO NOT MERGE([^A-Z0-9_]|$)"; "i")' in source
+    assert 'ascii_upcase | test("(^|[^ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_])DO NOT MERGE([^ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]|$)")' in source
 print("workflow title-hold policy and authorization ordering pass")
 PY
 then
@@ -220,6 +220,7 @@ fi
 if [ "$(classify_control_plane edited '' true 'REDO NOT MERGE: QA' 'ordinary title')" = false ] \
   && [ "$(classify_control_plane edited '' true 'DO NOT MERGER: QA' 'ordinary title')" = false ] \
   && [ "$(classify_control_plane edited '' true 'ordinary title' 'prefix DO NOT MERGE: hold')" = true ] \
+  && [ "$(classify_control_plane edited '' true 'ordinary title' 'DO NOT MERGEK')" = true ] \
   && [ "$(classify_control_plane edited '' true 'DO NOT MERGE: hold' 'ordinary title')" = true ]; then
   pass "event policy detects only whole-phrase title hold transitions"
 else
@@ -234,7 +235,8 @@ review_title_held() {
 if [ "$(review_title_held 'chore: dO nOt mErGe: QA')" = true ] \
   && [ "$(review_title_held 'REDO NOT MERGE: QA')" = false ] \
   && [ "$(review_title_held 'DO NOT MERGER: QA')" = false ] \
-  && [ "$(review_title_held 'DO_NOT_MERGE')" = false ]; then
+  && [ "$(review_title_held 'DO_NOT_MERGE')" = false ] \
+  && [ "$(review_title_held 'DO NOT MERGEK')" = true ]; then
   pass "review preflight treats the hold marker as a whole phrase"
 else
   fail "review preflight title marker boundaries are incorrect"
@@ -393,7 +395,7 @@ done
 
 export EVENT_ACTION=edited REQUEST_ACTOR=maintainer ACTOR_PERMISSION=maintain
 title_is_held() {
-  [[ "${1^^}" =~ (^|[^A-Z0-9_])DO\ NOT\ MERGE([^A-Z0-9_]|$) ]]
+  [[ "${1^^}" =~ (^|[^ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_])DO\ NOT\ MERGE([^ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]|$) ]]
 }
 for old_title in 'chore: DO NOT MERGE QA' 'chore: QA' 'REDO NOT MERGE QA' 'DO NOT MERGER QA'; do
   for new_title in 'chore: DO NOT MERGE QA' 'chore: new title' 'REDO NOT MERGE QA' 'DO NOT MERGER QA'; do

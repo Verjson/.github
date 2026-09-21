@@ -237,7 +237,8 @@ jobs:
         run: |
           set -euo pipefail
           title_held=false
-          if [[ "${PR_TITLE^^}" =~ (^|[^A-Z0-9_])DO\ NOT\ MERGE([^A-Z0-9_]|$) ]]; then
+          title_ascii="$(jq -nr --arg title "$PR_TITLE" '$title | ascii_upcase')"
+          if [[ "$title_ascii" =~ (^|[^ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_])DO\ NOT\ MERGE([^ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]|$) ]]; then
             title_held=true
           fi
           printf 'title_held=%s\n' "$title_held" >>"$GITHUB_OUTPUT"
@@ -647,7 +648,7 @@ jobs:
           # is the one direction this check must never fail in. A jq error now
           # aborts under `set -e`; anything other than the two expected strings
           # fails closed explicitly.
-          held="$(jq -r '([.labels[].name | ascii_upcase | gsub("[ _-]+";" ")]) as $l | ($l | index("HOLD")) or ($l | index("DO NOT MERGE")) or (.title | test("(^|[^A-Z0-9_])DO NOT MERGE([^A-Z0-9_]|$)"; "i")) or .isDraft | if . then "true" else "false" end' <<<"$meta")"
+          held="$(jq -r '([.labels[].name | ascii_upcase | gsub("[ _-]+";" ")]) as $l | ($l | index("HOLD")) or ($l | index("DO NOT MERGE")) or (.title | ascii_upcase | test("(^|[^ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_])DO NOT MERGE([^ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]|$)")) or .isDraft | if . then "true" else "false" end' <<<"$meta")"
           case "$held" in
             true)
               echo "PR is held (label/title/draft); no lane."

@@ -241,23 +241,25 @@ class WorkflowBoundaryTests(unittest.TestCase):
         self.assertEqual(snapshot["secrets"], "inherit")
 
     def test_body_only_edits_skip_jobs_but_title_hold_transitions_run(self):
-      jobs = workflow("gate-rearm")["jobs"]
-      policy_guard = "${{ needs.event-policy.outputs.run_control_plane == 'true' }}"
-      arm_guard = "${{ needs.event-policy.outputs.run_control_plane == 'true' && needs.app-key-policy.result == 'success' }}"
-      self.assertEqual(jobs["app-key-policy"]["if"], policy_guard)
-      self.assertEqual(jobs["arm"]["if"], arm_guard)
-      self.assertEqual(jobs["event-policy"]["outputs"]["old_title_held"], "${{ steps.classify.outputs.old_title_held }}")
-      self.assertEqual(jobs["event-policy"]["outputs"]["new_title_held"], "${{ steps.classify.outputs.new_title_held }}")
-      self.assertEqual(jobs["arm"]["env"]["EVENT_NEW_TITLE_HELD"], "${{ needs.event-policy.outputs.new_title_held }}")
-      self.assertIn("EVENT_TITLE_CHANGED", jobs["event-policy"]["steps"][0]["env"])
-      marker = r'(^|[^A-Z0-9_])DO\ NOT\ MERGE([^A-Z0-9_]|$)'
-      self.assertIn(marker, jobs["event-policy"]["steps"][0]["run"])
+        jobs = workflow("gate-rearm")["jobs"]
+        policy_guard = "${{ needs.event-policy.outputs.run_control_plane == 'true' }}"
+        arm_guard = "${{ needs.event-policy.outputs.run_control_plane == 'true' && needs.app-key-policy.result == 'success' }}"
+        self.assertEqual(jobs["app-key-policy"]["if"], policy_guard)
+        self.assertEqual(jobs["arm"]["if"], arm_guard)
+        self.assertEqual(jobs["event-policy"]["outputs"]["old_title_held"], "${{ steps.classify.outputs.old_title_held }}")
+        self.assertEqual(jobs["event-policy"]["outputs"]["new_title_held"], "${{ steps.classify.outputs.new_title_held }}")
+        self.assertEqual(jobs["arm"]["env"]["EVENT_NEW_TITLE_HELD"], "${{ needs.event-policy.outputs.new_title_held }}")
+        self.assertIn("EVENT_TITLE_CHANGED", jobs["event-policy"]["steps"][0]["env"])
+        marker = r'(^|[^ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_])DO\ NOT\ MERGE([^ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]|$)'
+        self.assertIn("ascii_upcase", jobs["event-policy"]["steps"][0]["run"])
+        self.assertIn(marker, jobs["event-policy"]["steps"][0]["run"])
 
-      review_jobs = workflow("ai-review-merge")["jobs"]
-      self.assertEqual(review_jobs["title-policy"]["permissions"], {})
-      self.assertEqual(review_jobs["preflight"]["needs"], "title-policy")
-      self.assertIn("needs.title-policy.outputs.title_held != 'true'", review_jobs["preflight"]["if"])
-      self.assertIn(marker, review_jobs["title-policy"]["steps"][0]["run"])
+        review_jobs = workflow("ai-review-merge")["jobs"]
+        self.assertEqual(review_jobs["title-policy"]["permissions"], {})
+        self.assertEqual(review_jobs["preflight"]["needs"], "title-policy")
+        self.assertIn("needs.title-policy.outputs.title_held != 'true'", review_jobs["preflight"]["if"])
+        self.assertIn("ascii_upcase", review_jobs["title-policy"]["steps"][0]["run"])
+        self.assertIn(marker, review_jobs["title-policy"]["steps"][0]["run"])
 
     def test_native_rearm_and_retry_defaults_are_only_canonical_role_environments(self):
         rearm = workflow("gate-rearm")["jobs"]

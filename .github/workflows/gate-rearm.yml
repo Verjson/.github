@@ -52,8 +52,10 @@ jobs:
             case "$added_normalized" in ai-review|re-review|hold|do-not-merge) ;; *) run_control_plane=false ;; esac
           elif [ "$EVENT_ACTION" = edited ]; then
             if [ "$EVENT_TITLE_CHANGED" = true ]; then
-              [[ "${EVENT_OLD_TITLE^^}" =~ (^|[^A-Z0-9_])DO\ NOT\ MERGE([^A-Z0-9_]|$) ]] && old_title_held=true
-              [[ "${EVENT_NEW_TITLE^^}" =~ (^|[^A-Z0-9_])DO\ NOT\ MERGE([^A-Z0-9_]|$) ]] && new_title_held=true
+              old_title_ascii="$(jq -nr --arg title "$EVENT_OLD_TITLE" '$title | ascii_upcase')"
+              new_title_ascii="$(jq -nr --arg title "$EVENT_NEW_TITLE" '$title | ascii_upcase')"
+              [[ "$old_title_ascii" =~ (^|[^ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_])DO\ NOT\ MERGE([^ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]|$) ]] && old_title_held=true
+              [[ "$new_title_ascii" =~ (^|[^ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_])DO\ NOT\ MERGE([^ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]|$) ]] && new_title_held=true
               [ "$old_title_held" != "$new_title_held" ] || run_control_plane=false
             else
               run_control_plane=false
@@ -265,7 +267,7 @@ jobs:
           held="$(jq -r '
             ([.labels[].name | ascii_upcase | gsub("[ _-]+";" ")]) as $labels
             | (.isDraft or ($labels | index("HOLD")) or ($labels | index("DO NOT MERGE")) or
-               (.title | test("(^|[^A-Z0-9_])DO NOT MERGE([^A-Z0-9_]|$)"; "i")))
+               (.title | ascii_upcase | test("(^|[^ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_])DO NOT MERGE([^ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]|$)")))
             | if . then "true" else "false" end' <<<"$meta")"
           if [ "$held" = true ]; then
             if [ "$(jq -r '.autoMergeRequest != null' <<<"$meta")" = true ]; then
@@ -429,7 +431,7 @@ jobs:
           [ "$EVENT_ACTION" = ready_for_review ] && hold_removed=true
           if [ "$EVENT_ACTION" = edited ]; then
             [ "$EVENT_OLD_TITLE_HELD" = true ] || exit 0
-            current_title_held="$(jq -r '.title | test("(^|[^A-Z0-9_])DO NOT MERGE([^A-Z0-9_]|$)"; "i")' <<<"$meta")"
+          current_title_held="$(jq -r '.title | ascii_upcase | test("(^|[^ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_])DO NOT MERGE([^ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]|$)")' <<<"$meta")"
             [ "$current_title_held" = false ] || exit 0
             hold_removed=true
           fi
