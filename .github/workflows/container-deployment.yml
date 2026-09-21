@@ -99,10 +99,12 @@ jobs:
             --prefix "$RUNNER_TEMP/deployment-contract/contracts/container-deployment-cli"
           cli_bin="$RUNNER_TEMP/deployment-contract/contracts/container-deployment-cli/node_modules/.bin"
           test -x "$cli_bin/verjson-cloud"
-          printf 'VERJSON_DEPLOYMENT_CLI=%s\n' "$cli_bin/verjson-cloud" >> "$GITHUB_ENV"
-          printf 'VERJSON_DEPLOYMENT_CLI_ROOT=%s\n' \
-            "$RUNNER_TEMP/deployment-contract/contracts/container-deployment-cli" >> "$GITHUB_ENV"
-          printf 'VERJSON_DEPLOYMENT_CONTRACT_REF=%s\n' "$CONTRACT_REF" >> "$GITHUB_ENV"
+          {
+            printf 'VERJSON_DEPLOYMENT_CLI=%s\n' "$cli_bin/verjson-cloud"
+            printf 'VERJSON_DEPLOYMENT_CLI_ROOT=%s\n' \
+              "$RUNNER_TEMP/deployment-contract/contracts/container-deployment-cli"
+            printf 'VERJSON_DEPLOYMENT_CONTRACT_REF=%s\n' "$CONTRACT_REF"
+          } >> "$GITHUB_ENV"
       - name: Produce exact mutation-free host plan
         env:
           ACTION: ${{ inputs.action }}
@@ -211,10 +213,12 @@ jobs:
             --prefix "$RUNNER_TEMP/deployment-contract/contracts/container-deployment-cli"
           cli_bin="$RUNNER_TEMP/deployment-contract/contracts/container-deployment-cli/node_modules/.bin"
           test -x "$cli_bin/verjson-cloud"
-          printf 'VERJSON_DEPLOYMENT_CLI=%s\n' "$cli_bin/verjson-cloud" >> "$GITHUB_ENV"
-          printf 'VERJSON_DEPLOYMENT_CLI_ROOT=%s\n' \
-            "$RUNNER_TEMP/deployment-contract/contracts/container-deployment-cli" >> "$GITHUB_ENV"
-          printf 'VERJSON_DEPLOYMENT_CONTRACT_REF=%s\n' "$CONTRACT_REF" >> "$GITHUB_ENV"
+          {
+            printf 'VERJSON_DEPLOYMENT_CLI=%s\n' "$cli_bin/verjson-cloud"
+            printf 'VERJSON_DEPLOYMENT_CLI_ROOT=%s\n' \
+              "$RUNNER_TEMP/deployment-contract/contracts/container-deployment-cli"
+            printf 'VERJSON_DEPLOYMENT_CONTRACT_REF=%s\n' "$CONTRACT_REF"
+          } >> "$GITHUB_ENV"
       - name: Collect normalized manifest, fleet, and approval evidence
         env:
           CONFIG_PATH: ${{ inputs.config-path }}
