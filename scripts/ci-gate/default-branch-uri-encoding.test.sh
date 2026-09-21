@@ -453,6 +453,22 @@ block_slice() {
   fi
 }
 
+unique_line_number() {
+  local needle="$1" file="$2" count
+  count="$(grep -oF -- "$needle" "$file" | wc -l || true)"
+  [ "$count" -eq 1 ] || return 1
+  grep -nF -- "$needle" "$file" | cut -d: -f1
+}
+
+unique_compare_definition_line() {
+  local file="$1" occurrences source_contents
+  source_contents="$(<"$file")"
+  source_contents="${source_contents//$'\\\n'/}"
+  occurrences="$(grep -oF -- 'compare_behind' <<<"$source_contents" | wc -l || true)"
+  [ "$occurrences" -eq 2 ] || return 1
+  unique_line_number 'compare_behind() {' "$file"
+}
+
 # Bash runs a command, not a source line, and a command is not a run of characters either.
 # Three separate things have to be established before a tail can be judged:
 #
@@ -2319,6 +2335,47 @@ encoder_program() {
     | grep '@uri' || true
 }
 
+shell_assignment_count() { # $1 = shell variable, $2 = source slice -> assignment count
+  local variable="$1" source="$2"
+  [[ "$variable" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 2
+  sed '/^[[:space:]]*#/d' <<<"$source" \
+    | grep -oE "(^|[[:space:];|&])${variable}[[:space:]]*(\\+?=)" \
+    | wc -l
+}
+
+ref_locked_after_encoding() {
+  awk '
+    /^[[:space:]]*base_ref_path=/ && /@uri/ {
+      if (getline next_line > 0 && next_line ~ /^[[:space:]]*readonly[[:space:]]+base_ref_path[[:space:]]*$/) {
+        found = 1
+      } else {
+        exit 1
+      }
+    }
+    END { exit !found }
+  ' <<<"$1"
+}
+
+# Keep the ref gate sensitive to the direct, conditional, and AND-list clobbers observed
+# in #1508. Full-line comments do not count as executable assignments.
+encoded_assignment='base_ref_path="encoded"'
+comment_fixture="$(printf '%s\n' "$encoded_assignment" '# base_ref_path=comment')"
+[ "$(shell_assignment_count base_ref_path "$comment_fixture")" -eq 1 ] \
+  || fail "a comment was counted as a shell assignment"
+ref_locked_after_encoding $'base_ref_path="encoded @uri"\nreadonly base_ref_path' \
+  || fail "the encoded ref is not locked immediately after assignment"
+if ref_locked_after_encoding $'base_ref_path="encoded @uri"\nread base_ref_path\nreadonly base_ref_path'; then
+  fail "a command can run between encoding the ref and locking it"
+fi
+for clobber in \
+  'base_ref_path="$base_ref"' \
+  'if [ -z "$base_ref_path" ]; then base_ref_path="$base_ref"; fi' \
+  '[ -z "$base_ref_path" ] && base_ref_path="$base_ref"'; do
+  assignments="$(shell_assignment_count base_ref_path "$(printf '%s\n' "$encoded_assignment" "$clobber")")"
+  [ "$assignments" -eq 2 ] \
+    || fail "the ref-assignment scan missed a clobber form: $clobber"
+done
+
 # A Python encoder proves itself the same way a jq program does: the call this repository
 # actually ships is evaluated, with only its first argument replaced by the fixture. Nothing
 # here pattern-matches `safe=`, so a novel spelling is judged by what it produces.
@@ -2515,6 +2572,13 @@ while IFS=$'\t' read -r file line kind var syntax; do
   IFS=$'\t' read -r jq_arg program < <(encoder_program "$slice" "$var") || true
   if [ -n "${program:-}" ]; then
     encoders=$((encoders + 1))
+    if [ "$file" = ".github/workflows/ai-review-merge.yml" ] && [ "$var" = "base_ref_path" ]; then
+      assignments="$(shell_assignment_count "$var" "$slice")"
+      [ "$assignments" -eq 1 ] \
+        || fail "$label is assigned $assignments times before its URL use; require one encoded assignment"
+      ref_locked_after_encoding "$slice" \
+        || fail "$label is not made readonly immediately after encoding"
+    fi
     assert_encoder "$label" "$program" "$kind" "$jq_arg"
     continue
   fi
@@ -2523,19 +2587,94 @@ while IFS=$'\t' read -r file line kind var syntax; do
   fail "$label reaches a gh api $kind position without a percent-encoding or a 40-hex constraint in its block"
 done < <(ref_sites)
 
-# Stated ceiling: this acceptance is POSITIONAL, not a dataflow fact. It requires an
-# encoding assignment to the ref variable above the use within the block; it does not
-# track the value that actually reaches the URL. So a later assignment to the same
-# variable defeats it silently -- inserting `base_ref_path="$base_ref"` between the
-# `@uri` encoding and the `gh api` line in ai-review-merge.yml leaves the ref fully
-# unencoded and this gate still exits 0. Guarding the clobber does not change that:
-# an `if [ -z "$base_ref_path" ]; then base_ref_path="$base_ref"; fi` arm and the
-# `[ -z … ] && base_ref_path="$base_ref"` form were each measured at exit 0 too. No
-# second-assignment form is known to be caught -- do not read a narrower exception
-# into this ceiling. That is the same class as the concatenation/relocation drains
-# pinned below, but it is worse in kind: those lower a count, while this one passes a
-# site that is genuinely unencoded. Tracked as Verjson/.github#1508. Do not cite this
-# gate as establishing encoding of a ref whose variable is assigned more than once.
+# Exercise the actual workflow function with the repository's `gh` stub. This checks the
+# value sent to the API, not just a matching encoder line in the source slice.
+compare_workflow=".github/workflows/ai-review-merge.yml"
+cat >"$tmp/duplicate-compare-functions.yml" <<'EOF'
+  compare_behind() {
+    raw="$(gh api "repos/$REPO/compare/$base_ref_path...$head_sha")"
+  }
+  compare_behind() {
+    raw="$(gh api \
+      "repos/$REPO/compare/$base_ref...$head_sha")"
+  }
+  behind="$(compare_behind)" && break
+EOF
+if unique_compare_definition_line "$tmp/duplicate-compare-functions.yml" >/dev/null; then
+  fail "duplicate compare_behind fixture was accepted"
+fi
+printf '%s\n' 'compare_behind() { :; }; compare_behind() { :; }' \
+  >"$tmp/same-line-compare-functions.yml"
+if unique_line_number 'compare_behind() {' "$tmp/same-line-compare-functions.yml" >/dev/null; then
+  fail "same-line duplicate compare_behind fixture was accepted"
+fi
+cat >"$tmp/alternate-compare-function.yml" <<'EOF'
+  compare_behind() {
+    :
+  }
+  function compare_behind {
+    raw="$(gh api \
+      "repos/$REPO/compare/$base_ref...$head_sha")"
+  }
+  behind="$(compare_behind)" && break
+EOF
+if unique_compare_definition_line "$tmp/alternate-compare-function.yml" >/dev/null; then
+  fail "the Bash function-keyword duplicate fixture was accepted"
+fi
+cat >"$tmp/continued-compare-function.yml" <<'EOF'
+  compare_behind() {
+    :
+  }
+  function compare_\
+behind {
+    raw="$(gh api \
+      "repos/$REPO/compare/$base_ref...$head_sha")"
+  }
+  behind="$(compare_behind)" && break
+EOF
+bash -n "$tmp/continued-compare-function.yml" \
+  || fail "the line-continuation duplicate fixture was not valid Bash"
+if unique_compare_definition_line "$tmp/continued-compare-function.yml" >/dev/null; then
+  fail "the line-continuation duplicate compare_behind fixture was accepted"
+fi
+
+workflow="$root/$compare_workflow"
+compare_function_line="$(unique_compare_definition_line "$workflow")" \
+  || fail "expected exactly one compare_behind function in ai-review-merge.yml"
+compare_url_line="$(unique_line_number 'raw="$(gh api "repos/$REPO/compare/$base_ref_path...$head_sha"' "$workflow")" \
+  || fail "expected exactly one compare API call in ai-review-merge.yml"
+compare_call_line="$(unique_line_number 'behind="$(compare_behind)" && break' "$workflow")" \
+  || fail "expected exactly one production compare_behind call in ai-review-merge.yml"
+[ "$compare_function_line" -lt "$compare_url_line" ] \
+  && [ "$compare_url_line" -lt "$compare_call_line" ] \
+  || fail "the compare function, API call, and production invocation are out of order"
+block_slice "$compare_workflow" "$compare_url_line" >"$tmp/compare-behind.sh"
+compare_slice_header="$(sed -n '1s/^[[:space:]]*//p' "$tmp/compare-behind.sh")"
+[ "$compare_slice_header" = 'compare_behind() {' ] \
+  || fail "the runtime test did not extract the unique production compare_behind function"
+printf '}\n' >>"$tmp/compare-behind.sh"
+bash -n "$tmp/compare-behind.sh" || fail "the extracted compare_behind function is not valid Bash"
+# shellcheck source=/dev/null
+source "$tmp/compare-behind.sh"
+
+: >"$GH_CALLS"
+REPO="$TARGET_REPO" base_ref="$HOSTILE_BRANCH" head_sha="$BLOB_SHA" GH_STUB_STDOUT=0 \
+  compare_behind >/dev/null || fail "compare_behind failed for the hostile ref fixture"
+grep -qF "compare/$HOSTILE_ENCODED...$BLOB_SHA" "$GH_CALLS" \
+  || fail "the actual compare API call did not use the encoded ref: $(cat "$GH_CALLS")"
+! grep -qF "compare/$HOSTILE_BRANCH...$BLOB_SHA" "$GH_CALLS" \
+  || fail "the actual compare API call used the unencoded ref"
+
+: >"$GH_CALLS"
+REPO="$TARGET_REPO" base_ref="$NESTED_BRANCH" head_sha="$BLOB_SHA" GH_STUB_STDOUT=0 \
+  compare_behind >/dev/null || fail "compare_behind failed for the slash-bearing ref fixture"
+grep -qF "compare/$NESTED_PATH_ENCODED...$BLOB_SHA" "$GH_CALLS" \
+  || fail "the actual compare API call did not encode a slash-bearing ref: $(cat "$GH_CALLS")"
+
+# The compare_behind ref segment is single-assignment and readonly after encoding. The
+# exact function slice is checked at the URL use, so a later direct or guarded assignment
+# cannot replace the encoded value while the gate remains green. The readonly declaration
+# also prevents indirect shell writes from changing the value at runtime.
 #
 # Corollary, found while trying to harden the other direction: the recognizer accepts
 # the encoding only as the ENTIRE assignment. Appending a guard to it --
