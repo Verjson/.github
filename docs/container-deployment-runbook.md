@@ -88,11 +88,13 @@ ID/node metadata, and no reviewer, timer, or custom rule. This makes
 
 ## Dry-run and deployment
 
-Dispatch with `dry-run: true` first. The unprotected dry-run resolves the immutable
-manifest and uploads the exact redacted canary-first host plan without receiving a deployment
-credential or mutating an external system. Reject any plan with an unexpected host,
-baseline, signer, source ref, release-contract pin, label/tool requirement, or capacity
-floor.
+Dispatch with `dry-run: true` first. The mutation-free dry-run binds to the protected
+`production` environment, resolves the immutable manifest, and uploads the exact
+redacted canary-first host plan. The controller receives only dedicated read-only
+host-observation inputs from that environment; it does not receive runner-control
+or fleet-write deployment credentials and does not mutate an external system.
+Reject any plan with an unexpected host, baseline, signer, source ref,
+release-contract pin, label/tool requirement, or capacity floor.
 
 The manifest identity is the bare `sha256:<64 lowercase hex>` digest of the canonical
 `release-manifest.json` GitHub Release asset. A registry-qualified reference, image
@@ -180,27 +182,25 @@ runner from scheduling, and escalate to the runner-fleet owner and security owne
 retry until the retained receipt and live state explain every host. Never include secret
 or organization-variable values in an incident record.
 
-## Transport delivery and the remaining host-export prerequisite
+## Transport host-export readiness
 
-[The GitHub transport broker](deployment-github-transport.md) supplies independently
-authenticated release and canary operations. Generate its `transport` artifact at
-the same immutable pin as the other deployment artifacts; the generated contract
-checks its exact bytes. It is a parent-owned operation, not an arbitrary child
-adapter or a replacement for complete fleet evidence.
+[The GitHub transport broker](deployment-github-transport.md) retrieves signed
+release manifests, dispatches representative canary evidence, and now routes
+read-only host observations through `@verjson/cli-cloud@1.0.0`'s
+`runner-host-evidence` API. The generated transport remains a parent-owned
+capability, not an arbitrary child adapter or a replacement for complete fleet
+evidence.
 
-Full controller integration is outstanding, but no longer blocked upstream:
-[verjson-cli-cloud#504](https://github.com/Verjson/verjson-cli-cloud/issues/504) is
-closed and `@verjson/cli-cloud@1.0.0` ships its `runner-host-evidence` export API. What
-remains is local — routing a complete request, including the command's required
-`--read-only-ssh-private-key`, and regenerating the consumer. Until then the broker
-still explicitly rejects `host-export` before acquiring any credential, because the
-pinned CLI inventory command mutates host transaction locks and neither it nor the
-current attester supplies the complete read-only evidence contract. Do not
-call mutating inventory in dry-run or fabricate missing health, drain, release
-identity or capacity facts. The exact dependency is no longer pending:
-`@verjson/cli-cloud@1.0.0` is pinned in `contracts/container-deployment-cli/`, so the
-export API is installed and available here. What is still to do is wiring the parent
-broker into the controller's full requests and retained state and regenerating the
-consumer, tracked by
-[#1451](https://github.com/Verjson/.github/issues/1451). Until that lands #1281,
-runner#197 and #629 remain open.
+The API blocker [verjson-cli-cloud#504](https://github.com/Verjson/verjson-cli-cloud/issues/504)
+is closed; #510 delivered the installed API. Issue #1451 wires baseline,
+capacity, and post-update exports through the controller and canonical
+transport. The workflow binds the observation steps to the protected
+`production` environment and fails closed when required host inputs are absent.
+
+Production still requires operator provisioning and verification of the
+host-export App identity/private key, read-only SSH private key, DigitalOcean
+read-only configuration, and known-host pins. None are generated or assumed by
+this change. Live #1362 consumer exercise and deployment acceptance remain
+unverified; never reuse the fleet-write token or runner-control token for host
+observation. Until live acceptance completes, related readiness work in #1281,
+runner#197, and #629 remains open.

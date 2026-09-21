@@ -60,6 +60,7 @@ cat >"$consumer/container-deployment.json" <<JSON
     "security": {"appId": 202, "installationId": 302, "checkName": "runner-deploy-security-review", "workflowPath": ".github/workflows/container-deployment-security-review.yml"},
     "ai": {"appId": 203, "installationId": 303, "sourceAppId": 403, "sourceCheckName": "canonical-ai-review", "checkName": "runner-deploy-ai-review", "workflowPath": ".github/workflows/container-deployment-ai-review.yml"}
   },
+  "hostEvidenceAuthority": {"appId": 204, "installationId": 304},
   "cliCommand": ["verjson-cloud"],
   "evidenceCommand": ["python3", "scripts/runner-deployment-evidence.py"],
   "probeCommand": ["python3", "scripts/runner-deployment-probe.py"],
@@ -74,6 +75,7 @@ cat >"$consumer/container-deployment.json" <<JSON
     "production": {
       "lane": "gate",
       "project": "existing-fleet",
+      "hostEvidence": {"doContext": "read-only", "doSshKey": "read-only", "maxAgeSeconds": 300},
       "canary": "gha-gate-1",
       "runners": ["gha-gate-1", "gha-gate-2"],
       "minimumAvailable": 1,
@@ -431,8 +433,22 @@ trigger = workflow.get("on", workflow.get(True))
 assert set(trigger) == {"workflow_call"}
 jobs = workflow["jobs"]
 assert jobs["deploy"]["environment"] == "production"
-assert "environment" not in jobs["dry-run"]
+assert jobs["dry-run"]["environment"] == "production"
 assert workflow["concurrency"]["cancel-in-progress"] is False
+host_secrets = {
+    "VERJSON_DEPLOYMENT_HOST_EXPORT_APP_PRIVATE_KEY",
+    "RUNNER_HOST_EVIDENCE_SSH_PRIVATE_KEY",
+    "RUNNER_HOST_EVIDENCE_DOCTL_CONFIG",
+    "RUNNER_HOST_EVIDENCE_KNOWN_HOSTS",
+}
+for job_name in ("dry-run", "deploy"):
+    for step in jobs[job_name]["steps"]:
+        run = step.get("run", "")
+        if ("container_deployment_controller.py collect-evidence" in run
+                or "container_deployment_controller.py execute" in run):
+            assert host_secrets <= set(step.get("env", {})), (
+                f"{job_name}: host-export secrets must be step-scoped to controller operations"
+            )
 assert set(workflow["permissions"]) == {
     "actions", "attestations", "checks", "contents", "packages", "pull-requests"
 }
@@ -483,8 +499,12 @@ mutation_steps = [
 assert len(mutation_steps) == 3
 expected_mutation_env = {
     "CONFIG_PATH": "${{ inputs.config-path }}",
-        "GH_RUNNER_CONTROL_TOKEN": "${{ steps.runner-app-token.outputs.token }}",
-        "DIGITALOCEAN_RUNNER_FLEET_TOKEN": "${{ secrets.DIGITALOCEAN_RUNNER_FLEET_TOKEN }}",
+    "GH_RUNNER_CONTROL_TOKEN": "${{ steps.runner-app-token.outputs.token }}",
+    "DIGITALOCEAN_RUNNER_FLEET_TOKEN": "${{ secrets.DIGITALOCEAN_RUNNER_FLEET_TOKEN }}",
+    "VERJSON_DEPLOYMENT_HOST_EXPORT_APP_PRIVATE_KEY": "${{ secrets.VERJSON_DEPLOYMENT_HOST_EXPORT_APP_PRIVATE_KEY }}",
+    "RUNNER_HOST_EVIDENCE_SSH_PRIVATE_KEY": "${{ secrets.RUNNER_HOST_EVIDENCE_SSH_PRIVATE_KEY }}",
+    "RUNNER_HOST_EVIDENCE_DOCTL_CONFIG": "${{ secrets.RUNNER_HOST_EVIDENCE_DOCTL_CONFIG }}",
+    "RUNNER_HOST_EVIDENCE_KNOWN_HOSTS": "${{ secrets.RUNNER_HOST_EVIDENCE_KNOWN_HOSTS }}",
 }
 assert all(step["env"] == expected_mutation_env for step in mutation_steps)
 mint = next(step for step in jobs["deploy"]["steps"] if step.get("id") == "runner-app-token")

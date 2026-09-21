@@ -42,6 +42,7 @@ concurrency:
 jobs:
   dry-run:
     if: inputs.dry-run
+    environment: production
     runs-on: ${{ github.repository_owner != 'Verjson' && 'ubuntu-24.04' || fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     timeout-minutes: 10
     steps:
@@ -101,6 +102,7 @@ jobs:
           printf 'VERJSON_DEPLOYMENT_CLI=%s\n' "$cli_bin/verjson-cloud" >> "$GITHUB_ENV"
           printf 'VERJSON_DEPLOYMENT_CLI_ROOT=%s\n' \
             "$RUNNER_TEMP/deployment-contract/contracts/container-deployment-cli" >> "$GITHUB_ENV"
+          printf 'VERJSON_DEPLOYMENT_CONTRACT_REF=%s\n' "$CONTRACT_REF" >> "$GITHUB_ENV"
       - name: Produce exact mutation-free host plan
         env:
           ACTION: ${{ inputs.action }}
@@ -110,6 +112,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           MANIFEST_IDENTITY: ${{ inputs.manifest-identity }}
           ROLLBACK_RECEIPT: ${{ inputs.rollback-receipt }}
+          VERJSON_DEPLOYMENT_HOST_EXPORT_APP_PRIVATE_KEY: ${{ secrets.VERJSON_DEPLOYMENT_HOST_EXPORT_APP_PRIVATE_KEY }}
+          RUNNER_HOST_EVIDENCE_SSH_PRIVATE_KEY: ${{ secrets.RUNNER_HOST_EVIDENCE_SSH_PRIVATE_KEY }}
+          RUNNER_HOST_EVIDENCE_DOCTL_CONFIG: ${{ secrets.RUNNER_HOST_EVIDENCE_DOCTL_CONFIG }}
+          RUNNER_HOST_EVIDENCE_KNOWN_HOSTS: ${{ secrets.RUNNER_HOST_EVIDENCE_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
           [[ "$CONTRACT_REF" =~ ^[0-9a-f]{40}$ ]]
@@ -208,6 +214,7 @@ jobs:
           printf 'VERJSON_DEPLOYMENT_CLI=%s\n' "$cli_bin/verjson-cloud" >> "$GITHUB_ENV"
           printf 'VERJSON_DEPLOYMENT_CLI_ROOT=%s\n' \
             "$RUNNER_TEMP/deployment-contract/contracts/container-deployment-cli" >> "$GITHUB_ENV"
+          printf 'VERJSON_DEPLOYMENT_CONTRACT_REF=%s\n' "$CONTRACT_REF" >> "$GITHUB_ENV"
       - name: Collect normalized manifest, fleet, and approval evidence
         env:
           CONFIG_PATH: ${{ inputs.config-path }}
@@ -216,6 +223,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           MANIFEST_IDENTITY: ${{ inputs.manifest-identity }}
           ROLLBACK_RECEIPT: ${{ inputs.rollback-receipt }}
+          VERJSON_DEPLOYMENT_HOST_EXPORT_APP_PRIVATE_KEY: ${{ secrets.VERJSON_DEPLOYMENT_HOST_EXPORT_APP_PRIVATE_KEY }}
+          RUNNER_HOST_EVIDENCE_SSH_PRIVATE_KEY: ${{ secrets.RUNNER_HOST_EVIDENCE_SSH_PRIVATE_KEY }}
+          RUNNER_HOST_EVIDENCE_DOCTL_CONFIG: ${{ secrets.RUNNER_HOST_EVIDENCE_DOCTL_CONFIG }}
+          RUNNER_HOST_EVIDENCE_KNOWN_HOSTS: ${{ secrets.RUNNER_HOST_EVIDENCE_KNOWN_HOSTS }}
           TRIGGERING_ACTOR: ${{ github.triggering_actor }}
         run: |
           set -euo pipefail
@@ -504,6 +515,10 @@ jobs:
           CONFIG_PATH: ${{ inputs.config-path }}
           GH_RUNNER_CONTROL_TOKEN: ${{ steps.runner-app-token.outputs.token }}
           DIGITALOCEAN_RUNNER_FLEET_TOKEN: ${{ secrets.DIGITALOCEAN_RUNNER_FLEET_TOKEN }}
+          VERJSON_DEPLOYMENT_HOST_EXPORT_APP_PRIVATE_KEY: ${{ secrets.VERJSON_DEPLOYMENT_HOST_EXPORT_APP_PRIVATE_KEY }}
+          RUNNER_HOST_EVIDENCE_SSH_PRIVATE_KEY: ${{ secrets.RUNNER_HOST_EVIDENCE_SSH_PRIVATE_KEY }}
+          RUNNER_HOST_EVIDENCE_DOCTL_CONFIG: ${{ secrets.RUNNER_HOST_EVIDENCE_DOCTL_CONFIG }}
+          RUNNER_HOST_EVIDENCE_KNOWN_HOSTS: ${{ secrets.RUNNER_HOST_EVIDENCE_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
           python3 scripts/container_deployment_controller.py execute \
@@ -526,6 +541,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           MANIFEST_IDENTITY: ${{ inputs.manifest-identity }}
           ROLLBACK_RECEIPT: ${{ inputs.rollback-receipt }}
+          VERJSON_DEPLOYMENT_HOST_EXPORT_APP_PRIVATE_KEY: ${{ secrets.VERJSON_DEPLOYMENT_HOST_EXPORT_APP_PRIVATE_KEY }}
+          RUNNER_HOST_EVIDENCE_SSH_PRIVATE_KEY: ${{ secrets.RUNNER_HOST_EVIDENCE_SSH_PRIVATE_KEY }}
+          RUNNER_HOST_EVIDENCE_DOCTL_CONFIG: ${{ secrets.RUNNER_HOST_EVIDENCE_DOCTL_CONFIG }}
+          RUNNER_HOST_EVIDENCE_KNOWN_HOSTS: ${{ secrets.RUNNER_HOST_EVIDENCE_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
           python3 scripts/container_deployment_controller.py collect-evidence \
@@ -551,6 +570,10 @@ jobs:
           CONFIG_PATH: ${{ inputs.config-path }}
           GH_RUNNER_CONTROL_TOKEN: ${{ steps.runner-app-token.outputs.token }}
           DIGITALOCEAN_RUNNER_FLEET_TOKEN: ${{ secrets.DIGITALOCEAN_RUNNER_FLEET_TOKEN }}
+          VERJSON_DEPLOYMENT_HOST_EXPORT_APP_PRIVATE_KEY: ${{ secrets.VERJSON_DEPLOYMENT_HOST_EXPORT_APP_PRIVATE_KEY }}
+          RUNNER_HOST_EVIDENCE_SSH_PRIVATE_KEY: ${{ secrets.RUNNER_HOST_EVIDENCE_SSH_PRIVATE_KEY }}
+          RUNNER_HOST_EVIDENCE_DOCTL_CONFIG: ${{ secrets.RUNNER_HOST_EVIDENCE_DOCTL_CONFIG }}
+          RUNNER_HOST_EVIDENCE_KNOWN_HOSTS: ${{ secrets.RUNNER_HOST_EVIDENCE_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
           python3 scripts/container_deployment_controller.py execute \
@@ -573,6 +596,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           MANIFEST_IDENTITY: ${{ inputs.manifest-identity }}
           ROLLBACK_RECEIPT: ${{ inputs.rollback-receipt }}
+          VERJSON_DEPLOYMENT_HOST_EXPORT_APP_PRIVATE_KEY: ${{ secrets.VERJSON_DEPLOYMENT_HOST_EXPORT_APP_PRIVATE_KEY }}
+          RUNNER_HOST_EVIDENCE_SSH_PRIVATE_KEY: ${{ secrets.RUNNER_HOST_EVIDENCE_SSH_PRIVATE_KEY }}
+          RUNNER_HOST_EVIDENCE_DOCTL_CONFIG: ${{ secrets.RUNNER_HOST_EVIDENCE_DOCTL_CONFIG }}
+          RUNNER_HOST_EVIDENCE_KNOWN_HOSTS: ${{ secrets.RUNNER_HOST_EVIDENCE_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
           python3 scripts/container_deployment_controller.py collect-evidence \
@@ -598,6 +625,10 @@ jobs:
           CONFIG_PATH: ${{ inputs.config-path }}
           GH_RUNNER_CONTROL_TOKEN: ${{ steps.runner-app-token.outputs.token }}
           DIGITALOCEAN_RUNNER_FLEET_TOKEN: ${{ secrets.DIGITALOCEAN_RUNNER_FLEET_TOKEN }}
+          VERJSON_DEPLOYMENT_HOST_EXPORT_APP_PRIVATE_KEY: ${{ secrets.VERJSON_DEPLOYMENT_HOST_EXPORT_APP_PRIVATE_KEY }}
+          RUNNER_HOST_EVIDENCE_SSH_PRIVATE_KEY: ${{ secrets.RUNNER_HOST_EVIDENCE_SSH_PRIVATE_KEY }}
+          RUNNER_HOST_EVIDENCE_DOCTL_CONFIG: ${{ secrets.RUNNER_HOST_EVIDENCE_DOCTL_CONFIG }}
+          RUNNER_HOST_EVIDENCE_KNOWN_HOSTS: ${{ secrets.RUNNER_HOST_EVIDENCE_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
           python3 scripts/container_deployment_controller.py execute \

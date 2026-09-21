@@ -1,14 +1,12 @@
 # Deployment GitHub transport boundary
 
 The generated `scripts/container_deployment_transport.py` supplies authenticated
-release-manifest retrieval and representative GitHub canary dispatch. It is a
-parent-process capability, not an activated deployment adapter. No reusable
-workflow currently invokes it. [Issue #1281](https://github.com/Verjson/.github/issues/1281)
-remains blocked by the CLI-owned read-only host export in
-[verjson-cli-cloud#504](https://github.com/Verjson/verjson-cli-cloud/issues/504).
-The existing controller's child-process and probe interfaces are not yet wired
-to this broker. Consequently this delivery does not establish deployment
-readiness, rollback readiness, or live acceptance for runner issue #197.
+release-manifest retrieval, representative GitHub canary dispatch, and
+read-only runner-host evidence through `@verjson/cli-cloud@1.0.0`'s
+`runner-host-evidence` API. The controller uses the transport for baseline,
+capacity, and post-update observations. Mocked tests establish protocol behavior;
+they do not establish live deployment or rollback readiness. Production host
+credentials and trust pins remain operator-owned prerequisites.
 
 ## Request and result contract
 
@@ -18,7 +16,7 @@ fields fail closed. `validate_request` is the authoritative schema:
 
 | Fields | Required binding |
 | --- | --- |
-| `schemaVersion`, `operation` | Version 1; `manifest`, `probe`, or explicitly unavailable `host-export` |
+| `schemaVersion`, `operation` | Version 1; `manifest`, `probe`, or read-only `host-export` |
 | `attemptId`, `deploymentContractCommit`, `configDigest`, `planDigest` | Deployment run/attempt, immutable contract SHA, admitted configuration digest, approved plan digest (nullable only before plan approval for evidence reads) |
 | `action`, `rollbackOfAttempt` | Deploy with null predecessor, or rollback naming a different run/attempt |
 | `fleetSelector`, `lane` | Separate fleet and lane identifiers, never interchangeable |
@@ -26,6 +24,7 @@ fields fail closed. `validate_request` is the authoritative schema:
 | `github` | Exact repository name/ID and dedicated role App/installation IDs |
 | `release` | Immutable historical signed-source repository, asset ID, raw manifest digest, variant/image digest, source commit/main ref, canonical signer workflow and immutable signer commit |
 | `probe` | Exact runner ID/name/label, unique transaction UUID, workflow ID, reviewed canary tag and commit |
+| `hostExport` | Project, DigitalOcean context and SSH-key selector, exact runner set, freshness limit, observation purpose, and selected runner for post-update evidence |
 
 Every operation carries the complete transaction request, including manifest
 reads. Preplan evidence reads bind the admitted configuration with a null
@@ -71,76 +70,74 @@ reads; probe dispatch is rejected before credentials are obtained.
 
 ## Authority and provisioning prerequisites
 
-The trusted parent must obtain an explicit short-lived App JWT separately for
-each role: `VERJSON_DEPLOYMENT_MANIFEST_APP_JWT` or
-`VERJSON_DEPLOYMENT_PROBE_APP_JWT`. There is no ambient `GH_TOKEN`, SSH agent,
-HOME configuration, DigitalOcean token or runner-control credential fallback.
-The broker validates the live App and installation identities and exact
-permissions, then mints and verifies a token scoped to precisely one repository.
+The trusted parent uses separate short-lived App JWTs for the manifest and
+probe roles: `VERJSON_DEPLOYMENT_MANIFEST_APP_JWT` and
+`VERJSON_DEPLOYMENT_PROBE_APP_JWT`. Host export uses a separate App private key;
+the broker mints its short-lived JWT internally. No ambient `GH_TOKEN`, SSH
+agent, HOME configuration, DigitalOcean token, or runner-control credential is
+authority for host observation. The broker validates each live App installation
+and its exact permissions, then scopes each installation token to one
+repository.
 
-| Role | Exact App permissions including implicit metadata |
+| Role | Exact App permissions, including implicit metadata |
 | --- | --- |
 | Manifest | `metadata: read`, `contents: read`, `attestations: read` on the release repository |
 | Probe | `metadata: read`, `contents: read`, `actions: write` on `Verjson/.github` |
+| Host export | `metadata: read`, `contents: read`, `attestations: read`, `organization_self_hosted_runners: read` on the observation repository |
 
-Installation selection must be `selected`; broader App permissions are rejected
-even if a proposed token could be narrowed. The existing runner-control App and
-review-publisher Apps are not substitutes. No live identities are invented by
-the generator, and this change creates no Apps, keys, environments or policies.
+The host-export App identity is reviewed configuration; its private key is
+`VERJSON_DEPLOYMENT_HOST_EXPORT_APP_PRIVATE_KEY`. The reusable workflow reads
+host credentials from the existing protected `production` environment and maps
+them directly to controller steps. The SSH key is written to a mode-0600
+private temporary file and passed only as the required
+`--read-only-ssh-private-key <path>` argument. The DigitalOcean read-only
+configuration and verified known-host pins are isolated in a temporary home.
+These values never enter the transport request, receipts, logs, or artifacts.
+Missing inputs fail closed. The fleet-write token and runner-control token are
+never reused for host observation.
 
-Before workflow wiring, provision reviewed role identities and environment-only
-private keys under the main-only environment contract from ADR 0166. The reusable
-key-consuming parent job must bind its required role environment and read its key
-there directly; callers must not map keys or use `secrets: inherit`. Audit and
-remove broader repository/organization key copies through the staged rollout;
-environment binding alone cannot prove secret provenance. A protected parent
-must mint the JWT, retain it outside all child environments, and enforce the
-selected transaction request. Do not forward the JWT or probe write token to
-host readers, mutation subprocesses, or manifest-verification children. Manifest
-verification receives only the dedicated read token. HTTP redirects never carry
-Authorization to artifact storage, and failures suppress credential-bearing
-bodies, signed URLs and subprocess stderr.
+Installation selection must be `selected`; broader App permissions are
+rejected even if the proposed token could be narrowed. Existing runner-control
+and review-publisher Apps are not substitutes. The generator creates no Apps,
+keys, environments, or policies. Operators must provision the reviewed host
+identity and observation values before live use. Keep credentials out of
+caller mappings and do not use `secrets: inherit`. Audit and remove broader
+repository or organization secret copies through staged rollout; environment
+binding alone cannot prove secret provenance.
 
-The controller rechecks every configured runner immediately before retaining the
-admitted receipt or invoking a mutating update. Each runner must be online, idle,
-admitted to the reviewed group, and carry every configured label and tool. Workload
-owned evidence and probe children receive only the adapter environment allowlist
-(`PATH`, locale, temporary-directory, and TLS certificate settings). They receive
-no `HOME`, SSH agent socket, deployment CLI locator, provider credential, or GitHub
-runner-control credential. The deployment CLI child receives its provider and
-runner-control credentials explicitly in its separate control environment, and
-those values are never forwarded to workload adapters.
+The broker retains App JWTs in its trusted parent process and never forwards an
+App JWT or the probe write token to host readers, mutation subprocesses, or
+manifest-verification children. Manifest verification receives only its
+read-scoped token. HTTP redirects never carry Authorization; failures suppress
+credential-bearing bodies, signed URLs, and subprocess stderr. The controller
+rechecks each configured runner before retaining an admitted receipt and
+invoking a mutating update. Each runner must be online, idle, in the admitted
+reviewed group, and carry the configured labels and tools. Workload-owned probe
+children receive only the adapter environment allowlist (`PATH`, locale,
+temporary-directory, and TLS certificate settings); they receive no `HOME`,
+SSH agent socket, deployment CLI locator, provider credential, or GitHub
+runner-control credential. The deployment CLI receives its provider
+runner-control credentials only in its separate control environment; those
+values never reach workload adapters.
 
-## Remaining integration work
+## Live acceptance prerequisites
 
-`@verjson/cli-cloud@1.0.0` ships the supported export API that
-[verjson-cli-cloud#504](https://github.com/Verjson/verjson-cli-cloud/issues/504)
-owned — `runner-host-evidence`, documented as observation-only — and that issue is
-closed. The upstream blocker is therefore cleared; the broker's rejection is not.
+`@verjson/cli-cloud@1.0.0` ships the observation-only
+`runner-host-evidence` API tracked by
+[verjson-cli-cloud#504](https://github.com/Verjson/verjson-cli-cloud/issues/504).
+Issue #1451 wires that API through the canonical transport and controller for
+baseline, capacity, and post-update evidence. The broker no longer rejects
+`host-export`.
 
-This broker still rejects `host-export` before reading credentials, because nothing
-here constructs a complete request for that command yet: it takes a required
-`--read-only-ssh-private-key`, and the controller has no path that routes a credential
-to it. Failing closed is correct until that wiring exists. The alternative the
-rejection guards against is unchanged — guessing private host lifecycle paths, or
-interpreting the existing runner inventory as a read when it acquires and releases a
-transaction lock over SSH and omits required health/tool/drain/lock evidence.
+The current runner production environment does not contain the dedicated host
+export App private key, read-only SSH private key, DigitalOcean read-only
+configuration, or verified known-host pins. Until operators provision and
+validate those inputs, the controller fails closed before claiming evidence.
+The #1362 consumer exercise and real deployment/rollback acceptance remain
+unverified. Do not substitute fleet-write or runner-control credentials, and do
+not invent host identities or trust pins.
 
-After #504 lands, the controller integration must construct this complete
-request from the admitted configuration and plan; route manifest/probe operations
-through the trusted parent; give host readers only explicit reviewed host trust
-and read authority; validate export freshness and every host/runner identity;
-and bind each baseline's `releaseManifestBytes` to its attested identity. It must
-replace the old probe runner/timeout interface and weak receipt boundary rather
-than treating this module's existence as an active path. Resume must reconcile
-the durable dispatch intent and reject a receipt for another attempt, action,
-rollback predecessor, plan, lane, fleet or contract.
-
-The workflow then needs protected issuer environments, required reviewed inputs,
-the canonical canary runner-group admission, and generated adopter repinning.
-Owner-supplied identities, trusted host access and two authorized healthy hosts
-remain live prerequisites. Tests with mocked external boundaries prove protocol
-behavior only. Final acceptance still requires real deployment, interrupted
-transaction reconciliation and rollback receipts. GitLab remains a future forge
-adapter over shared portable mechanics under ADR 0162, without a speculative
-shared fleet controller or GitLab CE deployment.
+The transport's unit and contract tests use mocked external boundaries. They do
+not prove live GitHub App, DigitalOcean, SSH, host-health, capacity, rollback,
+or interrupted-transaction behavior. GitLab remains a future forge adapter
+over shared portable mechanics under ADR 0162.

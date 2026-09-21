@@ -31,7 +31,7 @@ def release_manifest(version: str, image_digit: str) -> dict:
     return {
         "schemaVersion": 1,
         "releaseVersion": version,
-        "source": {"repository": "Verjson/verjson-github-runner"},
+        "source": {"repository": "Verjson/verjson-github-runner", "commit": "c" * 40},
         "release": {
             "workflow": {
                 "path": ".github/workflows/container-release.yml",
@@ -61,6 +61,8 @@ def bind_manifest_bytes(candidate: dict, raw: str) -> None:
     candidate["manifestBytes"] = raw
     candidate["manifestIdentity"] = "sha256:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
     candidate["attestation"]["subjectDigest"] = candidate["manifestIdentity"]
+    if "hostExport" in candidate:
+        refresh_host_export_binding(candidate)
 
 
 def published_format_evidence() -> dict:
@@ -74,6 +76,7 @@ def published_format_evidence() -> dict:
         runner["manifestIdentity"] = digest
         runner["releaseManifest"] = copy.deepcopy(baseline)
         runner["releaseManifestBytes"] = raw
+    refresh_host_export_binding(candidate)
     return candidate
 
 
@@ -95,10 +98,16 @@ def configuration() -> dict:
             "contractCommit": "a" * 40,
             "variant": "runner",
         },
+        "hostEvidenceAuthority": {"appId": 204, "installationId": 304},
         "fleets": {
             "production": {
                 "lane": "gate",
                 "project": "runner-project",
+                "hostEvidence": {
+                    "doContext": "readonly",
+                    "doSshKey": "runner-key",
+                    "maxAgeSeconds": 300,
+                },
                 "canary": "gha-gate-1",
                 "runners": ["gha-gate-1", "gha-gate-2", "gha-gate-3"],
                 "minimumAvailable": 2,
@@ -119,7 +128,7 @@ def evidence() -> dict:
     selected = manifest_release(manifest)
     baseline_manifest = release_manifest("1.0.0", "1")
     baseline = manifest_release(baseline_manifest)
-    return {
+    candidate = {
         "manifestIdentity": selected["manifestDigest"],
         "manifest": manifest,
         "attestation": {
@@ -209,6 +218,201 @@ def evidence() -> dict:
             ]
         },
     }
+    target_bytes = json.dumps(candidate["manifest"], indent=2, sort_keys=True) + "\n"
+    target_identity = "sha256:" + hashlib.sha256(target_bytes.encode()).hexdigest()
+    candidate["manifestBytes"] = target_bytes
+    candidate["manifestIdentity"] = target_identity
+    candidate["attestation"]["subjectDigest"] = target_identity
+    candidate["releaseAssetId"] = 404
+    baseline_bytes = json.dumps(baseline_manifest, indent=2, sort_keys=True) + "\n"
+    baseline_identity = "sha256:" + hashlib.sha256(baseline_bytes.encode()).hexdigest()
+    attestations = []
+    for runner in candidate["fleet"]["runners"]:
+        runner["releaseManifestBytes"] = baseline_bytes
+        runner["manifestIdentity"] = baseline_identity
+        runner["release"]["manifestDigest"] = baseline_identity
+        attestations.append({
+            "runnerName": runner["name"],
+            "manifestIdentity": baseline_identity,
+            "repository": "Verjson/verjson-github-runner",
+            "sourceRef": "refs/heads/main",
+            "signerWorkflow": "Verjson/.github/.github/workflows/container-release.yml",
+            "signerCommit": "a" * 40,
+            "verified": True,
+        })
+    host_request = {
+        "schemaVersion": 1,
+        "operation": "host-export",
+        "attemptId": "9001.1",
+        "fleetSelector": "production",
+        "lane": "gate",
+        "issuedAt": "2026-09-21T00:00:00Z",
+        "expiresAt": "2026-09-21T00:15:00Z",
+        "deploymentContractCommit": "a" * 40,
+        "configDigest": controller.canonical_digest(configuration()),
+        "planDigest": None,
+        "action": "deploy",
+        "rollbackOfAttempt": None,
+        "github": {
+            "repository": "Verjson/verjson-github-runner",
+            "repositoryId": 42,
+            "appId": 204,
+            "installationId": 304,
+        },
+        "release": {
+            "repository": "Verjson/verjson-github-runner",
+            "assetId": 404,
+            "manifestDigest": target_identity,
+            "variant": "runner",
+            "imageDigest": "sha256:" + "3" * 64,
+            "sourceCommit": "c" * 40,
+            "sourceRef": "refs/heads/main",
+            "signerWorkflow": "Verjson/.github/.github/workflows/container-release.yml",
+            "signerCommit": "a" * 40,
+        },
+        "hostExport": {
+            "project": "runner-project",
+            "doContext": "readonly",
+            "doSshKey": "runner-key",
+            "runnerNames": [runner["name"] for runner in candidate["fleet"]["runners"]],
+            "maxAgeSeconds": 300,
+            "purpose": "baseline",
+            "runnerName": None,
+        },
+    }
+    candidate["hostExportRequest"] = host_request
+    candidate["hostExport"] = {
+        "schemaVersion": 1,
+        "requestDigest": controller.canonical_digest(host_request),
+        "outcome": "passed",
+        "hostEvidence": {
+            "operation": "host-export",
+            "manifestIdentity": target_identity,
+            "manifestBytes": target_bytes,
+            "manifest": copy.deepcopy(candidate["manifest"]),
+            "fleet": copy.deepcopy(candidate["fleet"]),
+        },
+        "baselineAttestations": attestations,
+    }
+    return candidate
+
+
+def refresh_host_export_binding(candidate: dict, config: dict | None = None) -> None:
+    request = candidate["hostExportRequest"]
+    config = config or configuration()
+    expected = config["expectedRelease"]
+    request["configDigest"] = controller.canonical_digest(config)
+    manifest = candidate["manifest"]
+    source = manifest["source"]
+    workflow = manifest["release"]["workflow"]
+    target_images = manifest["images"]
+    target_variant = expected["variant"]
+    if not any(item["variant"] == target_variant for item in target_images):
+        target_variant = target_images[0]["variant"]
+    image = next(item for item in target_images if item["variant"] == target_variant)
+    request["release"].update({
+        "repository": expected["sourceRepository"],
+        "assetId": candidate["releaseAssetId"],
+        "manifestDigest": candidate["manifestIdentity"],
+        "variant": target_variant,
+        "imageDigest": image["indexDigest"],
+        "sourceCommit": source["commit"],
+        "sourceRef": expected["sourceRef"],
+        "signerWorkflow": expected["signerWorkflow"],
+        "signerCommit": workflow["contractCommit"],
+    })
+    request["hostExport"]["runnerNames"] = [
+        runner["name"] for runner in candidate["fleet"]["runners"]
+    ]
+    for runner in candidate["fleet"]["runners"]:
+        raw = json.dumps(runner["releaseManifest"], indent=2, sort_keys=True) + "\n"
+        identity = "sha256:" + hashlib.sha256(raw.encode()).hexdigest()
+        runner["releaseManifestBytes"] = raw
+        runner["manifestIdentity"] = identity
+        runner["release"]["manifestDigest"] = identity
+        runner_images = runner["releaseManifest"]["images"]
+        runner_variant = target_variant
+        if not any(item["variant"] == runner_variant for item in runner_images):
+            runner_variant = runner_images[0]["variant"]
+        runner_image = next(item for item in runner_images if item["variant"] == runner_variant)
+        runner["deployedDigest"] = runner_image["indexDigest"]
+    candidate["hostExport"]["requestDigest"] = controller.canonical_digest(request)
+    candidate["hostExport"]["hostEvidence"].update({
+        "manifestIdentity": candidate["manifestIdentity"],
+        "manifestBytes": candidate["manifestBytes"],
+        "manifest": copy.deepcopy(manifest),
+        "fleet": copy.deepcopy(candidate["fleet"]),
+    })
+    candidate["hostExport"]["baselineAttestations"] = [
+        {
+            "runnerName": runner["name"],
+            "manifestIdentity": runner["manifestIdentity"],
+            "repository": expected["sourceRepository"],
+            "sourceRef": expected["sourceRef"],
+            "signerWorkflow": expected["signerWorkflow"],
+            "signerCommit": runner["releaseManifest"]["release"]["workflow"]["contractCommit"],
+            "verified": True,
+        }
+        for runner in candidate["fleet"]["runners"]
+    ]
+
+
+class HostExportRequestTests(unittest.TestCase):
+    def test_host_export_requests_bind_the_manifest_fleet_and_admitted_plan(self):
+        config = configuration()
+        candidate = evidence()
+        contract_ref = "b" * 40
+        plan = controller.build_plan(
+            config,
+            candidate,
+            "production",
+            deployment_contract_ref=contract_ref,
+        )
+
+        with mock.patch.dict(
+            controller.os.environ,
+            {"VERJSON_DEPLOYMENT_CONTRACT_REF": contract_ref},
+            clear=False,
+        ):
+            baseline = controller._build_host_export_request(
+                config, candidate, "production"
+            )
+        post_update = controller._build_host_export_request(
+            config,
+            candidate,
+            "production",
+            purpose="post-update",
+            runner_name="gha-gate-1",
+            plan=plan,
+        )
+        capacity = controller._build_host_export_request(
+            config, candidate, "production", purpose="capacity", plan=plan
+        )
+
+        self.assertEqual("host-export", baseline["operation"])
+        self.assertEqual(candidate["manifestIdentity"], baseline["release"]["manifestDigest"])
+        self.assertEqual(["gha-gate-1", "gha-gate-2", "gha-gate-3"], baseline["hostExport"]["runnerNames"])
+        self.assertEqual("baseline", baseline["hostExport"]["purpose"])
+        self.assertEqual("gha-gate-1", post_update["hostExport"]["runnerName"])
+        self.assertEqual(controller.canonical_digest(plan), post_update["planDigest"])
+        self.assertEqual("capacity", capacity["hostExport"]["purpose"])
+        self.assertIsNone(capacity["hostExport"]["runnerName"])
+        self.assertEqual(contract_ref, baseline["deploymentContractCommit"])
+        self.assertNotIn("ssh-private-key-material", json.dumps(baseline))
+
+    def test_host_export_collection_stops_before_legacy_evidence_when_authority_is_missing(self):
+        config = configuration()
+        candidate = evidence()
+        with mock.patch.dict(controller.os.environ, {}, clear=True):
+            with mock.patch.object(controller.ProcessAdapter, "_run") as run:
+                with self.assertRaisesRegex(
+                    controller.DeploymentError,
+                    "read-only host observation authority not provisioned",
+                ):
+                    controller._collect_evidence(
+                        config, candidate["manifestIdentity"], "production"
+                    )
+        run.assert_not_called()
 
 
 class FakeAdapter:
@@ -290,6 +494,7 @@ class DeploymentPlannerTests(unittest.TestCase):
         config["expectedRelease"]["contractCommit"] = contract
         config["expectedRelease"]["variant"] = "base"
         candidate["attestation"]["contractCommit"] = contract
+        refresh_host_export_binding(candidate, config)
 
         plan = controller.build_plan(config, candidate, "production")
 
@@ -456,9 +661,11 @@ class DeploymentPlannerTests(unittest.TestCase):
         fleet["drainTimeoutSeconds"] = 1_000
         fleet["probeTimeoutSeconds"] = 900
         fleet["observationSeconds"] = 900
+        fixture = evidence()
+        refresh_host_export_binding(fixture, candidate)
 
         with self.assertRaisesRegex(controller.DeploymentError, "job margin"):
-            controller.build_plan(candidate, evidence(), "production")
+            controller.build_plan(candidate, fixture, "production")
 
     def test_rejects_inventory_drift_and_insufficient_capacity(self):
         missing = evidence()
@@ -468,8 +675,10 @@ class DeploymentPlannerTests(unittest.TestCase):
 
         insufficient = configuration()
         insufficient["fleets"]["production"]["minimumAvailable"] = 3
+        insufficient_evidence = evidence()
+        refresh_host_export_binding(insufficient_evidence, insufficient)
         with self.assertRaisesRegex(controller.DeploymentError, "capacity"):
-            controller.build_plan(insufficient, evidence(), "production")
+            controller.build_plan(insufficient, insufficient_evidence, "production")
 
     def test_rejects_unexpected_fleet_baseline(self):
         candidate = evidence()
@@ -948,6 +1157,10 @@ class DeploymentExecutionTests(unittest.TestCase):
         rollback_evidence["attestation"]["subjectDigest"] = rollback_evidence[
             "fleet"
         ]["runners"][0]["release"]["manifestDigest"]
+        bind_manifest_bytes(
+            rollback_evidence,
+            json.dumps(rollback_evidence["manifest"], indent=2, sort_keys=True) + "\n",
+        )
 
         plan = controller.build_plan(
             configuration(),
@@ -993,6 +1206,10 @@ class DeploymentExecutionTests(unittest.TestCase):
         rollback_evidence["attestation"]["subjectDigest"] = rollback_evidence[
             "fleet"
         ]["runners"][0]["release"]["manifestDigest"]
+        bind_manifest_bytes(
+            rollback_evidence,
+            json.dumps(rollback_evidence["manifest"], indent=2, sort_keys=True) + "\n",
+        )
         plan = controller.build_plan(
             configuration(),
             rollback_evidence,
@@ -1029,6 +1246,9 @@ class DeploymentExecutionTests(unittest.TestCase):
         rollback_evidence["fleet"]["runners"][0]["release"] = copy.deepcopy(
             source["selectedRelease"]
         )
+        rollback_evidence["fleet"]["runners"][0]["releaseManifest"] = release_manifest(
+            source["selectedRelease"]["releaseVersion"], "3"
+        )
         rollback_evidence["fleet"]["runners"][0]["manifestIdentity"] = source_plan[
             "manifestIdentity"
         ]
@@ -1039,6 +1259,11 @@ class DeploymentExecutionTests(unittest.TestCase):
         rollback_evidence["attestation"]["subjectDigest"] = rollback_evidence[
             "fleet"
         ]["runners"][1]["release"]["manifestDigest"]
+        bind_manifest_bytes(
+            rollback_evidence,
+            json.dumps(rollback_evidence["manifest"], indent=2, sort_keys=True) + "\n",
+        )
+        refresh_host_export_binding(rollback_evidence)
 
         plan = controller.build_plan(
             configuration(),
@@ -1421,7 +1646,7 @@ class DeploymentExecutionTests(unittest.TestCase):
         live_runner["releaseManifest"] = release_manifest("1.0.0", "2")
 
         with self.assertRaisesRegex(
-            controller.DeploymentError, "canonical bytes differ from release identity"
+            controller.DeploymentError, "canonical bytes differ from structured manifest"
         ):
             controller.reconcile_unknown_state(
                 plan, interrupted, live, configuration()
@@ -1451,7 +1676,9 @@ class DeploymentExecutionTests(unittest.TestCase):
                 clear=False,
             ), mock.patch.object(
                 controller.subprocess, "run", return_value=completed
-            ) as run, mock.patch.object(controller.ProcessAdapter, "_run", return_value={}):
+            ) as run, mock.patch.object(
+                adapter, "_host_export", return_value={"hostEvidence": {}}
+            ):
                 adapter.update_runner(
                     "gha-gate-1",
                     "sha256:" + "2" * 64,

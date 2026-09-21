@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Credential-separated GitHub transport; host observation remains blocked by CLI #504."""
+"""Credential-separated GitHub transport for deployment evidence and probes."""
 import argparse
+import base64
 import hashlib
 import io
 import json
@@ -22,7 +23,19 @@ CANARY_REPOSITORY = 'Verjson/.github'
 PERMISSIONS = {
     'manifest': {'metadata': 'read', 'contents': 'read', 'attestations': 'read'},
     'probe': {'metadata': 'read', 'contents': 'read', 'actions': 'write'},
+    'host-export': {
+        'metadata': 'read',
+        'contents': 'read',
+        'attestations': 'read',
+        'organization_self_hosted_runners': 'read',
+    },
 }
+HOST_EXPORT_SECRET_ENV = (
+    'RUNNER_HOST_EVIDENCE_SSH_PRIVATE_KEY',
+    'RUNNER_HOST_EVIDENCE_DOCTL_CONFIG',
+    'RUNNER_HOST_EVIDENCE_KNOWN_HOSTS',
+)
+HOST_EXPORT_APP_KEY_ENV = 'VERJSON_DEPLOYMENT_HOST_EXPORT_APP_PRIVATE_KEY'
 RUNS_PAGE_SIZE = 100
 MAX_RUN_RECORDS = 1_000
 MAX_RUN_REQUESTS = 40
@@ -88,11 +101,16 @@ def decode(raw):
 
 
 def validate_request(value, now):
-    object_keys(value, ('schemaVersion', 'operation', 'attemptId', 'fleetSelector', 'lane',
-                       'issuedAt', 'expiresAt', 'deploymentContractCommit', 'configDigest', 'planDigest', 'action', 'rollbackOfAttempt',
-                       'github', 'release', 'probe'), 'request')
+    require(isinstance(value, dict), 'request must be an object')
+    operation = value.get('operation')
+    common = ('schemaVersion', 'operation', 'attemptId', 'fleetSelector', 'lane',
+              'issuedAt', 'expiresAt', 'deploymentContractCommit', 'configDigest',
+              'planDigest', 'action', 'rollbackOfAttempt', 'github', 'release')
+    if operation == 'host-export':
+        object_keys(value, (*common, 'hostExport'), 'request')
+    else:
+        object_keys(value, (*common, 'probe'), 'request')
     require(value['schemaVersion'] == 1 and type(value['schemaVersion']) is int, 'unsupported request version')
-    operation = value['operation']
     require(operation in ('manifest', 'probe', 'host-export'), 'unsupported transport operation')
     require(isinstance(value['attemptId'], str) and re.fullmatch(r'[1-9][0-9]*\.[1-9][0-9]*', value['attemptId']), 'attempt identity is invalid')
     require(isinstance(value['deploymentContractCommit'], str) and SHA.fullmatch(value['deploymentContractCommit']), 'deployment contract must be immutable')
@@ -128,14 +146,33 @@ def validate_request(value, now):
     require(release['sourceRef'] == 'refs/heads/main', 'release source must be main')
     require(release['signerWorkflow'] == 'Verjson/.github/.github/workflows/container-release.yml', 'release signer differs')
     require(isinstance(release['variant'], str) and re.fullmatch(r'[a-z][a-z0-9-]{0,63}', release['variant']), 'release variant is invalid')
-    probe = value['probe']
-    object_keys(probe, ('runnerId', 'runnerName', 'runnerLabel', 'transactionNonce', 'workflowId', 'workflowRef', 'workflowCommit'), 'probe')
-    require(positive(probe['runnerId']) and positive(probe['workflowId']), 'exact runner/workflow IDs are required')
-    for field in ('runnerName', 'runnerLabel'):
-        require(isinstance(probe[field], str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}', probe[field]), f'{field} is invalid')
-    require(isinstance(probe['transactionNonce'], str) and re.fullmatch(r'[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}', probe['transactionNonce']), 'transaction nonce must be an exact UUID')
-    require(isinstance(probe['workflowCommit'], str) and SHA.fullmatch(probe['workflowCommit']), 'canary workflow commit must be immutable')
-    require(isinstance(probe['workflowRef'], str) and re.fullmatch(r'refs/tags/runner-canary-v[0-9]+\.[0-9]+\.[0-9]+', probe['workflowRef']), 'reviewed canary tag is required')
+    if operation != 'host-export':
+        probe = value['probe']
+        object_keys(probe, ('runnerId', 'runnerName', 'runnerLabel', 'transactionNonce', 'workflowId', 'workflowRef', 'workflowCommit'), 'probe')
+        require(positive(probe['runnerId']) and positive(probe['workflowId']), 'exact runner/workflow IDs are required')
+        for field in ('runnerName', 'runnerLabel'):
+            require(isinstance(probe[field], str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}', probe[field]), f'{field} is invalid')
+        require(isinstance(probe['transactionNonce'], str) and re.fullmatch(r'[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}', probe['transactionNonce']), 'transaction nonce must be an exact UUID')
+        require(isinstance(probe['workflowCommit'], str) and SHA.fullmatch(probe['workflowCommit']), 'canary workflow commit must be immutable')
+        require(isinstance(probe['workflowRef'], str) and re.fullmatch(r'refs/tags/runner-canary-v[0-9]+\.[0-9]+\.[0-9]+', probe['workflowRef']), 'reviewed canary tag is required')
+    if operation == 'host-export':
+        host = value['hostExport']
+        object_keys(host, ('project', 'doContext', 'doSshKey', 'runnerNames', 'maxAgeSeconds', 'purpose', 'runnerName'), 'host export')
+        for field in ('project', 'doContext', 'doSshKey'):
+            require(isinstance(host[field], str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}', host[field]), f'host export {field} is invalid')
+        names = host['runnerNames']
+        require(isinstance(names, list) and 1 <= len(names) <= 3 and all(
+            isinstance(name, str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}', name)
+            for name in names
+        ) and len(set(names)) == len(names), 'host export runner names are invalid')
+        age = host['maxAgeSeconds']
+        require(type(age) is int and 1 <= age <= 3600, 'host export maximum age is invalid')
+        require(host['purpose'] in ('baseline', 'post-update', 'capacity'), 'host export purpose is invalid')
+        runner_name = host['runnerName']
+        require((host['purpose'] == 'post-update' and isinstance(runner_name, str)
+                 and runner_name in names)
+                or (host['purpose'] != 'post-update' and runner_name is None),
+                'host export runner selection differs from purpose')
     if operation == 'probe':
         require(github['repository'] == CANARY_REPOSITORY, 'canary dispatch targets another repository')
     return value
@@ -210,6 +247,38 @@ def installation_token(api, value, jwt, now):
     repository = repositories['repositories'][0]
     require(positive(repository.get('id')) and repository['id'] == authority['repositoryId'] and repository.get('full_name') == authority['repository'], 'installation token repository differs')
     return token
+
+
+def _base64url(raw):
+    return base64.urlsafe_b64encode(raw).rstrip(b'=').decode('ascii')
+
+
+def mint_host_export_app_jwt(app_id, private_key, now, run=subprocess.run):
+    require(positive(app_id), 'host export App identity is invalid')
+    require(isinstance(private_key, str) and private_key.startswith('-----BEGIN ')
+            and '\0' not in private_key, 'dedicated host export App private key is unavailable')
+    issued_at = int(now) - 30
+    header = _base64url(canonical({'alg': 'RS256', 'typ': 'JWT'}))
+    payload = _base64url(canonical({'iat': issued_at, 'exp': issued_at + 540, 'iss': str(app_id)}))
+    signing_input = f'{header}.{payload}'.encode('ascii')
+    with tempfile.TemporaryDirectory(prefix='deployment-host-app-key-') as temporary:
+        key_path = Path(temporary) / 'app-private-key.pem'
+        _write_private_file(key_path, private_key, 64_000, 'host export App private key')
+        try:
+            completed = run(
+                ['openssl', 'dgst', '-sha256', '-sign', str(key_path)],
+                input=signing_input,
+                check=False,
+                capture_output=True,
+                timeout=30,
+                env={'PATH': os.environ.get('PATH', '/usr/bin:/bin')},
+            )
+        except (OSError, subprocess.SubprocessError):
+            raise TransportError('host export App JWT could not be signed') from None
+        require(completed.returncode == 0 and completed.stdout,
+                'host export App JWT could not be signed')
+    signature = _base64url(completed.stdout)
+    return f'{header}.{payload}.{signature}'
 
 
 def fetch_manifest(api, value, token, run=subprocess.run, clock=time.time):
@@ -303,6 +372,231 @@ def validate_probe_receipt(value, receipt, run_record, job, artifact, now):
     unsigned = dict(receipt) | {'artifact': {'name': 'runner-promotion-receipt', 'contentDigest': ''}}
     require(receipt.get('artifact', {}).get('name') == 'runner-promotion-receipt' and digest(canonical(unsigned)) == self_digest, 'receipt content digest differs')
     require(artifact.get('expired') is False and positive(artifact.get('workflow_run', {}).get('id')) and artifact['workflow_run']['id'] == run_record['id'], 'artifact run provenance differs')
+
+
+def _write_private_file(path, contents, maximum, description):
+    require(isinstance(contents, str) and contents and '\0' not in contents,
+            f'{description} is unavailable')
+    raw = contents.encode('utf-8')
+    require(len(raw) <= maximum, f'{description} exceeds its size limit')
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, 'wb') as stream:
+        stream.write(raw)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _deployment_cli():
+    executable = os.environ.get('VERJSON_DEPLOYMENT_CLI')
+    root = os.environ.get('VERJSON_DEPLOYMENT_CLI_ROOT')
+    require(bool(executable and root), 'contract-acquired verjson-cloud executable is unavailable')
+    try:
+        path = Path(executable).resolve(strict=True)
+        acquired_root = Path(root).resolve(strict=True)
+        path.relative_to(acquired_root)
+    except (OSError, ValueError):
+        raise TransportError('deployment CLI escapes its immutable acquisition root') from None
+    require(Path(executable).is_absolute() and Path(root).is_absolute()
+            and os.access(path, os.X_OK), 'contract-acquired verjson-cloud executable is invalid')
+    return str(path)
+
+
+def _verify_host_baseline(raw, runner, value, token, home, run):
+    require(isinstance(raw, str) and len(raw.encode('utf-8')) <= MAX_BYTES,
+            'runner baseline manifest is invalid')
+    encoded = raw.encode('utf-8')
+    identity = digest(encoded)
+    require(runner.get('manifestIdentity') == identity
+            and runner.get('release', {}).get('manifestDigest') == identity,
+            'runner baseline manifest identity differs')
+    manifest = decode(encoded)
+    require(manifest == runner.get('releaseManifest'),
+            'runner baseline manifest bytes differ from parsed evidence')
+    source = manifest.get('source')
+    workflow = manifest.get('release', {}).get('workflow')
+    require(isinstance(source, dict)
+            and source.get('repository') == value['release']['repository']
+            and isinstance(source.get('commit'), str)
+            and SHA.fullmatch(source['commit']),
+            'runner baseline manifest source differs')
+    require(isinstance(workflow, dict)
+            and workflow.get('path') == '.github/workflows/container-release.yml'
+            and isinstance(workflow.get('contractCommit'), str)
+            and SHA.fullmatch(workflow['contractCommit']),
+            'runner baseline manifest signer differs')
+    require(manifest.get('releaseVersion') == runner.get('release', {}).get('releaseVersion'),
+            'runner baseline release version differs')
+    images = manifest.get('images')
+    selected = [image for image in images if isinstance(image, dict)
+                and image.get('variant') == value['release']['variant']] if isinstance(images, list) else []
+    require(len(selected) == 1
+            and selected[0].get('indexDigest') == runner.get('deployedDigest'),
+            'runner deployed image differs from its baseline manifest')
+
+    manifest_path = Path(home) / f'baseline-{runner["name"]}.json'
+    _write_private_file(manifest_path, raw, MAX_BYTES, 'runner baseline manifest')
+    environment = {
+        'PATH': os.environ.get('PATH', '/usr/bin:/bin'),
+        'HOME': str(home),
+        'GH_TOKEN': token,
+        'GH_HOST': 'github.com',
+    }
+    command = [
+        'gh', 'attestation', 'verify', str(manifest_path),
+        '--repo', value['release']['repository'],
+        '--signer-workflow', value['release']['signerWorkflow'],
+        '--signer-digest', workflow['contractCommit'],
+        '--source-ref', value['release']['sourceRef'],
+        '--source-digest', source['commit'],
+        '--format', 'json',
+    ]
+    try:
+        completed = run(command, check=False, capture_output=True, text=True,
+                        env=environment, timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        raise TransportError('runner baseline attestation verification failed') from None
+    require(completed.returncode == 0, 'runner baseline attestation verification failed')
+    return {
+        'runnerName': runner['name'],
+        'manifestIdentity': identity,
+        'repository': value['release']['repository'],
+        'sourceRef': value['release']['sourceRef'],
+        'signerWorkflow': value['release']['signerWorkflow'],
+        'signerCommit': workflow['contractCommit'],
+        'verified': True,
+    }
+
+
+def host_export(value, token, manifest_result=None, *, run=subprocess.run, clock=time.time):
+    validate_request(value, clock())
+    host = value['hostExport']
+    purpose = host['purpose']
+    if purpose != 'capacity':
+        require(isinstance(manifest_result, dict)
+                and manifest_result.get('manifestIdentity') == value['release']['manifestDigest'],
+                'verified release manifest is unavailable')
+    secrets = {name: os.environ.get(name) for name in HOST_EXPORT_SECRET_ENV}
+    require(all(isinstance(secrets[name], str) and secrets[name]
+                for name in HOST_EXPORT_SECRET_ENV),
+            'read-only host observation credentials are unavailable')
+    cli = _deployment_cli()
+    attestations = []
+    with tempfile.TemporaryDirectory(prefix='deployment-host-export-') as temporary:
+        root = Path(temporary)
+        home = root / 'home'
+        doctl_config = home / '.config' / 'doctl' / 'config.yaml'
+        known_hosts = home / '.verjson-digitalocean-known-hosts'
+        private_key = root / 'read-only-ssh-private-key'
+        manifest_path = root / 'release-manifest.json'
+        doctl_config.parent.mkdir(parents=True, mode=0o700)
+        _write_private_file(doctl_config, secrets['RUNNER_HOST_EVIDENCE_DOCTL_CONFIG'],
+                           1_000_000, 'read-only DigitalOcean context')
+        _write_private_file(known_hosts, secrets['RUNNER_HOST_EVIDENCE_KNOWN_HOSTS'],
+                           256_000, 'pre-provisioned DigitalOcean known-hosts file')
+        _write_private_file(private_key, secrets['RUNNER_HOST_EVIDENCE_SSH_PRIVATE_KEY'],
+                           64_000, 'read-only SSH private key')
+        os.chmod(home, 0o700)
+        os.chmod(home / '.config', 0o700)
+        os.chmod(doctl_config.parent, 0o700)
+        if purpose != 'capacity':
+            _write_private_file(manifest_path, manifest_result['manifestBytes'], MAX_BYTES,
+                               'verified release manifest')
+        command = [
+            cli, 'runner-host-evidence', '--cloud', 'digitalocean',
+            '--github-org', value['github']['repository'].split('/')[0],
+            '--fleet', value['lane'], '--project', host['project'],
+            '--do-context', host['doContext'], '--do-ssh-key', host['doSshKey'],
+            '--do-strict-known-hosts', '--read-only-ssh-private-key', str(private_key),
+            '--max-age-seconds', str(host['maxAgeSeconds']),
+        ]
+        if purpose == 'capacity':
+            command.append('--capacity-only')
+        else:
+            command.extend((
+                '--manifest-identity', value['release']['manifestDigest'],
+                '--manifest-file', str(manifest_path),
+                '--release-variant', value['release']['variant'],
+            ))
+        if purpose == 'post-update':
+            command.extend(('--runner', host['runnerName'], '--post-update'))
+        child_environment = {
+            'PATH': os.environ.get('PATH', '/usr/bin:/bin'),
+            'HOME': str(home), 'TMPDIR': temporary,
+            'GH_TOKEN': token, 'GH_HOST': 'github.com',
+        }
+        for name in ('LANG', 'LC_ALL', 'SSL_CERT_FILE', 'SSL_CERT_DIR'):
+            if name in os.environ:
+                child_environment[name] = os.environ[name]
+        try:
+            completed = run(command, check=False, capture_output=True, text=True,
+                            env=child_environment, timeout=900)
+        except (OSError, subprocess.SubprocessError):
+            raise TransportError('read-only runner host export failed') from None
+        require(completed.returncode == 0, 'read-only runner host export failed')
+        try:
+            response_bytes = completed.stdout.encode('utf-8')
+        except (AttributeError, UnicodeError):
+            raise TransportError('host export response is invalid') from None
+        sensitive_values = (*secrets.values(), token)
+        require(
+            all(value.encode('utf-8') not in response_bytes for value in sensitive_values),
+            'host export response contains credential material',
+        )
+        report = decode(response_bytes)
+        require(isinstance(report, dict) and type(report.get('schemaVersion')) is int
+                and report['schemaVersion'] == 1 and report.get('operation') == 'host-export',
+                'host export response schema differs')
+        observed = timestamp(report.get('observedAt'))
+        current_time = clock()
+        require(observed <= current_time and current_time - observed <= host['maxAgeSeconds'],
+                'host export response is stale')
+        if purpose == 'capacity':
+            require(type(report.get('availableCapacity')) is int
+                    and report['availableCapacity'] >= 0,
+                    'host capacity response is invalid')
+        else:
+            require(report.get('manifestIdentity') == value['release']['manifestDigest']
+                    and report.get('manifestBytes') == manifest_result['manifestBytes']
+                    and report.get('manifest') == manifest_result['manifest'],
+                    'host export release identity differs')
+            if purpose == 'baseline':
+                fleet = report.get('fleet')
+                require(isinstance(fleet, dict) and fleet.get('lane') == value['lane'],
+                        'host export lane differs')
+                runners = fleet.get('runners')
+                require(isinstance(runners, list)
+                        and len(runners) == len(host['runnerNames'])
+                        and sorted(runner.get('name') for runner in runners
+                                   if isinstance(runner, dict)) == sorted(host['runnerNames']),
+                        'host export runner identities differ')
+            else:
+                runners = [report]
+                require(report.get('name') == host['runnerName'],
+                        'post-update host identity differs')
+            require(all(isinstance(runner, dict) for runner in runners),
+                    'host export runner record is invalid')
+            for runner in runners:
+                attestations.append(_verify_host_baseline(
+                    runner.get('releaseManifestBytes'), runner, value, token, home, run
+                ))
+
+    return {
+        'schemaVersion': 1,
+        'requestDigest': digest(canonical(value)),
+        'outcome': 'passed',
+        'releaseManifest': (
+            None
+            if manifest_result is None
+            else {
+                'manifestIdentity': manifest_result['manifestIdentity'],
+                'manifestBytes': manifest_result['manifestBytes'],
+                'manifest': manifest_result['manifest'],
+                'attestation': manifest_result['attestation'],
+            }
+        ),
+        'hostEvidence': report,
+        'baselineAttestations': attestations,
+    }
 
 
 def complete_workflow_runs(api, path, token, request_budget):
@@ -416,17 +710,31 @@ def main():
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
     value = validate_request(decode(args.request.read_bytes()), time.time())
-    require(value['operation'] != 'host-export', 'CLI read-only host export unavailable: Verjson/verjson-cli-cloud#504')
     require(not args.dry_run or value['operation'] == 'manifest', 'dry-run has no dispatch authority')
     intent_path = args.output.with_name(args.output.name + '.dispatch-intent.json')
     require(not args.output.exists() and not intent_path.exists(), 'output or dispatch intent already exists; reconcile before retry')
     def record_intent(value):
         persist_record(intent_path, value)
-    role = value['operation'].upper()
-    jwt = os.environ.get(f'VERJSON_DEPLOYMENT_{role}_APP_JWT')
+    role = value['operation'].replace('-', '_').upper()
+    if value['operation'] == 'host-export':
+        jwt = mint_host_export_app_jwt(
+            value['github']['appId'],
+            os.environ.get(HOST_EXPORT_APP_KEY_ENV),
+            time.time(),
+        )
+    else:
+        jwt = os.environ.get(f'VERJSON_DEPLOYMENT_{role}_APP_JWT')
     api = GitHubHTTP()
     token = installation_token(api, value, jwt, time.time())
-    result = fetch_manifest(api, value, token) if value['operation'] == 'manifest' else probe_runner(api, value, token, record_intent=record_intent)
+    if value['operation'] == 'manifest':
+        result = fetch_manifest(api, value, token)
+    elif value['operation'] == 'probe':
+        result = probe_runner(api, value, token, record_intent=record_intent)
+    else:
+        manifest_result = None
+        if value['hostExport']['purpose'] != 'capacity':
+            manifest_result = fetch_manifest(api, value, token)
+        result = host_export(value, token, manifest_result)
     persist_record(args.output, result)
 
 

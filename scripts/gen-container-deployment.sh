@@ -202,7 +202,9 @@ config_violations="\$(jq -re '
     (if ([.reviewAuthority[].installationId] | all(type == "number" and . > 0)) then empty else "reviewAuthority[].installationId: expected positive numbers, observed \\([.reviewAuthority[]?.installationId] | tojson)" end),
     (if (.reviewAuthority.ai.sourceAppId | type == "number" and . > 0) then empty else "reviewAuthority.ai.sourceAppId: expected a positive number, observed \\(.reviewAuthority.ai.sourceAppId | tojson)" end),
     (if (.reviewAuthority.ai.sourceCheckName | type == "string" and length > 0) then empty else "reviewAuthority.ai.sourceCheckName: expected a non-empty string, observed \\(.reviewAuthority.ai.sourceCheckName | tojson)" end),
-    (if .cliCommand == ["verjson-cloud"] then empty else "cliCommand: expected [\\"verjson-cloud\\"], observed \\(.cliCommand | tojson)" end),
+   (if ((.hostEvidenceAuthority | type) == "object" and (.hostEvidenceAuthority | keys | sort) == ["appId", "installationId"] and (.hostEvidenceAuthority.appId | type) == "number" and .hostEvidenceAuthority.appId > 0 and (.hostEvidenceAuthority.installationId | type) == "number" and .hostEvidenceAuthority.installationId > 0) then empty else "hostEvidenceAuthority: expected positive host observation App and installation IDs" end),
+(if ([.fleets[] | .hostEvidence] | all(type == "object" and (.doContext | type == "string" and length > 0) and (.doSshKey | type == "string" and length > 0) and (.maxAgeSeconds | type == "number" and . >= 1 and . <= 3600))) then empty else "fleets[].hostEvidence: expected read-only context, SSH key identity, and bounded max age" end),
+ (if .cliCommand == ["verjson-cloud"] then empty else "cliCommand: expected [\\"verjson-cloud\\"], observed \\(.cliCommand | tojson)" end),
     (if (.evidenceCommand | length == 2) then empty else "evidenceCommand: expected 2 elements, observed \\(.evidenceCommand | tojson)" end),
     (if (.probeCommand | length == 2) then empty else "probeCommand: expected 2 elements, observed \\(.probeCommand | tojson)" end),
     (if (.fleets | type == "object" and length > 0) then empty else "fleets: expected a non-empty object, observed \\(.fleets | tojson)" end)
