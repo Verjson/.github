@@ -11,6 +11,12 @@ does not create environments, copy/delete keys, edit rulesets or dispatch consum
 | Merge | `merge_environment` | `merge-app` | `MERGE_APP_PRIVATE_KEY` |
 | AI review | `ai_review_environment` | `ai-review-app` | `AI_REVIEW_APP_PRIVATE_KEY` |
 
+Runner host evidence is a caller-owned role in the existing `production`
+environment, using `RUNNER_HOST_EVIDENCE_APP_PRIVATE_KEY`. It is not an
+organization secret; each consuming deployment repository must provision its
+own reviewed read-only App key before host export can run. [ADR 0198](decisions/0198-confine-runner-host-evidence-credentials/README.md)
+records that credential boundary.
+
 These three roles are not the whole surface. `config/app-key-roles.json` declares
 every App private key a canonical workflow binds, and
 `scripts/ci-gate/app-key-environment.test.py` enumerates `.github/workflows` against

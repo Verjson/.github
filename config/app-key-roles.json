@@ -61,6 +61,14 @@
       "reason": "Runner registration binds the calling deployment repository's fixed production environment; no organization copy exists."
     },
     {
+      "role": "runner-host-evidence",
+      "secret": "RUNNER_HOST_EVIDENCE_APP_PRIVATE_KEY",
+      "environment": "production",
+      "confinement": "caller-owned",
+      "organization_copy": "absent",
+      "reason": "Read-only host evidence uses a dedicated App key from the calling deployment repository's protected production environment; no organization copy exists."
+    },
+    {
       "role": "renovate-compatibility",
       "secret": "RENOVATE_COMPATIBILITY_APP_PRIVATE_KEY",
       "environment": "renovate-compatibility-app",

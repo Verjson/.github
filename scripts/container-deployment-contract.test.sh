@@ -436,7 +436,7 @@ assert jobs["deploy"]["environment"] == "production"
 assert jobs["dry-run"]["environment"] == "production"
 assert workflow["concurrency"]["cancel-in-progress"] is False
 host_secrets = {
-    "VERJSON_DEPLOYMENT_HOST_EXPORT_APP_PRIVATE_KEY",
+    "RUNNER_HOST_EVIDENCE_APP_PRIVATE_KEY",
     "RUNNER_HOST_EVIDENCE_SSH_PRIVATE_KEY",
     "RUNNER_HOST_EVIDENCE_DOCTL_CONFIG",
     "RUNNER_HOST_EVIDENCE_KNOWN_HOSTS",
@@ -501,7 +501,7 @@ expected_mutation_env = {
     "CONFIG_PATH": "${{ inputs.config-path }}",
     "GH_RUNNER_CONTROL_TOKEN": "${{ steps.runner-app-token.outputs.token }}",
     "DIGITALOCEAN_RUNNER_FLEET_TOKEN": "${{ secrets.DIGITALOCEAN_RUNNER_FLEET_TOKEN }}",
-    "VERJSON_DEPLOYMENT_HOST_EXPORT_APP_PRIVATE_KEY": "${{ secrets.VERJSON_DEPLOYMENT_HOST_EXPORT_APP_PRIVATE_KEY }}",
+    "RUNNER_HOST_EVIDENCE_APP_PRIVATE_KEY": "${{ secrets.RUNNER_HOST_EVIDENCE_APP_PRIVATE_KEY }}",
     "RUNNER_HOST_EVIDENCE_SSH_PRIVATE_KEY": "${{ secrets.RUNNER_HOST_EVIDENCE_SSH_PRIVATE_KEY }}",
     "RUNNER_HOST_EVIDENCE_DOCTL_CONFIG": "${{ secrets.RUNNER_HOST_EVIDENCE_DOCTL_CONFIG }}",
     "RUNNER_HOST_EVIDENCE_KNOWN_HOSTS": "${{ secrets.RUNNER_HOST_EVIDENCE_KNOWN_HOSTS }}",

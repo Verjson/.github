@@ -86,7 +86,7 @@ repository.
 | Host export | `metadata: read`, `contents: read`, `attestations: read`, `organization_self_hosted_runners: read` on the observation repository |
 
 The host-export App identity is reviewed configuration; its private key is
-`VERJSON_DEPLOYMENT_HOST_EXPORT_APP_PRIVATE_KEY`. The reusable workflow reads
+`RUNNER_HOST_EVIDENCE_APP_PRIVATE_KEY`. The reusable workflow reads
 host credentials from the existing protected `production` environment and maps
 them directly to controller steps. The SSH key is written to a mode-0600
 private temporary file and passed only as the required

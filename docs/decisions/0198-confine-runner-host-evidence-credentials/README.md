@@ -27,7 +27,7 @@ available. Caller workflows must not receive or forward private keys.
   `organization_self_hosted_runners: read`. Configuration supplies reviewed App
   and installation IDs; a generated value is never treated as production
   authority.
-- Store `VERJSON_DEPLOYMENT_HOST_EXPORT_APP_PRIVATE_KEY`,
+- Store `RUNNER_HOST_EVIDENCE_APP_PRIVATE_KEY`,
   `RUNNER_HOST_EVIDENCE_SSH_PRIVATE_KEY`,
   `RUNNER_HOST_EVIDENCE_DOCTL_CONFIG`, and
   `RUNNER_HOST_EVIDENCE_KNOWN_HOSTS` only in the protected `production`
