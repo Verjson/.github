@@ -453,6 +453,22 @@ block_slice() {
   fi
 }
 
+unique_line_number() {
+  local needle="$1" file="$2" count
+  count="$(grep -oF -- "$needle" "$file" | wc -l || true)"
+  [ "$count" -eq 1 ] || return 1
+  grep -nF -- "$needle" "$file" | cut -d: -f1
+}
+
+unique_compare_definition_line() {
+  local file="$1" occurrences source_contents
+  source_contents="$(<"$file")"
+  source_contents="${source_contents//$'\\\n'/}"
+  occurrences="$(grep -oF -- 'compare_behind' <<<"$source_contents" | wc -l || true)"
+  [ "$occurrences" -eq 2 ] || return 1
+  unique_line_number 'compare_behind() {' "$file"
+}
+
 # Bash runs a command, not a source line, and a command is not a run of characters either.
 # Three separate things have to be established before a tail can be judged:
 #
@@ -2574,10 +2590,68 @@ done < <(ref_sites)
 # Exercise the actual workflow function with the repository's `gh` stub. This checks the
 # value sent to the API, not just a matching encoder line in the source slice.
 compare_workflow=".github/workflows/ai-review-merge.yml"
-compare_url_line="$(grep -nF 'raw="$(gh api "repos/$REPO/compare/$base_ref_path...$head_sha"' \
-  "$root/$compare_workflow" | cut -d: -f1 | head -1)"
-[ -n "$compare_url_line" ] || fail "the compare API call was not found in ai-review-merge.yml"
+cat >"$tmp/duplicate-compare-functions.yml" <<'EOF'
+  compare_behind() {
+    raw="$(gh api "repos/$REPO/compare/$base_ref_path...$head_sha")"
+  }
+  compare_behind() {
+    raw="$(gh api \
+      "repos/$REPO/compare/$base_ref...$head_sha")"
+  }
+  behind="$(compare_behind)" && break
+EOF
+if unique_compare_definition_line "$tmp/duplicate-compare-functions.yml" >/dev/null; then
+  fail "duplicate compare_behind fixture was accepted"
+fi
+printf '%s\n' 'compare_behind() { :; }; compare_behind() { :; }' \
+  >"$tmp/same-line-compare-functions.yml"
+if unique_line_number 'compare_behind() {' "$tmp/same-line-compare-functions.yml" >/dev/null; then
+  fail "same-line duplicate compare_behind fixture was accepted"
+fi
+cat >"$tmp/alternate-compare-function.yml" <<'EOF'
+  compare_behind() {
+    :
+  }
+  function compare_behind {
+    raw="$(gh api \
+      "repos/$REPO/compare/$base_ref...$head_sha")"
+  }
+  behind="$(compare_behind)" && break
+EOF
+if unique_compare_definition_line "$tmp/alternate-compare-function.yml" >/dev/null; then
+  fail "the Bash function-keyword duplicate fixture was accepted"
+fi
+cat >"$tmp/continued-compare-function.yml" <<'EOF'
+  compare_behind() {
+    :
+  }
+  function compare_\
+behind {
+    raw="$(gh api \
+      "repos/$REPO/compare/$base_ref...$head_sha")"
+  }
+  behind="$(compare_behind)" && break
+EOF
+bash -n "$tmp/continued-compare-function.yml" \
+  || fail "the line-continuation duplicate fixture was not valid Bash"
+if unique_compare_definition_line "$tmp/continued-compare-function.yml" >/dev/null; then
+  fail "the line-continuation duplicate compare_behind fixture was accepted"
+fi
+
+workflow="$root/$compare_workflow"
+compare_function_line="$(unique_compare_definition_line "$workflow")" \
+  || fail "expected exactly one compare_behind function in ai-review-merge.yml"
+compare_url_line="$(unique_line_number 'raw="$(gh api "repos/$REPO/compare/$base_ref_path...$head_sha"' "$workflow")" \
+  || fail "expected exactly one compare API call in ai-review-merge.yml"
+compare_call_line="$(unique_line_number 'behind="$(compare_behind)" && break' "$workflow")" \
+  || fail "expected exactly one production compare_behind call in ai-review-merge.yml"
+[ "$compare_function_line" -lt "$compare_url_line" ] \
+  && [ "$compare_url_line" -lt "$compare_call_line" ] \
+  || fail "the compare function, API call, and production invocation are out of order"
 block_slice "$compare_workflow" "$compare_url_line" >"$tmp/compare-behind.sh"
+compare_slice_header="$(sed -n '1s/^[[:space:]]*//p' "$tmp/compare-behind.sh")"
+[ "$compare_slice_header" = 'compare_behind() {' ] \
+  || fail "the runtime test did not extract the unique production compare_behind function"
 printf '}\n' >>"$tmp/compare-behind.sh"
 bash -n "$tmp/compare-behind.sh" || fail "the extracted compare_behind function is not valid Bash"
 # shellcheck source=/dev/null
