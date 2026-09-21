@@ -11,6 +11,46 @@ grep -q 'path == ".github/workflows/ai-review-merge.yml"' "$workflow"
 grep -q 'ref: \${{ github.event.pull_request.base.sha }}' "$workflow"
 grep -q "if: steps.evidence.outputs.eligible == 'true'" "$workflow"
 ! grep -Eq 'gh pr merge|workflow run ai-review-merge|sleep [0-9]' "$workflow" "$script"
+
+python3 - "$root/.github/workflows/ai-privileged-merge.yml" <<'PY'
+import json
+import os
+import re
+import subprocess
+import sys
+
+import yaml
+
+document = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+runs = [step.get("run", "") for job in document["jobs"].values() for step in job.get("steps", [])]
+run = next(run for run in runs if 'authorization="$(gh api "repos/$TARGET_REPO/check-runs/$AUTHORIZATION_CHECK_ID")"' in run)
+match = re.search(r'jq -e --arg head "\$EXPECTED_HEAD_SHA" \'(.*?)\' <<<"\$authorization"', run, re.S)
+assert match, "privileged merge must validate the authorization check identity"
+
+environment = os.environ | {"EXPECTED_APP_ID": "4242", "EXPECTED_APP_SLUG": "ai-review-authorization"}
+head = "1" * 40
+for app_id, slug, accepted in (
+    (15368, "github-actions", True),
+    (4242, "ai-review-authorization", True),
+    (9999, "untrusted-app", False),
+):
+    check = {
+        "name": "AI review authorization",
+        "head_sha": head,
+        "status": "completed",
+        "conclusion": "success",
+        "app": {"id": app_id, "slug": slug},
+    }
+    result = subprocess.run(
+        ["jq", "-e", "--arg", "head", head, match.group(1)],
+        input=json.dumps(check),
+        text=True,
+        capture_output=True,
+        env=environment,
+        check=False,
+    )
+    assert (result.returncode == 0) == accepted, (app_id, slug, result.stderr)
+PY
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
@@ -51,10 +91,11 @@ export DEFAULT_BRANCH=main RUNNER_TEMP="$tmp" GITHUB_OUTPUT="$tmp/evidence-outpu
 
 write_check() {
   local summary="$1" status="${2:-completed}" conclusion="${3:-success}"
+  local app_id="${4:-$EXPECTED_APP_ID}" app_slug="${5:-$EXPECTED_APP_SLUG}"
   jq -nc --arg head "$MERGED_HEAD_SHA" --arg summary "$summary" --arg status "$status" \
-    --arg conclusion "$conclusion" \
+    --arg conclusion "$conclusion" --argjson app_id "$app_id" --arg app_slug "$app_slug" \
     '{id:9001,name:"AI review authorization",head_sha:$head,status:$status,conclusion:$conclusion,
-      app:{id:4242,slug:"ai-review-authorization"},output:{summary:$summary}}' >"$CHECK_FILE"
+      app:{id:$app_id,slug:$app_slug},output:{summary:$summary}}' >"$CHECK_FILE"
 }
 write_valid_ai_evidence() {
   jq -nc --arg head "$MERGED_HEAD_SHA" \
@@ -127,6 +168,16 @@ if run_evidence && grep -qx 'eligible=true' "$GITHUB_OUTPUT" \
   printf 'ok   - exact-head ai-merge evidence reaches attestation processing\n'
 else
   echo 'FAIL - exact-head ai-merge evidence did not reach attestation processing'
+  exit 1
+fi
+
+write_valid_ai_evidence
+write_check $'AI approval persisted.\n<!-- ai-review-authorized:v1:9001:1111111111111111111111111111111111111111:ai-merge -->' completed success 15368 github-actions
+write_dispatch_job success
+if run_evidence && grep -qx 'eligible=true' "$GITHUB_OUTPUT"; then
+  printf 'ok - Actions-owned exact-head authorization check is accepted\n'
+else
+  echo 'FAIL - Actions-owned authorization check did not reach attestation processing'
   exit 1
 fi
 

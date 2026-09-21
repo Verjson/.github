@@ -17,7 +17,7 @@ def validate_caller(doc, target):
     assert doc[True] == {"pull_request_target": {"types": ["labeled", "ready_for_review", "converted_to_draft", "edited", "unlabeled"]}}
     assert doc["permissions"] == {"actions": "read", "contents": "read"}
     assert doc["jobs"] == {"rearm": {
-        "permissions": {"actions": "write", "contents": "read", "issues": "write", "pull-requests": "write"},
+            "permissions": {"actions": "write", "checks": "write", "contents": "read", "issues": "write", "pull-requests": "write"},
         "uses": target,
         "secrets": "inherit",
         "with": {"ai_review_environment": "ai-review-app"},
@@ -75,6 +75,10 @@ def main():
     assert "issues" not in arm[True]
     assert "labeled" not in arm[True]["pull_request_target"]["types"]
     validate_caller(load(CALLER), "./.github/workflows/gate-rearm.yml")
+    with tempfile.NamedTemporaryFile() as local_generated:
+        subprocess.run([str(GENERATOR), "--local"], check=True, stdout=local_generated)
+        local_generated.flush()
+        validate_caller(load(Path(local_generated.name)), "./.github/workflows/gate-rearm.yml")
     sha = "1" * 40
     with tempfile.NamedTemporaryFile() as generated:
         subprocess.run([str(GENERATOR), sha], check=True, stdout=generated)

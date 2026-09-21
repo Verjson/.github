@@ -290,23 +290,36 @@ def main() -> int:
             "labeled" not in rearm[True]["pull_request_target"]["types"] and
             label_rearm[True] == {"pull_request_target": {"types": ["labeled", "ready_for_review", "converted_to_draft", "edited", "unlabeled"]}},
             "trusted rearm must separate explicit label delivery from head transitions")
-    app_token_uses = [
-        authorization_app_token_uses(rearm, "arm"),
-        authorization_app_token_uses(review, "complete-authorization"),
-    ]
+    arm = rearm["jobs"]["arm"]
+    arm_step = next(step for step in arm["steps"] if step.get("name") == "Create exact-head authorization receipt")
+    arm_script = arm_step["run"]
+    require(arm["permissions"].get("checks") == "write", "trusted arm must own its Actions check")
+    require(arm_step["env"].get("GH_TOKEN") == "${{ github.token }}", "arm check must be created by GitHub Actions")
+    require(not any(step.get("name") == "Mint dedicated authorization App token" for step in arm["steps"]),
+            "arm must validate credentials before any App token is minted")
+    require("--argjson app_id 15368" in arm_script and "--arg slug github-actions" in arm_script and ".app.id == $app_id" in arm_script and ".app.slug == $slug" in arm_script,
+            "arm must bind the authorization check to the GitHub Actions App")
+    dispatch_step = next(step for step in arm["steps"] if step.get("name") == "Dispatch trusted review after receipt publication")
+    receipt_step = next(step for step in arm["steps"] if step.get("name") == "Upload immutable arm receipt")
+    require(arm_script.index('gh api --method POST "repos/$TARGET_REPO/check-runs"') <
+            arm_script.index("validate-ai-review-app-key.sh") and
+            arm["steps"].index(receipt_step) < arm["steps"].index(dispatch_step),
+            "arm must create the failure-visible check, validate the key, publish the receipt, then dispatch")
+
+    app_token_uses = [authorization_app_token_uses(review, "complete-authorization")]
     validate_authorization_app_token_pins(app_token_uses)
-    validate_authorization_app_token_inputs(rearm, "arm")
     validate_authorization_app_token_inputs(review, "complete-authorization")
 
-    for workflow, job_name in ((rearm, "arm"), (review, "complete-authorization")):
-        mutated = yaml.safe_load(yaml.safe_dump(workflow))
-        token = next(step for step in mutated["jobs"][job_name]["steps"]
-                     if step.get("name") == "Mint dedicated authorization App token")
-        token["with"]["app-id"] = token["with"].pop("client-id")
-        try:
-            validate_authorization_app_token_inputs(mutated, job_name)
-        except AssertionError:
-            continue
+    workflow, job_name = review, "complete-authorization"
+    mutated = yaml.safe_load(yaml.safe_dump(workflow))
+    token = next(step for step in mutated["jobs"][job_name]["steps"]
+                 if step.get("name") == "Mint dedicated authorization App token")
+    token["with"]["app-id"] = token["with"].pop("client-id")
+    try:
+        validate_authorization_app_token_inputs(mutated, job_name)
+    except AssertionError:
+        pass
+    else:
         raise AssertionError(f"{job_name} legacy app-id mutation escaped token-input contract")
 
     valid_pin = f"{APP_TOKEN_ACTION}@{'a' * 40}"
@@ -322,25 +335,33 @@ def main() -> int:
         except AssertionError:
             continue
         raise AssertionError(f"mutation escaped App-token pin contract: {invalid_pins}")
-    for workflow in (rearm, review, promote):
-        require(all(job.get("permissions", {}).get("checks") != "write"
-                    for job in workflow["jobs"].values()),
-                "shared workflow tokens must never receive Checks write permission")
+    require(review["jobs"]["complete-authorization"]["permissions"].get("checks") == "write",
+            "completion must use the Actions token to terminalize its owned check")
+    require(all(job.get("permissions", {}).get("checks") != "write"
+                for name, job in rearm["jobs"].items() if name != "arm"),
+            "only the trusted arm may create and terminalize authorization checks")
+    require(all(job.get("permissions", {}).get("checks") != "write"
+                for name, job in review["jobs"].items() if name != "complete-authorization"),
+            "only completion may write the authorization check")
+    require(all(job.get("permissions", {}).get("checks") != "write"
+                for job in promote["jobs"].values()),
+            "promotion jobs must not receive Checks write permission")
     completion_steps = review["jobs"]["complete-authorization"]["steps"]
     app_token = next(step for step in completion_steps
                      if step.get("name") == "Mint dedicated authorization App token")
-    require(app_token["with"].get("permission-checks") == "write" and
+    require("permission-checks" not in app_token["with"] and
             app_token["with"].get("permission-contents") == "read" and
             app_token["with"].get("permission-pull-requests") == "write",
-            "dedicated completion App token must request the exact approval permission envelope")
+            "dedicated approval App token must not have check-run write authority")
     require('check-runs/$AUTHORIZATION_CHECK_ID' in review_text,
             "review must complete the exact check-run supplied by the trusted arm")
     require('head_sha:$sha' in rearm_text and '--arg sha "$head_sha"' in rearm_text,
             "authorization check must be bound to the exact current PR head")
     require("APP_ID: ${{ vars.AI_REVIEW_APP_ID }}" in rearm_text and
             "EXPECTED_APP_ID: ${{ vars.AI_REVIEW_APP_ID }}" in review_text and
-            ".app.id" in rearm_text and ".app.id" in verifier_text,
-            "numeric App ID must remain the receipt and check-run identity boundary")
+            "check_app_id" in rearm_text and "check_app_id" in verifier_text and
+            ".app.id == 15368" in rearm_text and ".app.id == $check_app_id" in verifier_text,
+            "the receipt must bind the Actions-owned check and AI App approval identities separately")
     require("AI review authorization" in rearm_text and "AI review authorization" in promote_text,
             "arm and promotion must agree on the unambiguous required-check name")
     terminal_merge_text = TERMINAL_MERGE.read_text(encoding="utf-8")
@@ -389,9 +410,9 @@ def main() -> int:
             "review dispatch must carry trusted head/check identities")
     require('--allowedTools "Read,Grep,Glob"' in review_text,
             "secret-backed model review must not execute pull-request code")
-    require("ai_review_environment: ai-review-app" in rearm_generator and "PRIVATE_KEY" not in rearm_generator and "checks: write" not in rearm_generator and
+    require("ai_review_environment: ai-review-app" in rearm_generator and "PRIVATE_KEY" not in rearm_generator and "checks: write" in rearm_generator and
             all(event in rearm_generator for event in ("opened", "synchronize", "reopened")),
-            "generated arm callers must preserve head events and dedicated-App credential boundary")
+            "generated arm callers must preserve head events and Checks permission without exposing App credentials")
     require("authorization_check_id" in promote_generator and
             "pull_request_target:" not in promote_generator,
             "generated promotion callers must accept only trusted explicit dispatches")

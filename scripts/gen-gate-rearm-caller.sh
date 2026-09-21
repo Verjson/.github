@@ -43,6 +43,7 @@ jobs:
     permissions:
       contents: read
       actions: write
+      checks: write
       issues: write
       pull-requests: write
     uses: $TARGET

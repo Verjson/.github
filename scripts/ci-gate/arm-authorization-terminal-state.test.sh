@@ -40,8 +40,12 @@ assert "steps.dispatch.outcome != 'success'" in condition, "a dispatched review 
 run = guard["run"]
 assert "conclusion=failure" in run
 assert "conclusion=success" not in run, "the guard must never grant authorization"
-assert guard["env"].get("APP_TOKEN") == "${{ steps.app-token.outputs.token }}"
+assert guard["env"].get("ACTIONS_TOKEN") == "${{ github.token }}"
 assert guard["env"].get("CHECK_ID") == "${{ steps.arm.outputs.check_id }}"
+assert guard["env"].get("EXPECTED_HEAD_SHA") == "${{ steps.arm.outputs.head_sha }}"
+assert guard["env"].get("EXPECTED_EXTERNAL_ID") == "${{ steps.arm.outputs.external_id }}"
+assert guard["env"].get("ARM_FAILURE_REASON") == "${{ steps.arm.outputs.failure_reason }}"
+assert guard["env"].get("AI_REVIEW_ENVIRONMENT") == "${{ inputs.ai_review_environment || 'ai-review-app' }}"
 PY
 then
   pass "the arm declares a terminal-state guard bound to the undispatched check-run"
@@ -61,21 +65,29 @@ case "$*" in
   *"--method PATCH "*"check-runs/"*) printf '{}\n' ;;
   *"check-runs/"*)
     [ "${READ_FAIL:-false}" != true ] || exit 1
-    printf '%s\n' "${CHECK_STATUS:-in_progress}" ;;
+    jq -nc --argjson id "${CHECK_ID:-9001}" --arg status "${CHECK_STATUS:-in_progress}" \
+      --arg head "${EXPECTED_HEAD_SHA:-0123456789abcdef0123456789abcdef01234567}" \
+      --arg external "${EXPECTED_EXTERNAL_ID:-ai-review:v1:Verjson/example:7:0123456789abcdef0123456789abcdef01234567:8000:1:$(printf 'a%.0s' {1..64})}" \
+      '{id:$id,name:"AI review authorization",head_sha:$head,external_id:$external,status:$status,
+        app:{id:15368,slug:"github-actions"}}' ;;
   *) echo "unexpected gh call: $*" >&2; exit 2 ;;
 esac
 SH
 chmod +x "$tmp/bin/gh"
 
 export PATH="$tmp/bin:$PATH" CALLS="$tmp/calls"
-export TARGET_REPO=Verjson/example CHECK_ID=9001 APP_TOKEN=app-token
+export TARGET_REPO=Verjson/example CHECK_ID=9001 ACTIONS_TOKEN=actions-token
+export EXPECTED_HEAD_SHA=0123456789abcdef0123456789abcdef01234567
+export EXPECTED_EXTERNAL_ID="ai-review:v1:Verjson/example:7:$EXPECTED_HEAD_SHA:8000:1:$(printf 'a%.0s' {1..64})"
+export ARM_FAILURE_REASON=invalid_ai_review_app_private_key AI_REVIEW_ENVIRONMENT=ai-review-app
 run_guard(){ : >"$CALLS"; bash "$tmp/guard.sh"; }
 
 if run_guard >/dev/null 2>&1 \
   && grep -q 'method PATCH.*check-runs/9001' "$CALLS" \
   && grep -q 'status=completed' "$CALLS" \
-  && grep -q 'conclusion=failure' "$CALLS"; then
-  pass "an undispatched in-progress authorization is completed as a failure"
+  && grep -q 'conclusion=failure' "$CALLS" \
+  && grep -q 'AI_REVIEW_APP_PRIVATE_KEY is empty or invalid in environment ai-review-app' "$CALLS"; then
+  pass "an invalid App key completes the exact authorization check with a readable reason"
 else
   fail "the arm left an undispatched authorization pending"
 fi
