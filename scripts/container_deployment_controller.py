@@ -538,7 +538,7 @@ def _validate_inventory(
 
     minimum_available = fleet.get("minimumAvailable")
     if (
-        not isinstance(minimum_available, int)
+            type(minimum_available) is not int
         or minimum_available < 1
         or len(inventory) - 1 < minimum_available
     ):

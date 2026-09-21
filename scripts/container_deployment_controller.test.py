@@ -680,6 +680,13 @@ class DeploymentPlannerTests(unittest.TestCase):
         with self.assertRaisesRegex(controller.DeploymentError, "capacity"):
             controller.build_plan(insufficient, insufficient_evidence, "production")
 
+        boolean_policy = configuration()
+        boolean_policy["fleets"]["production"]["minimumAvailable"] = True
+        boolean_evidence = evidence()
+        refresh_host_export_binding(boolean_evidence, boolean_policy)
+        with self.assertRaisesRegex(controller.DeploymentError, "minimum fleet capacity"):
+            controller.build_plan(boolean_policy, boolean_evidence, "production")
+
     def test_rejects_unexpected_fleet_baseline(self):
         candidate = evidence()
         candidate["fleet"]["runners"][2]["release"] = release("0.9.0", "9")
