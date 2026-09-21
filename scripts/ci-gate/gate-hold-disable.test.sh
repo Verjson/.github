@@ -532,7 +532,7 @@ else
   fail "a post-creation App-ID mismatch did not fail closed before dispatch"
 fi
 
-sed '/echo "check_id=\$check_id" >>"\$GITHUB_OUTPUT"/d' "$tmp/arm.sh" >"$tmp/arm-no-early-check-id.sh"
+sed '/echo "check_id=\$check_id"/d' "$tmp/arm.sh" >"$tmp/arm-no-early-check-id.sh"
 if app_id_mismatch_is_terminalized "$tmp/arm-no-early-check-id.sh"; then
   fail "removing the early check-ID export escaped the terminal-state mutation test"
 else

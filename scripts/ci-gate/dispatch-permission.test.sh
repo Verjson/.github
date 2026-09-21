@@ -63,10 +63,11 @@ expected = {
         "pull-requests": "write",
         "statuses": "read",
     },
-    # Completes the exact authorization check-run; dispatches nothing itself.
+    # Completes the exact authorization check-run with the run-scoped token;
+    # dispatches nothing itself. This is the only job allowed checks: write.
     "complete-authorization": {
         "actions": "write",
-        "checks": "read",
+        "checks": "write",
         "contents": "read",
         "pull-requests": "read",
     },
@@ -82,13 +83,15 @@ if actual != expected:
         f"  actual:   {json.dumps(actual, sort_keys=True)}"
     )
 
-# Checks write is the authorization forgery primitive: the dedicated App token
-# minted inside complete-authorization carries it, the shared workflow token
-# never may. contents/write would let a gate job push to the PR head it reviews.
+# Only the terminalizer may use checks: write; its script binds the update
+# to the authorization check created for this run. contents: write would let
+# a gate job push to the PR head it reviews.
 for name, granted in expected.items():
-    for scope in ("checks", "contents", "security-events", "id-token"):
+    for scope in ("contents", "security-events", "id-token"):
         if granted.get(scope) == "write":
-            raise SystemExit(f"{name} holds {scope}: write on the shared workflow token")
+            raise SystemExit(f"{name} holds {scope}: write on shared workflow token")
+    if granted.get("checks") == "write" and name != "complete-authorization":
+        raise SystemExit(f"{name} holds checks: write outside authorization terminalizer")
 PY
 then
   pass "every gate job declares its exact least-privilege permission set"

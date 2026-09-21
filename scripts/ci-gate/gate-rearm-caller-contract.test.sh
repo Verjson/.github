@@ -107,6 +107,8 @@ assert arm["env"]["PR_NUMBER"] == "${{ github.event.pull_request.number }}"
 assert arm["env"]["TARGET_REPO"] == "${{ github.repository }}"
 arm_run = next(step["run"] for step in arm["steps"] if step.get("id") == "arm")
 assert "app.id == 15368" in arm_run and "app.id == $APP_ID" in arm_run
+assert "check_app_id" in arm_run and "check_app_slug" in arm_run
+assert ".check_app_id // .app_id" in arm_run and ".check_app_slug // .app_slug" in arm_run
 assert "legacy AI App-owned authorization could not be safely recovered" in arm_run
 assert "no duplicate review was dispatched" in arm_run
 checkouts = [step for step in arm["steps"] if step.get("uses", "").startswith("actions/checkout@")]
@@ -122,7 +124,7 @@ assert checkout["with"] == {
     "persist-credentials": "false",
 }
 resolver = next(step for step in arm["steps"] if step.get("id") == "trusted-revision")
-assert resolver["env"]["EXECUTING_WORKFLOW_SHA"] == "${{ job.workflow_sha }}"
+assert resolver["env"]["EXECUTING_WORKFLOW_SHA"] == "${{ github.workflow_sha }}"
 script = "\n".join(step.get("run", "") for step in arm["steps"])
 for marker in (
     '[[ "$TARGET_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]',

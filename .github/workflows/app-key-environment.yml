@@ -52,7 +52,7 @@ jobs:
   validate-ai-review-key:
     if: ${{ inputs.role == 'ai-review' }}
     needs: validate
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     timeout-minutes: 2
     environment: ${{ inputs.environment }}
     permissions:
