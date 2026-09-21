@@ -2357,8 +2357,8 @@ generated_set_remedy() { # generated_set_remedy <one-mode|alternation> <rel> <no
 # spells `remedy` (building the variable name in another parameter and using
 # `printf -v`, `eval`, `declare -g` or a `local -n` alias) is classified as a
 # read and passes. That is a known limit, not a guarantee.
-generated_set_check() { # generated_set_check <relative-path> <required|optional> <pin-pattern> <remedy-mode> <accepted-modes|''> [generator-flags] [remedy-note]
-  local rel="$1" required="$2" pattern="$3" mode="$4" accepted="$5" flags="${6:-}" note="${7:-}"
+generated_set_check() { # generated_set_check <relative-path> <required|optional> <pin-pattern> <remedy-mode> <accepted-modes|''> [remedy-note]
+  local rel="$1" required="$2" pattern="$3" mode="$4" accepted="$5" note="${6:-}"
   local abs="$root/$rel" claims claim count remedy modes mode_count declared symlink_component repair_command quoted_path parent_dir quoted_parent
   remedy="$(generated_set_remedy "$mode" "$rel" "$note")"
   if symlink_component="$(generated_set_symlink_component "$rel")"; then
@@ -2430,7 +2430,7 @@ generated_set_check() { # generated_set_check <relative-path> <required|optional
 # pinned scripts/gen-adr-index.sh, and the validate_adr_generator path with it.
 generated_set_check .github/workflows/changelog.yml           required "$generated_set_header_pin" \
   '{generated-artifacts|generated-artifacts-with-adr-index|workflow}' \
-  'generated-artifacts|generated-artifacts-with-adr-index|workflow' '' \
+  'generated-artifacts|generated-artifacts-with-adr-index|workflow' \
   " Name the mode this repository already adopted: generated-artifacts-with-adr-index also wires adr-index: true and the pinned scripts/gen-adr-index.sh, and workflow is the compatibility alias."
 generated_set_check .github/workflows/changelog-contract.yml  required "$generated_set_header_pin" pr-gate pr-gate
 generated_set_check scripts/render-next.sh                    required "$generated_set_assign_pin" renderer renderer
@@ -2457,9 +2457,9 @@ generated_set_check scripts/changelog-contract.test.sh        required "$generat
 generated_set_check .github/workflows/renovate-changelog.yml  optional "$generated_set_header_pin" renovate-attribution renovate-attribution
 generated_set_check .github/workflows/release.yml             optional "$generated_set_header_pin" \
   '{release-node|release-artifact|release-snapshot}' \
-  'release-node|release-artifact|release-snapshot' '' \
+  'release-node|release-artifact|release-snapshot' \
   " Name the mode this repository already adopted: release-artifact publishes GitHub Release assets, and release-snapshot publishes nothing from the release workflow."
-generated_set_check .github/workflows/release-propose.yml     optional "$generated_set_header_pin" release-propose release-propose "--autonomy propose"
+generated_set_check .github/workflows/release-propose.yml     optional "$generated_set_header_pin" release-propose release-propose
 # The ADR index test is held to the pin here even when the caller does not set
 # `adr-index: true`. validate_adr_generator's stronger digest comparison runs
 # only under that key, so a repository that regenerated changelog.yml WITHOUT

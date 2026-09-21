@@ -2917,6 +2917,21 @@ generator_output_paths="$(awk '
   }
 ' "$gen")"
 enumerated_members="$(sed -nE 's|^generated_set_check +([^ ]+) .*$|\1|p' "$emitted")"
+if grep -qF 'flags="${6:-}"' "$emitted"; then
+  fail "the emitted generated-set checker retains an unused generator flags argument"
+else
+  pass "the emitted generated-set checker omits the unused generator flags argument"
+fi
+if grep -qF "'generated-artifacts|generated-artifacts-with-adr-index|workflow' ''" "$emitted"; then
+  fail "the changelog caller retains an empty argument before its remedy note"
+else
+  pass "the changelog caller passes its mode-specific remedy note in the right position"
+fi
+if grep -qF "'release-node|release-artifact|release-snapshot' ''" "$emitted"; then
+  fail "the release caller retains an empty argument before its remedy note"
+else
+  pass "the release caller passes its mode-specific remedy note in the right position"
+fi
 unwritable_members=''
 while read -r member; do
   [ -n "$member" ] || continue
