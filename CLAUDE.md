@@ -64,7 +64,7 @@ was confirmed, since inspection-only claims go stale silently).
 
 - [#629](https://github.com/Verjson/.github/issues/629) — Protected runner canary rollout. GitHub API verification on 2026-09-04: `verjson-github-runner` has no generated deployment caller; its protected `production` environment has the registration App key but lacks `DIGITALOCEAN_RUNNER_FLEET_TOKEN`. Its environment review policy also needs alignment with ADR 0144. Complete adopter installation and a non-production fleet canary/stop/rollback receipt in the owning repository before closure.
 
-- [#1518](https://github.com/Verjson/.github/issues/1518) — Match title hold markers as whole phrases. This follow-up keeps event classification and every merge gate aligned.
+- [#1521](https://github.com/Verjson/.github/issues/1521) — Make generated ADR-index formatter checks version-stable and fail closed; created 2026-09-21 after final review of research PR #93.
 
 Prune an entry when its issue closes. This list loads into every session, so a
 closed entry costs context in each one and misreports the state of the work.

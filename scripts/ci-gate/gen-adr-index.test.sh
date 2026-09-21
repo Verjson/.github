@@ -107,42 +107,177 @@ cmp -s "$d/index-first-pass" "$idx" \
 # `npx --no prettier --version` reports npm's own version and succeeds with no
 # prettier anywhere, so it probes nothing and selects a command that then fails.
 prettier_pin='prettier@3.9.7'
+prettier_source() {
+  local expected_version="${prettier_pin#prettier@}" installed_version
+  if command -v prettier >/dev/null 2>&1; then
+    installed_version="$(prettier --version 2>/dev/null)" || installed_version=''
+    if [ "$installed_version" = "$expected_version" ]; then
+      printf 'prettier'
+      return 0
+    fi
+  fi
+  if command -v npx >/dev/null 2>&1; then
+    installed_version="$(npx --yes "$prettier_pin" --version 2>/dev/null)" || installed_version=''
+    if [ "$installed_version" = "$expected_version" ]; then
+      printf 'npx'
+      return 0
+    fi
+  fi
+  return 1
+}
+
+prettier_outcome() {
+  if [ "$1" -eq 0 ]; then
+    printf 'mismatch'
+  elif [ "$3" -gt 0 ] || [ "$2" -eq 0 ]; then
+    printf 'incomplete'
+  else
+    printf 'matched'
+  fi
+}
+
+prettier_check() { # <fixture-root> <formatter-command> [args...]
+  local fixture="$1" index="$1/docs/decisions/README.md"
+  local agrees=1 runs=0 failures=0 prose_wrap
+  local -a formatter_cmd
+  shift
+  formatter_cmd=("$@")
+  for prose_wrap in preserve never always; do
+    printf '{"proseWrap":"%s"}\n' "$prose_wrap" >"$fixture/.prettierrc"
+    cp "$index" "$fixture/index-before-prettier"
+    # A failed invocation and a real reformat are tracked apart: a half-warm npx
+    # cache or registry blip must not be reported as the regression this test
+    # exists to catch.
+    if "${formatter_cmd[@]}" --write "$index" >/dev/null 2>&1; then
+      runs=$((runs + 1))
+      cmp -s "$fixture/index-before-prettier" "$index" || agrees=0
+      gen "$fixture" --check || agrees=0
+    else
+      failures=$((failures + 1))
+    fi
+  done
+  rm -f "$fixture/.prettierrc"
+  case "$(prettier_outcome "$agrees" "$runs" "$failures")" in
+    mismatch)
+      fail "prettier reformatted the generated index or left --check stale (#1382)"
+      return 1
+      ;;
+    incomplete)
+      fail "prettier could not complete every proseWrap check"
+      return 1
+      ;;
+    matched)
+      pass "prettier leaves the generated index byte-identical and --check current (#1382)"
+      ;;
+  esac
+}
+
+# The selector must ignore a different globally installed version and use the
+# exact package pin; an exact local install remains usable without npx.
+prettier_selector_fixture="$(mktemp -d "$tmproot/prettier-selector.XXXXXX")"
+mkdir -p "$prettier_selector_fixture/bin"
+cat >"$prettier_selector_fixture/bin/prettier" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "${MOCK_PRETTIER_VERSION:?}"
+SH
+cat >"$prettier_selector_fixture/bin/npx" <<'SH'
+#!/usr/bin/env bash
+if [ "$#" -ne 3 ] || [ "$1" != --yes ] || [ "$2" != prettier@3.9.7 ] \
+  || [ "$3" != --version ]; then
+  exit 2
+fi
+printf '%s\n' "${MOCK_NPX_VERSION:?}"
+SH
+chmod +x "$prettier_selector_fixture/bin/prettier" "$prettier_selector_fixture/bin/npx"
+prettier_original_path="$PATH"
+PATH="$prettier_selector_fixture/bin:$PATH"
+MOCK_PRETTIER_VERSION=9.9.9
+MOCK_NPX_VERSION=3.9.7
+export PATH MOCK_PRETTIER_VERSION MOCK_NPX_VERSION
+selected_prettier_source="$(prettier_source)" || selected_prettier_source=''
+PATH="$prettier_original_path"
+export PATH
+unset MOCK_PRETTIER_VERSION MOCK_NPX_VERSION
+if [ "$selected_prettier_source" = npx ]; then
+  pass "an unpinned system formatter falls back to the exact package pin"
+else
+  fail "an unpinned system formatter was selected instead of the exact package pin"
+fi
+PATH="$prettier_selector_fixture/bin:$PATH"
+MOCK_PRETTIER_VERSION=3.9.7
+MOCK_NPX_VERSION=3.9.7
+export PATH MOCK_PRETTIER_VERSION MOCK_NPX_VERSION
+selected_prettier_source="$(prettier_source)" || selected_prettier_source=''
+PATH="$prettier_original_path"
+export PATH
+unset MOCK_PRETTIER_VERSION MOCK_NPX_VERSION prettier_original_path
+if [ "$selected_prettier_source" = prettier ]; then
+  pass "the exact local formatter is selected without npx"
+else
+  fail "the exact local formatter was not selected"
+fi
+
+prettier_loop_mock="$tmproot/prettier-loop-mock"
+cat >"$prettier_loop_mock" <<'SH'
+#!/usr/bin/env bash
+count=0
+if [ -f "$MOCK_PRETTIER_COUNT_FILE" ]; then
+  read -r count <"$MOCK_PRETTIER_COUNT_FILE"
+fi
+count=$((count + 1))
+printf '%s\n' "$count" >"$MOCK_PRETTIER_COUNT_FILE"
+case "$MOCK_PRETTIER_MODE:$count" in
+  all-fail:*) exit 1 ;;
+  partial-fail:2) exit 1 ;;
+  mismatch-then-fail:1) printf '\n' >>"$2" ;;
+  mismatch-then-fail:2) exit 1 ;;
+esac
+SH
+chmod +x "$prettier_loop_mock"
+
+assert_prettier_loop_failure() {
+  local mode="$1" expected="$2" label="$3"
+  local fixture count_file output status call_count
+  fixture="$(new_fixture)"
+  adr "$fixture" "0001-first" "0001 — First" "2026-07-01"
+  if ! gen "$fixture"; then
+    fail "$label — could not prepare fixture"
+    return
+  fi
+  count_file="$(mktemp "$tmproot/prettier-count.XXXXXX")"
+  if output="$(MOCK_PRETTIER_MODE="$mode" MOCK_PRETTIER_COUNT_FILE="$count_file" prettier_check "$fixture" "$prettier_loop_mock")"; then
+    status=0
+  else
+    status=$?
+  fi
+  read -r call_count <"$count_file"
+  if [ "$status" -eq 1 ] && [[ "$output" == *"$expected"* ]] && [ "$call_count" -eq 3 ]; then
+    pass "$label"
+  else
+    fail "$label — expected failure after three formatter calls; output: $output"
+  fi
+}
+
+assert_prettier_loop_failure partial-fail "could not complete every proseWrap check" \
+  "partial formatter failures fail even when other calls succeed"
+assert_prettier_loop_failure all-fail "could not complete every proseWrap check" \
+  "all formatter invocations failing is not skipped"
+assert_prettier_loop_failure mismatch-then-fail "reformatted the generated index" \
+  "a later formatter failure does not mask an earlier mismatch"
+
+prettier_choice="$(prettier_source)" || prettier_choice=''
 prettier_cmd=()
-if command -v prettier >/dev/null 2>&1; then
+if [ "$prettier_choice" = prettier ]; then
   prettier_cmd=(prettier)
-elif command -v npx >/dev/null 2>&1 \
-  && npx --yes "$prettier_pin" --version >/dev/null 2>&1; then
+elif [ "$prettier_choice" = npx ]; then
   prettier_cmd=(npx --yes "$prettier_pin")
 fi
 
 if [ "${#prettier_cmd[@]}" -gt 0 ]; then
-  prettier_agrees=1
-  prettier_ran=1
-  for prose_wrap in preserve never always; do
-    printf '{"proseWrap":"%s"}\n' "$prose_wrap" >"$d/.prettierrc"
-    cp "$idx" "$d/index-before-prettier"
-    # A failed invocation and a real reformat are tracked apart: a half-warm npx
-    # cache or a registry blip must not be reported as the regression this test
-    # exists to catch.
-    if "${prettier_cmd[@]}" --write "$idx" >/dev/null 2>&1; then
-      cmp -s "$d/index-before-prettier" "$idx" || prettier_agrees=0
-      gen "$d" --check || prettier_agrees=0
-    else
-      prettier_ran=0
-    fi
-  done
-  rm -f "$d/.prettierrc"
-  if [ "$prettier_ran" -eq 0 ]; then
-    pass "skipped prettier agreement check — prettier could not be invoked"
-  elif [ "$prettier_agrees" -eq 1 ]; then
-    pass "prettier leaves the generated index byte-identical and --check current (#1382)"
-  else
-    fail "prettier reformatted the generated index or left --check stale (#1382)"
-  fi
+  prettier_check "$d" "${prettier_cmd[@]}"
 else
   pass "skipped prettier agreement check — no reachable prettier"
 fi
-
 # 2. ADR directory with no README -> fail fast.
 d="$(new_fixture)"; mkdir -p "$d/docs/decisions/0001-noreadme"
 gen "$d" && fail "an ADR dir without README must fail" || pass "ADR dir without README fails fast"
