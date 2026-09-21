@@ -1414,7 +1414,7 @@ def _validate_runner_result(
         ),
         (value.get("afterDigest") == plan.get("targetDigest"), "runner digest differs"),
         (
-            isinstance(value.get("availableCapacity"), int)
+            type(value.get("availableCapacity")) is int
             and value["availableCapacity"] >= fleet.get("minimumAvailable", 0),
             "post-update available capacity is below policy floor",
         ),
@@ -1574,7 +1574,7 @@ class ProcessAdapter:
             "host capacity evidence",
         )
         capacity = result.get("availableCapacity")
-        if not isinstance(capacity, int) or capacity < 0:
+        if type(capacity) is not int or capacity < 0:
             raise DeploymentError("capacity evidence is malformed")
         return capacity
 

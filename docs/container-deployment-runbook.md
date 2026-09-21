@@ -186,7 +186,7 @@ or organization-variable values in an incident record.
 
 [The GitHub transport broker](deployment-github-transport.md) retrieves signed
 release manifests, dispatches representative canary evidence, and now routes
-read-only host observations through `@verjson/cli-cloud@1.0.0`'s
+read-only host observations through `@verjson/cli-cloud@1.1.0`'s
 `runner-host-evidence` API. The generated transport remains a parent-owned
 capability, not an arbitrary child adapter or a replacement for complete fleet
 evidence.

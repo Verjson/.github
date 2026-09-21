@@ -2,7 +2,7 @@
 
 The generated `scripts/container_deployment_transport.py` supplies authenticated
 release-manifest retrieval, representative GitHub canary dispatch, and
-read-only runner-host evidence through `@verjson/cli-cloud@1.0.0`'s
+read-only runner-host evidence through `@verjson/cli-cloud@1.1.0`'s
 `runner-host-evidence` API. The controller uses the transport for baseline,
 capacity, and post-update observations. Mocked tests establish protocol behavior;
 they do not establish live deployment or rollback readiness. Production host
@@ -122,7 +122,7 @@ values never reach workload adapters.
 
 ## Live acceptance prerequisites
 
-`@verjson/cli-cloud@1.0.0` ships the observation-only
+`@verjson/cli-cloud@1.1.0` ships the observation-only
 `runner-host-evidence` API tracked by
 [verjson-cli-cloud#504](https://github.com/Verjson/verjson-cli-cloud/issues/504).
 Issue #1451 wires that API through the canonical transport and controller for
