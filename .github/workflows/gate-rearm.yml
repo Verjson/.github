@@ -61,9 +61,11 @@ jobs:
               run_control_plane=false
             fi
           fi
-          printf 'run_control_plane=%s\n' "$run_control_plane" >>"$GITHUB_OUTPUT"
-          printf 'old_title_held=%s\n' "$old_title_held" >>"$GITHUB_OUTPUT"
-          printf 'new_title_held=%s\n' "$new_title_held" >>"$GITHUB_OUTPUT"
+              {
+                printf 'run_control_plane=%s\n' "$run_control_plane"
+                printf 'old_title_held=%s\n' "$old_title_held"
+                printf 'new_title_held=%s\n' "$new_title_held"
+              } >>"$GITHUB_OUTPUT"
 
   app-key-policy:
     needs: event-policy
