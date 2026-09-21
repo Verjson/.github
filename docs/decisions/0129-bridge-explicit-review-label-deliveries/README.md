@@ -4,7 +4,7 @@
 - **Status:** Accepted
 - **Issue:** [#1054](https://github.com/Verjson/.github/issues/1054)
 - **Supersedes:** [ADR 0121](../0121-consume-persistent-ai-review-authorization/README.md)
-- **Extends:** [ADR 0079](../0079-head-bound-ai-authorization-and-native-auto-merge/README.md), [ADR 0091](../0091-ruleset-requires-authorization-arm/README.md), and [ADR 0120](../0120-bind-terminal-merge-to-repository-app-token/README.md)
+- **Extends:** [ADR 0079](../0079-external-ai-code-review/README.md), [ADR 0091](../0091-ruleset-requires-authorization-arm/README.md), and [ADR 0120](../0120-bind-terminal-merge-to-repository-app-token/README.md)
 
 ## Context
 

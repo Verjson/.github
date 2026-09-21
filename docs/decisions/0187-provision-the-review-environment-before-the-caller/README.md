@@ -2,7 +2,7 @@
 
 - **Date:** 2026-09-17
 - **Status:** Accepted
-- **Related:** [ADR 0094](../0094-arm-required-by-its-own-property-scoped-ruleset/README.md), [ADR 0166](../0166-environment-only-app-private-keys/README.md), [ADR 0180](../0180-no-approved-organization-custody-for-environment-only-app-keys/README.md), [ADR 0185](../0185-org-contract-distribution/README.md)
+- **Related:** [ADR 0094](../0094-arm-required-by-its-own-property-scoped-ruleset/README.md), [ADR 0166](../0166-environment-only-app-private-keys/README.md), [ADR 0180](../0180-environment-only-app-private-keys-for-review/README.md), [ADR 0185](../0185-org-contract-distribution/README.md)
 - **Issues:** [Verjson/.github#1401](https://github.com/Verjson/.github/issues/1401)
 
 ## Context

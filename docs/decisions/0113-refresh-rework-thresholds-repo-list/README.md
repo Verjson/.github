@@ -3,7 +3,7 @@
 - **Date:** 2026-08-21
 - **Issue:** [#980](https://github.com/Verjson/.github/issues/980)
 - **Category:** AI governance / verification calibration — sensitive-class,
-  amends the human-owned dial established by [ADR 0006](../0006-ai-rework-telemetry-observe-and-report/README.md)
+  amends the human-owned dial established by [ADR 0006](../0006-ai-rework-observe-and-report/README.md)
 
 ## Context
 

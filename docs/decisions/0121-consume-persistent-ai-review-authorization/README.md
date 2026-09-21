@@ -3,7 +3,7 @@
 - **Date:** 2026-08-24
 - **Status:** Accepted
 - **Issue:** [#991](https://github.com/Verjson/.github/issues/991)
-- **Extends:** [ADR 0090](../0090-human-first-opt-in-ai-review/README.md), [ADR 0105](../0105-preserve-ai-review-across-head-supersession/README.md), and [ADR 0120](../0120-bind-terminal-merge-to-repository-app-token/README.md)
+- **Extends:** [ADR 0090](../0090-human-first-opt-in-ai-review/README.md), [ADR 0105](../0105-budgeted-deepseek-review-cascade/README.md), and [ADR 0120](../0120-bind-terminal-merge-to-repository-app-token/README.md)
 
 ## Context
 

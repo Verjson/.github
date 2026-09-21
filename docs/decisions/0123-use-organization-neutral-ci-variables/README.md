@@ -4,7 +4,7 @@
 - **Status:** Accepted
 - **Issue:** [#1035](https://github.com/Verjson/.github/issues/1035)
 - **Category:** CI routing, policy, and organization configuration (sensitive class)
-- **Extends:** [ADR 0041](../0041-shared-admission-hosted-and-self-hosted/README.md), [ADR 0118](../0118-route-private-terminal-merge-to-hosted-capacity/README.md)
+- **Extends:** [ADR 0041](../0041-indirect-runs-on-through-org-variables/README.md), [ADR 0118](../0118-route-private-terminal-merge-to-hosted-capacity/README.md)
 
 ## Context
 
