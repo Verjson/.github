@@ -111,9 +111,10 @@ case "$*" in
       --arg title "${RUN_TITLE:-AI review authorization $AUTHORIZATION_CHECK_ID from arm $ARM_RUN_ID.$ARM_RUN_ATTEMPT}" \
       --arg repo "$TARGET_REPO" --arg branch "$DEFAULT_BRANCH" \
       --arg actor "${RUN_ACTOR:-github-actions[bot]}" \
+      --arg status "${RUN_STATUS:-in_progress}" \
       '{id:$id,run_attempt:$attempt,event:"workflow_dispatch",path:".github/workflows/ai-review-merge.yml",
         display_title:$title,head_branch:$branch,head_repository:{full_name:$repo},repository:{full_name:$repo},
-        actor:{login:$actor},triggering_actor:{login:$actor},status:"in_progress"}' ;;
+        actor:{login:$actor},triggering_actor:{login:$actor},status:$status}' ;;
   "api --paginate --slurp repos/$TARGET_REPO/actions/workflows/ai-review-merge.yml/runs?event=workflow_dispatch&per_page=100")
     # Verjson/.github#1480 — count the polls so a test can prove which
     # conditions are retried and which are refused on the first look.
@@ -186,6 +187,8 @@ expect_fail() {
 verify() { bash "$verifier"; }
 
 expect_pass "failed preflight with skipped gate is eligible for same-receipt recovery" verify
+RUN_STATUS=queued expect_pass "queued direct review run remains eligible while a sibling waits" verify
+RUN_STATUS=completed expect_fail "terminal review run cannot be replayed as live" "run identity mismatch" verify
 PREFLIGHT_CONCLUSION=success expect_pass "held preflight with skipped gate is eligible for same-receipt recovery" verify
 PREFLIGHT_CONCLUSION=skipped expect_pass "skipped preflight is eligible for same-receipt recovery" verify
 REVIEW_RUN_ATTEMPT=10 expect_pass "later same-run retry remains eligible with complete prior evidence" verify
