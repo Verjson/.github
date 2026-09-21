@@ -400,6 +400,45 @@ class HostExportRequestTests(unittest.TestCase):
         self.assertEqual(contract_ref, baseline["deploymentContractCommit"])
         self.assertNotIn("ssh-private-key-material", json.dumps(baseline))
 
+    def test_host_export_rejects_request_not_bound_to_admitted_plan(self):
+        config = configuration()
+        candidate = evidence()
+        plan = controller.build_plan(config, candidate, "production")
+        adapter = controller.ProcessAdapter(config, {}, candidate, plan)
+        request = {"planDigest": "sha256:" + "0" * 64}
+
+        with mock.patch.object(controller, "_build_host_export_request", return_value=request), \
+                mock.patch.object(controller, "_run_host_export_transport") as run:
+            with self.assertRaisesRegex(
+                controller.DeploymentError, "does not bind admitted plan"
+            ):
+                adapter._host_export("post-update", "gha-gate-1")
+
+        run.assert_not_called()
+
+    def test_host_export_transport_forwards_runner_temp_to_child(self):
+        request = {"operation": "host-export"}
+        receipt = {
+            "schemaVersion": 1,
+            "requestDigest": controller.canonical_digest(request),
+            "outcome": "passed",
+        }
+        secrets = {name: "credential" for name in controller.HOST_EXPORT_SECRET_ENV}
+
+        with tempfile.TemporaryDirectory() as runner_temp:
+            def run(command, **kwargs):
+                self.assertEqual(runner_temp, kwargs["env"]["RUNNER_TEMP"])
+                output = Path(command[command.index("--output") + 1])
+                output.write_text(json.dumps(receipt), encoding="utf-8")
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            environment = {"PATH": "/usr/bin", "RUNNER_TEMP": runner_temp, **secrets}
+            with mock.patch.dict(controller.os.environ, environment, clear=True), \
+                    mock.patch.object(controller.subprocess, "run", side_effect=run):
+                result = controller._run_host_export_transport(request)
+
+        self.assertEqual(receipt, result)
+
     def test_host_export_collection_stops_before_legacy_evidence_when_authority_is_missing(self):
         config = configuration()
         candidate = evidence()
@@ -1713,6 +1752,7 @@ class DeploymentExecutionTests(unittest.TestCase):
             controller.os.environ,
             {
                 "PATH": "/usr/bin",
+                "RUNNER_TEMP": "/runner/temp",
                 "HOME": "/runner-home",
                 "SSH_AUTH_SOCK": "/tmp/agent.sock",
                 "VERJSON_DEPLOYMENT_CLI": "/runner/bin/verjson-cloud",
@@ -1724,7 +1764,7 @@ class DeploymentExecutionTests(unittest.TestCase):
             clear=True,
         ):
             child = controller._child_environment()
-        self.assertEqual({"PATH": "/usr/bin"}, child)
+            self.assertEqual({"PATH": "/usr/bin"}, child)
 
     def test_probe_child_process_receives_no_ssh_agent_or_control_capability(self):
         completed = mock.Mock(

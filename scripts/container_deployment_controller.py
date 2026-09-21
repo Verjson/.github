@@ -1446,7 +1446,9 @@ def _child_environment(
         "PATH", "LANG", "LC_ALL", "TMPDIR", "SSL_CERT_FILE", "SSL_CERT_DIR",
     )
     if control:
-        allowed += ("VERJSON_DEPLOYMENT_CLI", "VERJSON_DEPLOYMENT_CLI_ROOT")
+        allowed += (
+            "RUNNER_TEMP", "VERJSON_DEPLOYMENT_CLI", "VERJSON_DEPLOYMENT_CLI_ROOT",
+        )
     environment = {key: os.environ[key] for key in allowed if key in os.environ}
     if control and extra:
         environment.update(extra)
@@ -1479,6 +1481,8 @@ class ProcessAdapter:
             runner_name=runner_name,
             plan=self.plan,
         )
+        if request.get("planDigest") != canonical_digest(self.plan):
+            raise DeploymentError("host export request does not bind admitted plan")
         return _run_host_export_transport(request)
 
     @staticmethod

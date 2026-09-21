@@ -277,10 +277,12 @@ class HostCapacityReportTests(unittest.TestCase):
 
 
 class HostExportTests(unittest.TestCase):
-    def _run_capacity_export(self, report):
+    def _run_capacity_export(self, report, *, provide_runner_temp=True):
         value = host_request()
         value['hostExport']['purpose'] = 'capacity'
         with tempfile.TemporaryDirectory() as directory:
+            runner_temp = Path(directory) / 'runner-temp'
+            runner_temp.mkdir()
             cli = Path(directory) / 'node_modules/.bin/verjson-cloud'
             cli.parent.mkdir(parents=True)
             cli.write_text('#!/bin/sh\n', encoding='utf-8')
@@ -288,19 +290,37 @@ class HostExportTests(unittest.TestCase):
             environment = {
                 'VERJSON_DEPLOYMENT_CLI': str(cli),
                 'VERJSON_DEPLOYMENT_CLI_ROOT': directory,
+                'RUNNER_TEMP': str(runner_temp),
                 'RUNNER_HOST_EVIDENCE_SSH_PRIVATE_KEY': 'ssh-private-key-secret',
                 'RUNNER_HOST_EVIDENCE_DOCTL_CONFIG': 'doctl-read-token-secret',
                 'RUNNER_HOST_EVIDENCE_KNOWN_HOSTS': 'preprovisioned-host-pin',
             }
-            with mock.patch.dict(os.environ, environment, clear=True):
-                return t.host_export(
-                    value,
-                    'installation-read-token',
-                    run=lambda command, **kwargs: subprocess.CompletedProcess(
-                        command, 0, stdout=json.dumps(report), stderr='',
-                    ),
-                    clock=lambda: NOW,
+            if not provide_runner_temp:
+                environment.pop('RUNNER_TEMP')
+            temp_directories = []
+
+            def run(command, **kwargs):
+                temporary = Path(kwargs['env']['TMPDIR'])
+                self.assertEqual(runner_temp, temporary.parent)
+                self.assertEqual(0o700, temporary.stat().st_mode & 0o777)
+                temp_directories.append(temporary)
+                return subprocess.CompletedProcess(
+                    command, 0, stdout=json.dumps(report), stderr='',
                 )
+
+            with mock.patch.dict(os.environ, environment, clear=True):
+                try:
+                    result = t.host_export(
+                        value,
+                        'installation-read-token',
+                        run=run,
+                        clock=lambda: NOW,
+                    )
+                finally:
+                    self.assertEqual(int(provide_runner_temp), len(temp_directories))
+                    for temporary in temp_directories:
+                        self.assertFalse(temporary.exists())
+            return result
 
     def test_capacity_export_returns_a_validated_fleet_report(self):
         report = {
@@ -318,6 +338,12 @@ class HostExportTests(unittest.TestCase):
         self.assertEqual(result['hostEvidence'], report)
         self.assertIsNone(result['releaseManifest'])
         self.assertEqual(result['baselineAttestations'], [])
+
+    def test_host_export_fails_closed_without_runner_temp(self):
+        with self.assertRaisesRegex(
+            t.TransportError, 'runner temporary directory unavailable'
+        ):
+            self._run_capacity_export({}, provide_runner_temp=False)
 
     def test_capacity_export_fails_closed_when_count_disagrees_with_roster(self):
         report = {
@@ -376,6 +402,7 @@ class HostExportTests(unittest.TestCase):
             secret_values.update({
                 'VERJSON_DEPLOYMENT_CLI': str(executable),
                 'VERJSON_DEPLOYMENT_CLI_ROOT': str(contract_root),
+                'RUNNER_TEMP': directory,
             })
 
             def run(command, **kwargs):
@@ -442,6 +469,7 @@ class HostExportTests(unittest.TestCase):
             environment = {
                 "VERJSON_DEPLOYMENT_CLI": str(cli),
                 "VERJSON_DEPLOYMENT_CLI_ROOT": directory,
+                'RUNNER_TEMP': directory,
                 "RUNNER_HOST_EVIDENCE_SSH_PRIVATE_KEY": "ssh-private-key-secret",
                 "RUNNER_HOST_EVIDENCE_DOCTL_CONFIG": "doctl-read-token-secret",
                 "RUNNER_HOST_EVIDENCE_KNOWN_HOSTS": "preprovisioned-host-pin",
@@ -471,22 +499,40 @@ class HostExportTests(unittest.TestCase):
 
 
 class HostExportJwtTests(unittest.TestCase):
+    def test_host_export_jwt_fails_closed_without_runner_temp(self):
+        private_key = "-----BEGIN PRIVATE KEY-----\nprivate-key-material\n-----END PRIVATE KEY-----\n"
+        calls = []
+
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(
+                t.TransportError, "runner temporary directory unavailable"
+            ):
+                t.mint_host_export_app_jwt(
+                    204, private_key, NOW, run=lambda *args, **kwargs: calls.append(args)
+                )
+
+        self.assertEqual([], calls)
+
     def test_host_export_jwt_is_short_lived_and_private_key_stays_in_temp_file(self):
         private_key = "-----BEGIN PRIVATE KEY-----\nprivate-key-material\n-----END PRIVATE KEY-----\n"
         calls = []
         key_paths = []
+        runner_temp = tempfile.TemporaryDirectory()
+        self.addCleanup(runner_temp.cleanup)
 
         def sign(command, **kwargs):
             calls.append((command, kwargs))
             key_path = Path(command[-1])
             key_paths.append(key_path)
+            self.assertEqual(Path(runner_temp.name), key_path.parent.parent)
             self.assertEqual(private_key, key_path.read_text(encoding="utf-8"))
             self.assertEqual(0o600, key_path.stat().st_mode & 0o777)
             self.assertNotIn(private_key, command)
             self.assertEqual({"PATH": os.environ.get("PATH", "/usr/bin:/bin")}, kwargs["env"])
             return subprocess.CompletedProcess(command, 0, stdout=b"signed-fixture", stderr=b"")
 
-        token = t.mint_host_export_app_jwt(204, private_key, NOW, run=sign)
+        with mock.patch.dict(os.environ, {"RUNNER_TEMP": runner_temp.name}, clear=False):
+            token = t.mint_host_export_app_jwt(204, private_key, NOW, run=sign)
         header, payload, signature = token.split(".")
         decode = lambda value: json.loads(
             base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
