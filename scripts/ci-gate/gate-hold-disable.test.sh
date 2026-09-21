@@ -11,6 +11,9 @@ fail(){ printf 'FAIL - %s\n' "$1"; fails=$((fails+1)); }
 awk '$0=="        id: arm"{f=1} f&&$0=="        run: |"{r=1;next} r{if($0~/^      - name:/)exit;sub(/^          /,"");print}' \
   "$workflow" >"$tmp/arm.sh"
 [ -s "$tmp/arm.sh" ] || { echo "FAIL - arm block missing"; exit 1; }
+mkdir -p "$tmp/.gate-trust/scripts/ci-gate"
+cp "$root/scripts/ci-gate/validate-ai-review-app-key.sh" "$tmp/.gate-trust/scripts/ci-gate/"
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:1024 -out "$tmp/valid-key.pem" 2>/dev/null
 python3 - "$workflow" "$tmp/preauthorize.sh" "$tmp/event-policy.sh" "$root/.github/workflows/ai-review-merge.yml" "$tmp/review-title-policy.sh" <<'PY'
 import sys
 from pathlib import Path
@@ -24,7 +27,7 @@ event_end = next(i for i in range(event_run + 1, len(lines)) if lines[i] == "  a
 Path(sys.argv[3]).write_text("\n".join(line[event_body_indent:] for line in lines[event_run + 1:event_end]) + "\n", encoding="utf-8")
 review = yaml.safe_load(Path(sys.argv[4]).read_text(encoding="utf-8"))
 Path(sys.argv[5]).write_text(review["jobs"]["title-policy"]["steps"][0]["run"], encoding="utf-8")
-step_name = "- name: Authorize hold-clearing actor before App token mint"
+step_name = "- name: Authorize hold-clearing actor before AI review admission"
 start = next(i for i, line in enumerate(lines) if line.strip() == step_name)
 step_indent = len(lines[start]) - len(lines[start].lstrip())
 run = next(i for i in range(start + 1, len(lines)) if lines[i].strip() == "run: |")
@@ -94,10 +97,17 @@ case "$*" in
   *"issues/7/events?per_page=100"*) printf '[{"id":1,"event":"labeled","label":{"name":"ai-review"},"actor":{"login":"maintainer"}},{"id":2,"event":"labeled","label":{"name":"re-review"},"actor":{"login":"maintainer"}}]\n' ;;
   *"contents/.github/workflows/ai-review-merge.yml?ref=main"*) cat "$CALLER_FILE" ;;
   *"--method POST repos/Verjson/example/check-runs --input -"*)
-    jq --argjson app_id "${CREATED_CHECK_APP_ID:-4242}" \
-      '. + {id:9100,app:{id:$app_id,slug:"verjson-ai-review"}}' ;;
-  *"repos/Verjson/example/check-runs/9100 --jq"*) printf 'in_progress\n' ;;
-  *"--method PATCH repos/Verjson/example/check-runs/9100 "*) printf '{}\n' ;;
+    response="$(jq --argjson app_id "${CREATED_CHECK_APP_ID:-15368}" \
+      '. + {id:9100,app:{id:$app_id,slug:"github-actions"}}')"
+    printf '%s\n' "$response" | tee "$CHECK_FILE"
+    if [ "${CREATED_CHECK_APP_ID:-15368}" != 15368 ]; then
+      jq '.app.id=15368 | .app.slug="github-actions"' "$CHECK_FILE" >"$TMP_TEST/check.actual"
+      mv "$TMP_TEST/check.actual" "$CHECK_FILE"
+    fi ;;
+  *"--method PATCH repos/Verjson/example/check-runs/9100 "*)
+    jq '.status="completed" | .conclusion="failure"' "$CHECK_FILE" >"$TMP_TEST/check.updated" && mv "$TMP_TEST/check.updated" "$CHECK_FILE"
+    printf '{}\n' ;;
+  *"repos/Verjson/example/check-runs/9100"*) cat "$CHECK_FILE" ;;
   "workflow run "*) printf 'DISPATCH %s\n' "$*" >>"$CALLS" ;;
   "pr comment "*) printf 'COMMENT %s\n' "$*" >>"$CALLS" ;;
   "pr edit "*) [ "${PR_EDIT_FAIL:-false}" != true ] ;;
@@ -106,11 +116,10 @@ esac
 GH
 chmod +x "$tmp/bin/gh"
 
-export PATH="$tmp/bin:$PATH" CALLS="$tmp/calls" META_FILE="$tmp/meta.json"
+export PATH="$tmp/bin:$PATH" CALLS="$tmp/calls" META_FILE="$tmp/meta.json" TMP_TEST="$tmp"
 export PRIVILEGED_ACTOR=other-admin PRIVILEGED_ACTOR_ROLE_NAME=admin PRIVILEGED_ACTOR_BASE_PERMISSION=admin
-export DISABLED_META_FILE="$tmp/disabled.json" GRAPHQL_FILE="$tmp/graphql.json" LATEST_FILE="$tmp/latest.json"
+export DISABLED_META_FILE="$tmp/disabled.json" GRAPHQL_FILE="$tmp/graphql.json" LATEST_FILE="$tmp/latest.json" CHECK_FILE="$tmp/check.json"
 export TARGET_REPO=Verjson/example PR_NUMBER=7 APP_ID=4242 APP_SLUG=verjson-ai-review
-export MINTED_APP_SLUG="$APP_SLUG"
 export DEFAULT_BRANCH=main EVENT_LABEL=hold EVENT_OLD_TITLE_HELD=false GITHUB_REPOSITORY_OWNER=Verjson
 export EVENT_NAME=pull_request_target REPOSITORY_ID=1234
 export REQUEST_ACTOR=maintainer
@@ -119,7 +128,8 @@ export WORKFLOW_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 export EVENT_HEAD_SHA=0123456789abcdef0123456789abcdef01234567
 export EVENT_NEW_TITLE_HELD=false HOLD_CLEAR_ACTOR_PERMISSION=''
 export GITHUB_ENV="$tmp/github-env"
-export ACTIONS_TOKEN=actions-token GH_TOKEN=app-token GITHUB_SERVER_URL=https://github.com
+export ACTIONS_TOKEN=actions-token GH_TOKEN=actions-token GITHUB_SERVER_URL=https://github.com
+export APP_KEY_POLICY_RESULT=success AI_REVIEW_ENVIRONMENT=ai-review-app AI_REVIEW_APP_PRIVATE_KEY="$(cat "$tmp/valid-key.pem")"
 export GITHUB_RUN_ID=8000 GITHUB_RUN_ATTEMPT=1 RUNNER_TEMP="$tmp"
 export GITHUB_OUTPUT="$tmp/github-output"
 CALLER_FILE="$tmp/current-caller.yml"
@@ -133,6 +143,8 @@ head_sha=0123456789abcdef0123456789abcdef01234567
 
 write_hold() {
   : >"$CALLS"
+  : >"$GITHUB_OUTPUT"
+  printf '{}\n' >"$LATEST_FILE"
   jq -nc --arg head "$head_sha" '{id:"PR_id",state:"OPEN",isDraft:false,title:"change",labels:[{name:"hold"}],headRefOid:$head,headRepositoryOwner:{login:"Verjson"},autoMergeRequest:{enabledAt:"now"}}' >"$META_FILE"
   printf '{"data":{"disablePullRequestAutoMerge":{"pullRequest":{"id":"PR_id"}}}}\n' >"$GRAPHQL_FILE"
   printf '{"id":"PR_id","autoMergeRequest":null}\n' >"$DISABLED_META_FILE"
@@ -141,8 +153,12 @@ write_hold() {
 run_arm(){
   local caller=ai-review-label-rearm.yml
   case "$EVENT_ACTION" in opened|reopened|synchronize) caller=gate-rearm.yml ;; esac
-  WORKFLOW_REF="Verjson/example/.github/workflows/$caller@refs/heads/main" bash "${ARM_SCRIPT:-$tmp/arm.sh}"
+  (cd "$tmp" && EVENT_ACTION="$EVENT_ACTION" EVENT_LABEL="$EVENT_LABEL" \
+    WORKFLOW_REF="Verjson/example/.github/workflows/$caller@refs/heads/main" \
+    bash "${ARM_SCRIPT:-$tmp/arm.sh}")
 }
+
+
 expect_fail(){ label="$1"; if run_arm >"$tmp/out" 2>&1; then fail "$label"; else pass "$label"; fi; }
 run_preauthorize(){ bash "$tmp/preauthorize.sh"; }
 
@@ -155,13 +171,21 @@ import yaml
 workflow = yaml.safe_load(Path(sys.argv[1]).read_text(encoding="utf-8"))
 jobs = workflow["jobs"]
 steps = jobs["arm"]["steps"]
-preauthorize = next(i for i, step in enumerate(steps) if step.get("name") == "Authorize hold-clearing actor before App token mint")
-mint = next(i for i, step in enumerate(steps) if step.get("name") == "Mint dedicated authorization App token")
-assert preauthorize < mint, "actor authorization must precede App-token mint"
+preauthorize = next(i for i, step in enumerate(steps) if step.get("name") == "Authorize hold-clearing actor before AI review admission")
 assert "admin|maintain" in steps[preauthorize]["run"]
 assert "role_name" in steps[preauthorize]["run"]
 assert "github.event.action == 'unlabeled'" in steps[preauthorize]["if"]
 assert "github.event.action == 'labeled'" in steps[preauthorize]["if"]
+create = next(step for step in steps if step.get("name") == "Create exact-head authorization receipt")
+assert jobs["arm"]["permissions"].get("checks") == "write"
+assert create["env"].get("GH_TOKEN") == "${{ github.token }}"
+assert not any(step.get("name") == "Mint dedicated authorization App token" for step in steps)
+assert "--argjson app_id 15368" in create["run"] and ".app.id == $app_id" in create["run"]
+assert "validate-ai-review-app-key.sh" in create["run"]
+receipt = next(step for step in steps if step.get("name") == "Upload immutable arm receipt")
+dispatch = next(step for step in steps if step.get("name") == "Dispatch trusted review after receipt publication")
+assert create["run"].index("gh api --method POST") < create["run"].index("validate-ai-review-app-key.sh")
+assert steps.index(receipt) < steps.index(dispatch)
 
 event_policy = jobs["event-policy"]
 assert event_policy["permissions"] == {}
@@ -174,7 +198,7 @@ assert jobs["arm"]["needs"] == ["event-policy", "app-key-policy"]
 assert "needs.event-policy.outputs.run_control_plane == 'true'" in jobs["arm"]["if"]
 
 assert jobs["app-key-policy"]["if"] == "${{ needs.event-policy.outputs.run_control_plane == 'true' }}"
-assert jobs["arm"]["if"] == "${{ needs.event-policy.outputs.run_control_plane == 'true' && needs.app-key-policy.result == 'success' }}"
+assert jobs["arm"]["if"] == "${{ always() && needs.event-policy.outputs.run_control_plane == 'true' }}"
 assert "old_title_held" in jobs["event-policy"]["outputs"]
 assert "new_title_held" in jobs["event-policy"]["outputs"]
 assert "EVENT_TITLE_CHANGED" in jobs["event-policy"]["steps"][0]["env"]
@@ -445,43 +469,36 @@ else
 fi
 
 write_hold
-MINTED_APP_SLUG=renamed-app
-if run_arm >"$tmp/out" 2>&1; then
-  fail "minted App slug mismatch was accepted"
-elif grep -q "AI review authorization App slug mismatch" "$tmp/out" \
-  && ! grep -q -- '--method POST repos/Verjson/example/check-runs' "$CALLS"; then
-  pass "minted App slug mismatch fails loudly before authorization creation"
+jq '.labels=[{"name":"ai-review"}]' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"
+printf '{}\n' >"$LATEST_FILE"
+export EVENT_ACTION=labeled EVENT_LABEL=ai-review ACTOR_PERMISSION=maintain
+WORKFLOW_REF=Verjson/example/.github/workflows/ai-review-label-rearm.yml@refs/heads/main
+if AI_REVIEW_APP_PRIVATE_KEY='' run_arm >"$tmp/out" 2>&1; then
+  fail "empty or invalid AI_REVIEW_APP_PRIVATE_KEY was accepted"
+elif grep -q 'AI_REVIEW_APP_PRIVATE_KEY is empty or invalid in the configured AI review environment' "$tmp/out" \
+  && grep -q 'failure_reason=invalid_ai_review_app_private_key' "$GITHUB_OUTPUT" \
+  && grep -q -- '--method POST repos/Verjson/example/check-runs' "$CALLS" \
+  && ! grep -q 'workflow run ai-review-merge.yml' "$CALLS"; then
+  pass "empty or invalid AI_REVIEW_APP_PRIVATE_KEY fails arm before review dispatch"
 else
-  fail "minted App slug mismatch did not fail before authorization creation"
-fi
-MINTED_APP_SLUG="$APP_SLUG"
-write_hold
-MINTED_APP_SLUG=''
-if run_arm >"$tmp/out" 2>&1; then
-  fail "missing token-action App slug was accepted"
-elif grep -q "AI review authorization App slug mismatch" "$tmp/out" \
-  && ! grep -q -- '--method POST repos/Verjson/example/check-runs' "$CALLS"; then
-  pass "missing token-action App slug fails before authorization creation"
-else
-  fail "missing token-action App slug did not fail before authorization creation"
+  fail "empty or invalid key did not fail visibly before review dispatch"
 fi
 write_hold
-MINTED_APP_SLUG='Invalid_Slug'
-if run_arm >"$tmp/out" 2>&1; then
-  fail "malformed token-action App slug was accepted"
-elif grep -q "AI review authorization App slug mismatch" "$tmp/out" \
-  && ! grep -q -- '--method POST repos/Verjson/example/check-runs' "$CALLS"; then
-  pass "malformed token-action App slug fails before authorization creation"
+jq '.labels=[{"name":"ai-review"}]' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"
+printf '{}\n' >"$LATEST_FILE"
+export EVENT_ACTION=labeled EVENT_LABEL=ai-review ACTOR_PERMISSION=maintain
+WORKFLOW_REF=Verjson/example/.github/workflows/ai-review-label-rearm.yml@refs/heads/main
+if AI_REVIEW_APP_PRIVATE_KEY='malformed private key' run_arm >"$tmp/out" 2>&1; then
+  fail "malformed AI_REVIEW_APP_PRIVATE_KEY was accepted"
+elif grep -q 'AI_REVIEW_APP_PRIVATE_KEY is empty or invalid in the configured AI review environment' "$tmp/out" \
+  && grep -q 'failure_reason=invalid_ai_review_app_private_key' "$GITHUB_OUTPUT" \
+  && grep -q -- '--method POST repos/Verjson/example/check-runs' "$CALLS" \
+  && ! grep -q 'workflow run ai-review-merge.yml' "$CALLS"; then
+  pass "malformed AI_REVIEW_APP_PRIVATE_KEY fails arm before review dispatch"
 else
-  fail "malformed token-action App slug did not fail before authorization creation"
+  fail "malformed key did not fail visibly before review dispatch"
 fi
-MINTED_APP_SLUG="$APP_SLUG"
 write_hold
-if run_arm >"$tmp/out" 2>&1 && ! grep -q '^api /installation$' "$CALLS"; then
-  pass "legitimate token-action slug proceeds without the inaccessible installation endpoint"
-else
-  fail "legitimate token-action slug attempted the production-404 installation endpoint"
-fi
 write_hold; printf '{"data":null,"errors":[{"message":"denied"}]}\n' >"$GRAPHQL_FILE"
 expect_fail "HTTP-200 GraphQL errors fail the hold closed"
 write_hold; printf '{"data":{"disablePullRequestAutoMerge":{"pullRequest":{"id":"wrong"}}}}\n' >"$GRAPHQL_FILE"
@@ -491,6 +508,8 @@ expect_fail "auto-merge remaining enabled after mutation fails closed"
 
 write_terminal_hold() {
   : >"$CALLS"
+  : >"$GITHUB_OUTPUT"
+  printf '{}\n' >"$LATEST_FILE"
   jq -nc --arg head "$head_sha" \
     '{id:"PR_id",state:"OPEN",isDraft:false,title:"change",labels:[],headRefOid:$head,headRepositoryOwner:{login:"Verjson"},autoMergeRequest:null}' \
     >"$META_FILE"
@@ -498,27 +517,19 @@ write_terminal_hold() {
 }
 
 app_id_mismatch_is_terminalized() {
-  local arm_script="$1" check_id
+  local arm_script="$1"
   write_terminal_hold
-  : >"$GITHUB_OUTPUT"
-  printf '{}\n' >"$LATEST_FILE"
-  if CREATED_CHECK_APP_ID=9999 ARM_SCRIPT="$arm_script" run_arm >"$tmp/out" 2>&1; then
-    return 1
-  fi
-  check_id="$(sed -n 's/^check_id=//p' "$GITHUB_OUTPUT")"
-  [ "$check_id" = 9100 ] || return 1
-  CHECK_ID="$check_id" APP_TOKEN=app-token bash "$tmp/terminalize.sh" >"$tmp/terminalize.out" 2>&1 || return 1
-  grep -q -- '--method PATCH repos/Verjson/example/check-runs/9100' "$CALLS" \
-    && grep -q 'status=completed' "$CALLS" \
-    && grep -q 'conclusion=failure' "$CALLS" \
-    && ! grep -q 'workflow run ai-review-merge.yml' "$CALLS" \
-    && [ ! -e "$RUNNER_TEMP/ai-review-arm-receipt/receipt.json" ]
+  jq '.labels=[{"name":"ai-review"}]' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"
+  export EVENT_ACTION=labeled EVENT_LABEL=ai-review ACTOR_PERMISSION=maintain
+  if ARM_SCRIPT="$arm_script" CREATED_CHECK_APP_ID=9999 run_arm >"$tmp/out" 2>&1; then return 1; fi
+  grep -q '^check_id=9100$' "$GITHUB_OUTPUT" \
+    && ! grep -q 'workflow run ai-review-merge.yml' "$CALLS"
 }
 
 if app_id_mismatch_is_terminalized "$tmp/arm.sh"; then
-  pass "a post-creation App-ID mismatch is completed as failure"
+  pass "a post-creation App-ID mismatch fails closed for the always-run finalizer"
 else
-  fail "a post-creation App-ID mismatch stranded its authorization check"
+  fail "a post-creation App-ID mismatch did not fail closed before dispatch"
 fi
 
 sed '/echo "check_id=\$check_id" >>"\$GITHUB_OUTPUT"/d' "$tmp/arm.sh" >"$tmp/arm-no-early-check-id.sh"
@@ -593,7 +604,7 @@ done
 write_repromotion() {
   : >"$CALLS"
   jq -nc --arg head "$head_sha" '{id:"PR_id",state:"OPEN",isDraft:false,title:"change",labels:[],headRefOid:$head,headRepositoryOwner:{login:"Verjson"},autoMergeRequest:null}' >"$META_FILE"
-  jq -nc --arg head "$head_sha" '{id:9001,conclusion:"success",details_url:"https://github.com/Verjson/example/actions/runs/7001",head_sha:$head}' >"$LATEST_FILE"
+  jq -nc --arg head "$head_sha" '{id:9001,status:"completed",conclusion:"success",details_url:"https://github.com/Verjson/example/actions/runs/7001",head_sha:$head,app:{id:15368,slug:"github-actions"}}' >"$LATEST_FILE"
   export EVENT_ACTION=unlabeled EVENT_LABEL=hold EVENT_OLD_TITLE_HELD=false EVENT_NEW_TITLE_HELD=false HOLD_CLEAR_ACTOR_PERMISSION=maintain RECEIPT_COUNT=1
 }
 write_repromotion
@@ -712,6 +723,17 @@ grep -q 'administrator must recover' "$CALLS" \
 ! grep -q 'workflow run ai-review-merge.yml' "$CALLS" \
   && pass "pending recovery never automatically dispatches another paid review" \
   || fail "pending recovery dispatched a paid review"
+
+write_repromotion
+jq '.status="in_progress" | .conclusion=null | .app={id:4242,slug:"verjson-ai-review"}' "$LATEST_FILE" >"$tmp/x" && mv "$tmp/x" "$LATEST_FILE"
+export RECEIPT_COUNT=0
+run_arm >"$tmp/out" 2>&1 || true
+if ! grep -q -- '--method POST repos/Verjson/example/check-runs' "$CALLS" \
+  && ! grep -q 'workflow run ai-review-merge.yml' "$CALLS"; then
+  pass "legacy App-owned pending authorization prevents duplicate review dispatch"
+else
+  fail "legacy App-owned pending authorization allowed a second paid review"
+fi
 
 : >"$CALLS"
 jq -nc --arg head "$head_sha" '{id:"PR_id",state:"OPEN",isDraft:false,title:"change",labels:[{name:"re-review"}],headRefOid:$head,headRepositoryOwner:{login:"Verjson"},autoMergeRequest:null}' >"$META_FILE"

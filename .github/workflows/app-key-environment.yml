@@ -9,6 +9,9 @@ on:
       environment:
         required: true
         type: string
+    secrets:
+      AI_REVIEW_APP_PRIVATE_KEY:
+        required: false
 
 permissions:
   actions: read
@@ -45,3 +48,31 @@ jobs:
             .branch_policies[0].name == "main" and
             .branch_policies[0].type == "branch"
           ' <<<"$policies" >/dev/null
+
+  validate-ai-review-key:
+    if: ${{ inputs.role == 'ai-review' }}
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+    steps:
+      - name: Resolve executing trusted workflow revision
+        id: trusted-revision
+        env:
+          EXECUTING_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: echo "sha=$EXECUTING_WORKFLOW_SHA" >>"$GITHUB_OUTPUT"
+      - name: Check out immutable AI review key validator
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: Verjson/.github
+          ref: ${{ steps.trusted-revision.outputs.sha }}
+          path: .gate-trust
+          sparse-checkout: scripts/ci-gate/validate-ai-review-app-key.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Validate the resolved AI review App private key
+        env:
+          AI_REVIEW_APP_PRIVATE_KEY: ${{ secrets.AI_REVIEW_APP_PRIVATE_KEY }}
+        run: bash .gate-trust/scripts/ci-gate/validate-ai-review-app-key.sh

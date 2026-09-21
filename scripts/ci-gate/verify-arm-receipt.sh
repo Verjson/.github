@@ -127,6 +127,8 @@ workflow_api authorization-check "$tmp/authorization-check.json" \
 check="$(<"$tmp/authorization-check.json")"
 details_url="$GITHUB_SERVER_URL/$TARGET_REPO/actions/runs/$ARM_RUN_ID"
 receipt_schema="$(jq -r '.schema // ""' "$tmp/receipt.json")"
+receipt_check_app_id="$(jq -r '.check_app_id // .app_id' "$tmp/receipt.json")"
+receipt_check_app_slug="$(jq -r '.check_app_slug // .app_slug' "$tmp/receipt.json")"
 if [ "$receipt_schema" = 1 ]; then
   [ "$arm_run_path" = .github/workflows/gate-rearm.yml ] || {
     echo "::error::label bridge requires a source-bound schema-2 receipt"; exit 1;
@@ -160,10 +162,13 @@ jq -e \
   --arg repository "$TARGET_REPO" --argjson pr_number "$PR_NUMBER" --arg head "$EXPECTED_HEAD_SHA" \
   --argjson check_id "$AUTHORIZATION_CHECK_ID" --argjson run_id "$ARM_RUN_ID" --argjson attempt "$ARM_RUN_ATTEMPT" \
   --arg details_url "$details_url" --argjson app_id "$EXPECTED_APP_ID" --arg app_slug "$EXPECTED_APP_SLUG" \
+  --argjson check_app_id "$receipt_check_app_id" --arg check_app_slug "$receipt_check_app_slug" \
   --arg review_policy "$REVIEW_POLICY" '
-  ((.schema == 1 and (keys | sort) == (["app_id","app_slug","arm_run_attempt","arm_run_id","check_run_id","details_url","external_id","head_sha","nonce","pr_number","repository","review_policy","schema"] | sort)) or
-   (.schema == 2 and (keys | sort) == (["app_id","app_slug","arm_run_attempt","arm_run_id","check_run_id","delivery_actor","delivery_event","details_url","external_id","head_sha","nonce","pr_number","repository","review_policy","schema","workflow_ref","workflow_sha"] | sort))) and
-  .repository == $repository and .pr_number == $pr_number and .head_sha == $head and
+  ((.schema == 1 and ([keys[] | select(. != "check_app_id" and . != "check_app_slug")] | sort) == (["app_id","app_slug","arm_run_attempt","arm_run_id","check_run_id","details_url","external_id","head_sha","nonce","pr_number","repository","review_policy","schema"] | sort)) or
+   (.schema == 2 and ([keys[] | select(. != "check_app_id" and . != "check_app_slug")] | sort) == (["app_id","app_slug","arm_run_attempt","arm_run_id","check_run_id","delivery_actor","delivery_event","details_url","external_id","head_sha","nonce","pr_number","repository","review_policy","schema","workflow_ref","workflow_sha"] | sort))) and
+  (has("check_app_id") == has("check_app_slug")) and
+    (if has("check_app_id") then .check_app_id == 15368 and .check_app_slug == "github-actions" else true end) and
+    .repository == $repository and .pr_number == $pr_number and .head_sha == $head and
   .check_run_id == $check_id and .arm_run_id == $run_id and .arm_run_attempt == $attempt and
   .details_url == $details_url and .app_id == $app_id and .app_slug == $app_slug and
   .review_policy == $review_policy and
@@ -175,10 +180,10 @@ jq -e \
 receipt_external_id="$(jq -r .external_id "$tmp/receipt.json")"
 jq -e --arg head "$EXPECTED_HEAD_SHA" --argjson check_id "$AUTHORIZATION_CHECK_ID" \
   --arg external_id "$receipt_external_id" --arg details_url "$details_url" \
-  --argjson app_id "$EXPECTED_APP_ID" --arg app_slug "$EXPECTED_APP_SLUG" '
+  --argjson check_app_id "$receipt_check_app_id" --arg check_app_slug "$receipt_check_app_slug" '
   .id == $check_id and .name == "AI review authorization" and .head_sha == $head and
   .external_id == $external_id and .details_url == $details_url and
-  .app.id == $app_id and .app.slug == $app_slug
+  .app.id == $check_app_id and .app.slug == $check_app_slug
 ' <<<"$check" >/dev/null || { echo "::error::authorization check is not receipt-bound"; exit 1; }
 
 workflow_api current-head "$tmp/current-head" "repos/$TARGET_REPO/pulls/$PR_NUMBER" \

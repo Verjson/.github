@@ -48,6 +48,7 @@ assert job == {
     "permissions": {
         "contents": "read",
         "actions": "write",
+        "checks": "write",
         "issues": "write",
         "pull-requests": "write",
     },
@@ -97,14 +98,31 @@ assert doc["concurrency"] == {"group": "ai-review-arm-${{ github.event.pull_requ
 arm = doc["jobs"]["arm"]
 assert arm["permissions"] == {
     "actions": "write",
+    "checks": "write",
     "contents": "read",
     "issues": "write",
     "pull-requests": "write",
 }
 assert arm["env"]["PR_NUMBER"] == "${{ github.event.pull_request.number }}"
 assert arm["env"]["TARGET_REPO"] == "${{ github.repository }}"
-uses = [step["uses"] for step in arm["steps"] if "uses" in step]
-assert uses and all(not value.startswith("actions/checkout@") for value in uses)
+arm_run = next(step["run"] for step in arm["steps"] if step.get("id") == "arm")
+assert "app.id == 15368" in arm_run and "app.id == $APP_ID" in arm_run
+assert "legacy AI App-owned authorization could not be safely recovered" in arm_run
+assert "no duplicate review was dispatched" in arm_run
+checkouts = [step for step in arm["steps"] if step.get("uses", "").startswith("actions/checkout@")]
+assert len(checkouts) == 1
+checkout = checkouts[0]
+assert checkout["uses"] == "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+assert checkout["with"] == {
+    "repository": "Verjson/.github",
+    "ref": "${{ steps.trusted-revision.outputs.sha }}",
+    "path": ".gate-trust",
+    "sparse-checkout": "scripts/ci-gate/validate-ai-review-app-key.sh",
+    "sparse-checkout-cone-mode": "false",
+    "persist-credentials": "false",
+}
+resolver = next(step for step in arm["steps"] if step.get("id") == "trusted-revision")
+assert resolver["env"]["EXECUTING_WORKFLOW_SHA"] == "${{ job.workflow_sha }}"
 script = "\n".join(step.get("run", "") for step in arm["steps"])
 for marker in (
     '[[ "$TARGET_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]',
@@ -116,12 +134,13 @@ for marker in (
 ):
     assert marker in script
 PY
-if grep -qF 'client-id: ${{ vars.AI_REVIEW_CLIENT_ID }}' "$canonical" \
-   && ! grep -qF 'app-id:' "$canonical" \
-   && grep -qF 'APP_ID: ${{ vars.AI_REVIEW_APP_ID }}' "$canonical"; then
-  pass "canonical caller target mints by client ID while retaining numeric App identity"
+if grep -qF 'APP_ID: ${{ vars.AI_REVIEW_APP_ID }}' "$canonical" \
+   && grep -qF -- '--argjson app_id 15368' "$canonical" \
+   && grep -qF '.app.id == $app_id' "$canonical" \
+   && ! grep -qF 'Mint dedicated authorization App token' "$canonical"; then
+  pass "canonical arm binds the Actions check identity without minting an App token"
 else
-  fail "canonical caller target drifted to legacy token input or lost numeric App verification"
+  fail "canonical arm lost Actions check identity or regained App token authority"
 fi
 
 # The immutable target matters only while the current executable arm, event

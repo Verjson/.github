@@ -13,6 +13,7 @@ export TARGET_REPO=Verjson/example PR_NUMBER=7
 export EXPECTED_HEAD_SHA=0123456789abcdef0123456789abcdef01234567
 export AUTHORIZATION_CHECK_ID=9001 ARM_RUN_ID=7001 ARM_RUN_ATTEMPT=2
 export EXPECTED_APP_ID=4242 EXPECTED_APP_SLUG=verjson-ai-review
+export CHECK_APP_ID=15368 CHECK_APP_SLUG=github-actions
 encode_policy() { python3 "$here/review-policy-envelope.py" encode "$1"; }
 anthropic_policy='{"actor":"trusted-arm","actor_permission":"automation","authority":"human","budget_usd":"auto","fallback_budget_usd":"","fallback_model":"","model":"auto","pricing_version":"anthropic-native-v1","provider":"anthropic"}'
 openai_policy='{"actor":"maintainer","actor_permission":"maintain","authority":"ai-approve","budget_usd":"1.00","fallback_budget_usd":"","fallback_model":"","model":"gpt-5.6-luna","pricing_version":"openai-luna-long-context-2026-08-08","provider":"openai"}'
@@ -65,16 +66,17 @@ write_base() {
     --arg workflow_url "https://api.github.com/repos/$TARGET_REPO/actions/workflows/77" \
     '{id:$id,run_attempt:$attempt,workflow_id:77,event:"pull_request_target",path:".github/workflows/gate-rearm.yml",workflow_url:$workflow_url,head_repository:{full_name:$repo}}' >"$RUN_FILE"
   jq -nc --argjson id "$AUTHORIZATION_CHECK_ID" --arg head "$EXPECTED_HEAD_SHA" --arg external "$external_id" \
-    --arg url "$details_url" --argjson app "$EXPECTED_APP_ID" --arg slug "$EXPECTED_APP_SLUG" \
+    --arg url "$details_url" --argjson app "$CHECK_APP_ID" --arg slug "$CHECK_APP_SLUG" \
     '{id:$id,name:"AI review authorization",head_sha:$head,external_id:$external,details_url:$url,app:{id:$app,slug:$slug},status:"in_progress",conclusion:null}' >"$CHECK_FILE"
   jq -nc --arg repository "$TARGET_REPO" --argjson pr_number "$PR_NUMBER" --arg head_sha "$EXPECTED_HEAD_SHA" \
     --argjson check_run_id "$AUTHORIZATION_CHECK_ID" --argjson arm_run_id "$ARM_RUN_ID" --argjson arm_run_attempt "$ARM_RUN_ATTEMPT" \
     --arg nonce "$nonce" --arg external_id "$external_id" --arg details_url "$details_url" \
     --argjson app_id "$EXPECTED_APP_ID" --arg app_slug "$EXPECTED_APP_SLUG" \
+  --argjson check_app_id "$CHECK_APP_ID" --arg check_app_slug "$CHECK_APP_SLUG" \
     --arg review_policy "$REVIEW_POLICY" \
     '{schema:1,repository:$repository,pr_number:$pr_number,head_sha:$head_sha,check_run_id:$check_run_id,
       arm_run_id:$arm_run_id,arm_run_attempt:$arm_run_attempt,nonce:$nonce,external_id:$external_id,
-      details_url:$details_url,app_id:$app_id,app_slug:$app_slug,review_policy:$review_policy}' >"$tmp/archive/receipt.json"
+      details_url:$details_url,app_id:$app_id,app_slug:$app_slug,check_app_id:$check_app_id,check_app_slug:$check_app_slug,review_policy:$review_policy}' >"$tmp/archive/receipt.json"
   rm -f "$ZIP_FILE"
   (cd "$tmp/archive" && python3 -m zipfile -c "$ZIP_FILE" receipt.json)
   digest="$(sha256sum "$ZIP_FILE" | awk '{print $1}')"
@@ -129,7 +131,7 @@ write_label_run() {
   repack
 }
 
-write_base; expect_pass "exact dedicated-App check and immutable receipt are accepted" verify
+write_base; expect_pass "exact Actions-owned check and immutable receipt are accepted" verify
 write_ruleset_run
 LOCAL_WORKFLOW_MISSING=true expect_pass "ruleset-created arm accepts distinct protected workflow and PR-head identities" verify
 write_label_run; expect_pass "separate pull_request_target label caller accepts an exact schema-2 receipt" verify
@@ -187,7 +189,7 @@ write_base; jq '.run_attempt=3' "$RUN_FILE" >"$tmp/x" && mv "$tmp/x" "$RUN_FILE"
 write_base; printf '{"artifacts":[]}\n' >"$ARTIFACTS_FILE"; expect_fail "missing arm artifact is rejected" verify
 write_base; rm "$tmp/archive/receipt.json" "$ZIP_FILE"; printf 'bad\n' >"$tmp/archive/other"; (cd "$tmp/archive" && python3 -m zipfile -c "$ZIP_FILE" other); digest="$(sha256sum "$ZIP_FILE"|awk '{print $1}')"; size="$(wc -c <"$ZIP_FILE")"; jq -nc --argjson size "$size" --arg digest "sha256:$digest" '{artifacts:[{id:8001,name:"ai-review-arm-7001-2",expired:false,size_in_bytes:$size,digest:$digest}]}' >"$ARTIFACTS_FILE"; expect_fail "malformed artifact archive is rejected" verify
 write_base; jq '.artifacts[0].digest="sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"' "$ARTIFACTS_FILE" >"$tmp/x" && mv "$tmp/x" "$ARTIFACTS_FILE"; expect_fail "substituted artifact digest is rejected" verify
-write_base; jq '.app.id=9999' "$CHECK_FILE" >"$tmp/x" && mv "$tmp/x" "$CHECK_FILE"; expect_fail "shared or wrong App identity is rejected" verify
+write_base; jq '.app.id=9999' "$CHECK_FILE" >"$tmp/x" && mv "$tmp/x" "$CHECK_FILE"; expect_fail "shared or wrong check-run owner is rejected" verify
 
 # #931/#943: this script never deletes the receipt itself -- deletion happens
 # too early here, before the calling step's own later work (completing the

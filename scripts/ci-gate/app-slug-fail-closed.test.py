@@ -3,29 +3,34 @@ from pathlib import Path
 
 import yaml
 
-
 ROOT = Path(__file__).resolve().parents[2]
-workflow = yaml.safe_load((ROOT / ".github/workflows/gate-rearm.yml").read_text())
-steps = workflow["jobs"]["arm"]["steps"]
-arm = next(step for step in steps if step.get("name") == "Create exact-head authorization receipt")
-script = arm["run"]
 
-assert arm["env"]["MINTED_APP_SLUG"] == "${{ steps.app-token.outputs.app-slug }}"
+def workflow(name):
+    return yaml.safe_load((ROOT / f".github/workflows/{name}.yml").read_text())
 
-create = 'gh api --method POST "repos/$TARGET_REPO/check-runs"'
-export_check_id = 'echo "check_id=$check_id" >>"$GITHUB_OUTPUT"'
-validate_created_identity = (
-    ".app.id == $app_id and .app.slug == $slug and .external_id == $external_id"
-)
-error = "AI review authorization App slug mismatch: expected '$APP_SLUG'"
+rearm = workflow("gate-rearm")
+arm = rearm["jobs"]["arm"]
+arm_step = next(step for step in arm["steps"] if step.get("name") == "Create exact-head authorization receipt")
+arm_script = arm_step["run"]
+assert arm["permissions"].get("checks") == "write"
+assert arm_step["env"]["GH_TOKEN"] == "${{ github.token }}"
+assert not any(step.get("name") == "Mint dedicated authorization App token" for step in arm["steps"])
+assert "--argjson app_id 15368" in arm_script and ".app.id == $app_id" in arm_script
+assert "--arg slug github-actions" in arm_script and ".app.slug == $slug" in arm_script
+create_check = arm_script.index('gh api --method POST "repos/$TARGET_REPO/check-runs"')
+validate_key = arm_script.index("validate-ai-review-app-key.sh")
+dispatch = next(step for step in arm["steps"] if step.get("name") == "Dispatch trusted review after receipt publication")
+receipt = next(step for step in arm["steps"] if step.get("name") == "Upload immutable arm receipt")
+assert create_check < validate_key
+assert arm["steps"].index(receipt) < arm["steps"].index(dispatch)
 
-assert "gh api /installation" not in script
-assert 'token_action_app_slug="$(printenv MINTED_APP_SLUG || true)"' in script
-assert '[[ "$token_action_app_slug" =~ ^[a-z0-9][a-z0-9-]*$ ]]' in script
-assert '[ "$token_action_app_slug" != "$APP_SLUG" ]' in script
-assert error in script and script.index(error) < script.index(create)
-assert script.index(create) < script.index(export_check_id) < script.index(validate_created_identity)
-assert "force_terminal_failure" not in script
-assert "AUTHORIZATION_CHECK_CREATED_ID" not in script
-
-print("PASS - pinned token-action slug drift fails loudly before authorization creation")
+review = workflow("ai-review-merge")
+complete = review["jobs"]["complete-authorization"]
+app_token = next(step for step in complete["steps"] if step.get("name") == "Mint dedicated authorization App token")
+complete_step = next(step for step in complete["steps"] if step.get("name") == "Complete exact head authorization")
+assert app_token.get("if") == "${{ needs.app-key-policy.result == 'success' }}"
+assert "permission-checks" not in app_token["with"]
+assert complete_step["env"]["MINTED_APP_SLUG"] == "${{ steps.app-token.outputs.app-slug }}"
+assert '"$MINTED_APP_SLUG" = "$EXPECTED_APP_SLUG"' in complete_step["run"]
+assert 'GH_TOKEN="$ACTIONS_TOKEN" gh api --method PATCH "repos/$TARGET_REPO/check-runs/$AUTHORIZATION_CHECK_ID"' in complete_step["run"]
+print("PASS - GitHub Actions owns check completion; AI App key is validated before review token mint and dispatch")

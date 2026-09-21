@@ -191,13 +191,42 @@ class WorkflowBoundaryTests(unittest.TestCase):
                     {"actions": "read", "contents": "read"},
                     f"{name}: app-key policy must retain explicit read-only permissions",
                 )
-                self.assertNotIn("secrets", policy)
+                if name == "ai-review-merge":
+                    self.assertEqual(
+                        policy.get("secrets"),
+                        {"AI_REVIEW_APP_PRIVATE_KEY": "${{ secrets.AI_REVIEW_APP_PRIVATE_KEY }}"},
+                    )
+                else:
+                    self.assertNotIn("secrets", policy)
                 for job in jobs:
                     value = doc["jobs"][job]
                     self.assertIn(field, value["environment"])
                     self.assertIn("app-key-policy", value["needs"])
-                    if "always()" in value.get("if", ""):
+                    if job == "arm":
+                        self.assertIn("always()", value["if"])
+                        self.assertIn("needs.event-policy.outputs.run_control_plane == 'true'", value["if"])
+                        self.assertNotIn("needs.app-key-policy.result == 'success'", value["if"])
+                    elif job == "complete-authorization":
+                        self.assertIn("always()", value["if"])
+                        self.assertIn("inputs.authorization_check_id != ''", value["if"])
+                        app_token = next(
+                            step for step in value["steps"] if step.get("name") == "Mint dedicated authorization App token"
+                        )
+                        self.assertIn("needs.app-key-policy.result == 'success'", app_token["if"])
+                    elif "always()" in value.get("if", ""):
                         self.assertIn("needs.app-key-policy.result == 'success'", value["if"])
+
+    def test_ai_review_key_policy_validates_the_resolved_environment_secret(self):
+        policy = workflow("app-key-environment")
+        call = policy.get("on", policy.get(True))["workflow_call"]
+        self.assertFalse(call["secrets"]["AI_REVIEW_APP_PRIVATE_KEY"]["required"])
+        job = policy["jobs"]["validate-ai-review-key"]
+        self.assertEqual(job["if"], "${{ inputs.role == 'ai-review' }}")
+        self.assertEqual(job["needs"], "validate")
+        self.assertEqual(job["environment"], "${{ inputs.environment }}")
+        validator = next(step for step in job["steps"] if step.get("name") == "Validate the resolved AI review App private key")
+        self.assertEqual(validator["env"]["AI_REVIEW_APP_PRIVATE_KEY"], "${{ secrets.AI_REVIEW_APP_PRIVATE_KEY }}")
+        self.assertIn("validate-ai-review-app-key.sh", validator["run"])
 
     def test_retry_inherits_context_and_retains_fixed_environment(self):
         retry = workflow("ai-promotion-retry")
@@ -243,7 +272,7 @@ class WorkflowBoundaryTests(unittest.TestCase):
     def test_body_only_edits_skip_jobs_but_title_hold_transitions_run(self):
         jobs = workflow("gate-rearm")["jobs"]
         policy_guard = "${{ needs.event-policy.outputs.run_control_plane == 'true' }}"
-        arm_guard = "${{ needs.event-policy.outputs.run_control_plane == 'true' && needs.app-key-policy.result == 'success' }}"
+        arm_guard = "${{ always() && needs.event-policy.outputs.run_control_plane == 'true' }}"
         self.assertEqual(jobs["app-key-policy"]["if"], policy_guard)
         self.assertEqual(jobs["arm"]["if"], arm_guard)
         self.assertEqual(jobs["event-policy"]["outputs"]["old_title_held"], "${{ steps.classify.outputs.old_title_held }}")
@@ -461,7 +490,21 @@ class AppKeyRoleManifestTests(unittest.TestCase):
         for binding in self.bindings:
             entry = declared[binding["secret"]]
             with self.subTest(workflow=binding["workflow"], job=binding["job"]):
-                if entry["confinement"] == "unconfined":
+                if binding["workflow"] == "app-key-environment" and binding["job"] == "validate-ai-review-key":
+                    self.assertEqual(binding["environment"], "${{ inputs.environment }}")
+                    self.assertIn("validate", binding["needs"])
+                elif binding["job"] == "app-key-policy":
+                    # This narrow forwarder passes the key only to the reusable
+                    # policy workflow, which validates it inside its environment.
+                    caller = workflow(binding["workflow"])
+                    policy = caller["jobs"]["app-key-policy"]
+                    self.assertEqual(policy["uses"], "./.github/workflows/app-key-environment.yml")
+                    self.assertIn("environment", policy["with"])
+                    self.assertEqual(
+                        policy.get("secrets"),
+                        {"AI_REVIEW_APP_PRIVATE_KEY": "${{ secrets.AI_REVIEW_APP_PRIVATE_KEY }}"},
+                    )
+                elif entry["confinement"] == "unconfined":
                     self.assertIsNone(binding["environment"])
                 elif entry["confinement"] == "caller-owned":
                     self.assertEqual(binding["environment"], entry["environment"])
@@ -491,7 +534,15 @@ class AppKeyRoleManifestTests(unittest.TestCase):
             if binding["secret"] not in canonical:
                 continue
             with self.subTest(workflow=binding["workflow"], job=binding["job"]):
-                self.assertIn("app-key-policy", binding["needs"])
+                if binding["workflow"] == "app-key-environment":
+                    self.assertIn("validate", binding["needs"])
+                elif binding["job"] == "app-key-policy":
+                    self.assertEqual(
+                        workflow(binding["workflow"])["jobs"]["app-key-policy"]["secrets"],
+                        {"AI_REVIEW_APP_PRIVATE_KEY": "${{ secrets.AI_REVIEW_APP_PRIVATE_KEY }}"},
+                    )
+                else:
+                    self.assertIn("app-key-policy", binding["needs"])
 
     def test_policy_workflow_accepts_exactly_the_canonical_roles(self):
         roles = {e["role"] for e in self.manifest if e["confinement"] == "canonical"}

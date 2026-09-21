@@ -47,7 +47,7 @@ assert workflow["on"] == {"workflow_dispatch": {"inputs": {
     "review_policy": {"required": "true", "type": "string"},
 }}}
 assert workflow["permissions"] == {
-    "actions": "write", "checks": "read", "contents": "read",
+    "actions": "write", "checks": "write", "contents": "read",
     "issues": "write", "pull-requests": "write", "statuses": "read",
 }
 job = workflow["jobs"]["review"]

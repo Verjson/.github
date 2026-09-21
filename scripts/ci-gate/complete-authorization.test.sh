@@ -32,11 +32,11 @@ def valid(document):
         and env.get("APP_CLIENT_ID") == "${{ vars.AI_REVIEW_CLIENT_ID }}"
         and token["with"].get("client-id") == "${{ vars.AI_REVIEW_CLIENT_ID }}"
         and "app-id" not in token["with"]
-        and token["with"].get("permission-checks") == "write"
+        and "permission-checks" not in token["with"]
         and token["with"].get("permission-contents") == "read"
         and token["with"].get("permission-pull-requests") == "write"
         and document["jobs"]["complete-authorization"]["permissions"].get("actions") == "write"
-        and document["jobs"]["complete-authorization"]["permissions"].get("checks") == "read"
+        and document["jobs"]["complete-authorization"]["permissions"].get("checks") == "write"
         and document["jobs"]["complete-authorization"]["permissions"].get("pull-requests") == "read"
         and complete["env"].get("APP_TOKEN") == "${{ steps.app-token.outputs.token }}"
         and complete["env"].get("MINTED_APP_SLUG") == "${{ steps.app-token.outputs.app-slug }}"
@@ -45,7 +45,7 @@ def valid(document):
         and "GH_TOKEN" not in complete["env"]
         and 'GH_TOKEN="$APP_TOKEN" gh api' in run
         and 'app_api app-approval "$approval_file" --method POST' in run
-        and 'app_api authorization-check "$RUNNER_TEMP/authorization-check.json" --method PATCH' in run
+        and 'GH_TOKEN="$ACTIONS_TOKEN" gh api --method PATCH "repos/$TARGET_REPO/check-runs/$AUTHORIZATION_CHECK_ID"' in run
         and 'app_api persisted-approval "$persisted_file"' in run
         and 'approval="$(app_api' not in run
         and 'persisted="$(app_api' not in run
@@ -111,9 +111,9 @@ token = next(step for step in no_contents_read["jobs"]["complete-authorization"]
              if step.get("name") == "Mint dedicated authorization App token")
 del token["with"]["permission-contents"]
 assert not valid(no_contents_read), "missing App contents read permission escaped"
-no_workflow_checks_read = copy.deepcopy(workflow)
-del no_workflow_checks_read["jobs"]["complete-authorization"]["permissions"]["checks"]
-assert not valid(no_workflow_checks_read), "missing workflow-token check read permission escaped"
+no_workflow_checks_write = copy.deepcopy(workflow)
+del no_workflow_checks_write["jobs"]["complete-authorization"]["permissions"]["checks"]
+assert not valid(no_workflow_checks_write), "missing workflow-token check read permission escaped"
 reordered = copy.deepcopy(workflow)
 complete = next(step for step in reordered["jobs"]["complete-authorization"]["steps"]
                 if step.get("name") == "Complete exact head authorization")
@@ -154,11 +154,21 @@ complete = next(step for step in permission_reverification["jobs"]["complete-aut
                 if step.get("name") == "Complete exact head authorization")
 complete["env"]["REVERIFY_ACTOR_PERMISSION"] = True
 assert not valid(permission_reverification), "completion actor-permission revalidation escaped token boundary"
+finalizer = next(step for step in workflow["jobs"]["complete-authorization"]["steps"]
+                 if step.get("name") == "Fail authorization if completion did not run")
+assert "always()" in finalizer["if"] and "steps.complete.outcome != 'success'" in finalizer["if"]
+assert "AI review authorization" in finalizer["run"]
+assert ".app.id == 15368" in finalizer["run"] and '.app.slug == "github-actions"' in finalizer["run"]
+assert "$legacy_app_id" in finalizer["run"] and "$legacy_app_slug" in finalizer["run"]
+assert "$parts[5] == $run" in finalizer["run"] and "$parts[6] == $attempt" in finalizer["run"]
+assert "conclusion=failure" in finalizer["run"] and "conclusion=success" not in finalizer["run"]
 PY
 [ "$?" -eq 0 ] || exit 1
 
-awk '$0=="      - name: Complete exact head authorization"{f=1;next} f&&$0=="        run: |"{r=1;next} r{if($0~/^  [A-Za-z0-9_-]+:/)exit;sub(/^          /,"");print}' \
+awk '$0=="      - name: Complete exact head authorization"{f=1;next} f&&$0=="        run: |"{r=1;next} r{if($0~/^      - name:/ || $0~/^  [A-Za-z0-9_-]+:/)exit;sub(/^          /,"");print}' \
   "$workflow" >"$tmp/complete.sh"
+awk '$0=="      - name: Fail authorization if completion did not run"{f=1;next} f&&$0=="        run: |"{r=1;next} r{if($0~/^      - name:/ || $0~/^  [A-Za-z0-9_-]+:/)exit;sub(/^          /,"");print}' \
+  "$workflow" >"$tmp/finalize.sh"
 [ -s "$tmp/complete.sh" ] || { echo "FAIL - completion block missing"; exit 1; }
 
 mkdir -p "$tmp/run/.gate-trust/scripts/ci-gate" "$tmp/bin"
@@ -172,6 +182,14 @@ cat >"$tmp/bin/gh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$CALLS"
 case "$*" in
+  "api repos/Verjson/example/check-runs/9001")
+    jq -nc --argjson id "$AUTHORIZATION_CHECK_ID" --arg head "$EXPECTED_AUTHORIZED_HEAD_SHA" \
+            --arg repo "$TARGET_REPO" --arg pr "$PR_NUMBER" --arg run "$ARM_RUN_ID" --arg attempt "$ARM_RUN_ATTEMPT" \
+            --arg url "$GITHUB_SERVER_URL/$TARGET_REPO/actions/runs/$ARM_RUN_ID" \
+            --argjson check_app_id "${CHECK_APP_ID:-15368}" --arg check_app_slug "${CHECK_APP_SLUG:-github-actions}" \
+            '{id:$id,name:"AI review authorization",head_sha:$head,
+             external_id:("ai-review:v1:"+$repo+":"+$pr+":"+$head+":"+$run+":"+$attempt+":"+("a"*64)),
+             details_url:$url,status:"in_progress",conclusion:null,app:{id:$check_app_id,slug:$check_app_slug}}' ;;
   "api --method POST "*)
     if [ "${APPROVAL_RC:-0}" -ne 0 ]; then
       printf 'authorization: token leaked-test-token\nx-github-request-id: TEST:1234\n' >&2
@@ -195,15 +213,16 @@ chmod +x "$tmp/bin/gh"
 
 export PATH="$tmp/bin:$PATH" CALLS="$tmp/calls" TARGET_REPO=Verjson/example PR_NUMBER=7
 export AUTHORIZATION_CHECK_ID=9001 ARM_RUN_ID=7001 ARM_RUN_ATTEMPT=2
-export EXPECTED_APP_ID=4242 EXPECTED_APP_SLUG=verjson-ai-review
+export EXPECTED_APP_ID=4242 EXPECTED_APP_SLUG=verjson-ai-review GITHUB_SERVER_URL=https://github.com
 export EXPECTED_AUTHORIZED_HEAD_SHA=0123456789abcdef0123456789abcdef01234567
 export EXPECTED_REVIEWED_HEAD_SHA="$EXPECTED_AUTHORIZED_HEAD_SHA" EXPECTED_HEAD_SHA="$EXPECTED_AUTHORIZED_HEAD_SHA"
-export GATE_STATUS=success ACTIONS_TOKEN=actions-token APP_TOKEN=app-token
+export GATE_STATUS=success ACTIONS_TOKEN=actions-token APP_TOKEN=app-token APP_KEY_POLICY_RESULT=success
 export MINTED_APP_SLUG="$EXPECTED_APP_SLUG" INSTALLATION_ID=1234 RUNNER_TEMP="$tmp"
 export REVIEW_AUTHORITY=ai-merge REVIEW_OUTCOME=approved GITHUB_OUTPUT="$tmp/github-output"
 export PREFLIGHT_STATUS=success PREFLIGHT_LANE=ai
 
 run_complete(){ (cd "$tmp/run" && bash "$tmp/complete.sh"); }
+run_finalizer(){ (cd "$tmp/run" && env "$@" bash "$tmp/finalize.sh"); }
 if (cd "$tmp/run" && .gate-trust/scripts/ci-gate/verify-arm-receipt.sh) >"$tmp/out" 2>&1; then
   fail "non-executable completion verifier unexpectedly supports direct execution"
 else
@@ -217,6 +236,16 @@ if run_complete >"$tmp/out" 2>&1 && grep -q 'conclusion=success' "$CALLS" \
    && grep -q "ai-review-authorized:v1:${AUTHORIZATION_CHECK_ID}:${EXPECTED_AUTHORIZED_HEAD_SHA}:ai-merge" "$CALLS"; then
   pass "trusted preflight head receives persisted App approval before authorization completion"
 else fail "valid completion head handoff failed: $(tail -1 "$tmp/out")"; fi
+
+
+: >"$CALLS"; : >"$GITHUB_OUTPUT"
+if CHECK_APP_ID=4242 CHECK_APP_SLUG=verjson-ai-review run_complete >"$tmp/out" 2>&1 \
+  && grep -q 'conclusion=success' "$CALLS" \
+  && grep -q 'ai_authorized=true' "$GITHUB_OUTPUT"; then
+  pass "legacy App-owned authorization check completes during rollout"
+else
+  fail "legacy App-owned authorization check was rejected during rollout"
+fi
 
 : >"$CALLS"; : >"$GITHUB_OUTPUT"; APPROVAL_RC=1 run_complete >"$tmp/out" 2>&1
 if [ "$?" -eq 0 ] && grep -q 'conclusion=neutral' "$CALLS" \
@@ -352,21 +381,34 @@ done
 # so it can report that failure; aborting before the PATCH leaves the check run
 # `in_progress` forever, which blocks the PR with no signal and no rerun path.
 # The approval POST must still never happen — that is the authorization mutation.
-: >"$CALLS"; : >"$GITHUB_OUTPUT"; EXPECTED_HEAD_SHA= run_complete >"$tmp/out" 2>&1
-if [ "$?" -ne 0 ] && grep -q 'api --method PATCH' "$CALLS" \
-  && grep -q 'conclusion=failure' "$CALLS" \
-  && ! grep -q 'api --method POST' "$CALLS" \
-  && grep -q 'ai_authorized=false' "$GITHUB_OUTPUT"; then
-  pass "omitted EXPECTED_HEAD_SHA completes the check run as failure without requesting approval"
-else fail "missing completion head left the authorization check unresolved"; fi
+: >"$CALLS"; : >"$GITHUB_OUTPUT"; EXPECTED_HEAD_SHA='' run_complete >"$tmp/out" 2>&1
+run_finalizer >"$tmp/out" 2>&1
+if [ "$?" -eq 0 ] \
+   && grep -q 'api --method PATCH' "$CALLS" && grep -q 'conclusion=failure' "$CALLS" \
+   && ! grep -q 'api --method POST' "$CALLS"; then
+  pass "missing completion head fails its exact Actions check without requesting approval"
+else
+  fail "missing completion head left the authorization check unresolved"
+fi
 
 : >"$CALLS"; : >"$GITHUB_OUTPUT"; EXPECTED_HEAD_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa run_complete >"$tmp/out" 2>&1
-if [ "$?" -ne 0 ] && grep -q 'api --method PATCH' "$CALLS" \
-  && grep -q 'conclusion=failure' "$CALLS" \
-  && ! grep -q 'api --method POST' "$CALLS" \
-  && grep -q 'ai_authorized=false' "$GITHUB_OUTPUT"; then
-  pass "mismatched EXPECTED_HEAD_SHA completes the check run as failure without requesting approval"
-else fail "mismatched completion head left the authorization check unresolved"; fi
+run_finalizer >"$tmp/out" 2>&1
+if [ "$?" -eq 0 ] \
+   && grep -q 'api --method PATCH' "$CALLS" && grep -q 'conclusion=failure' "$CALLS" \
+   && ! grep -q 'api --method POST' "$CALLS"; then
+  pass "mismatched completion head fails its exact Actions check without requesting approval"
+else
+  fail "mismatched completion head left the authorization check unresolved"
+fi
+
+
+: >"$CALLS"
+if run_finalizer APP_KEY_POLICY_RESULT=failure AI_REVIEW_ENVIRONMENT=ai-review-app >"$tmp/out" 2>&1 \
+  && grep -Fq 'AI_REVIEW_APP_PRIVATE_KEY validation or review environment admission failed for ai-review-app' "$CALLS"; then
+  pass "failed key admission reports its environment and secret on the authorization check"
+else
+  fail "failed key admission did not produce an actionable authorization check"
+fi
 
 : >"$CALLS"; : >"$GITHUB_OUTPUT"; HEAD_RC=1 run_complete >"$tmp/out" 2>&1
 if [ "$?" -ne 0 ] && grep -q 'api --method PATCH' "$CALLS" \
