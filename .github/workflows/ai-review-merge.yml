@@ -225,7 +225,26 @@ jobs:
       role: ai-review
       environment: ${{ inputs.ai_review_environment }}
 
+  title-policy:
+    runs-on: ${{ fromJSON(vars.CI_LANE_UNTRUSTED || '["ubuntu-24.04"]') }}
+    permissions: {}
+    outputs:
+      title_held: ${{ steps.classify.outputs.title_held }}
+    steps:
+      - id: classify
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title || '' }}
+        run: |
+          set -euo pipefail
+          title_held=false
+          title_ascii="$(jq -nr --arg title "$PR_TITLE" '$title | ascii_upcase')"
+          if [[ "$title_ascii" =~ (^|[^ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_])DO\ NOT\ MERGE([^ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]|$) ]]; then
+            title_held=true
+          fi
+          printf 'title_held=%s\n' "$title_held" >>"$GITHUB_OUTPUT"
+
   preflight:
+    needs: title-policy
     # Keep the branch current with its base BEFORE we review/merge, so a green
     # gate always means green against the *current* base — a behind-but-clean
     # branch never merges stale. Behind → update the branch (the resulting
@@ -248,7 +267,7 @@ jobs:
         !github.event.pull_request.draft &&
         !contains(github.event.pull_request.labels.*.name, 'hold') &&
         !contains(github.event.pull_request.labels.*.name, 'DO NOT MERGE') &&
-        !contains(github.event.pull_request.title, 'DO NOT MERGE')
+        needs.title-policy.outputs.title_held != 'true'
       ))
     # A workflow_call consumer sets its own fleet via `with.runner_labels`; the
     # org direct paths (pull_request/workflow_dispatch) leave it empty and route
@@ -629,7 +648,7 @@ jobs:
           # is the one direction this check must never fail in. A jq error now
           # aborts under `set -e`; anything other than the two expected strings
           # fails closed explicitly.
-          held="$(jq -r '([.labels[].name | ascii_upcase | gsub("[ _-]+";" ")]) as $l | ($l | index("HOLD")) or ($l | index("DO NOT MERGE")) or (.title | ascii_upcase | contains("DO NOT MERGE")) or .isDraft | if . then "true" else "false" end' <<<"$meta")"
+          held="$(jq -r '([.labels[].name | ascii_upcase | gsub("[ _-]+";" ")]) as $l | ($l | index("HOLD")) or ($l | index("DO NOT MERGE")) or (.title | ascii_upcase | test("(^|[^ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_])DO NOT MERGE([^ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]|$)")) or .isDraft | if . then "true" else "false" end' <<<"$meta")"
           case "$held" in
             true)
               echo "PR is held (label/title/draft); no lane."

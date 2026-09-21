@@ -130,6 +130,8 @@ write_base; jq '.labels=[{"name":"hold"}]' "$META_FILE" >"$tmp/x" && mv "$tmp/x"
 write_base; jq '.labels=[{"name":"DO NOT MERGE"}]' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"; expect_pass "DO NOT MERGE label is a terminal no-op" run_promote; ! grep -q 'pr merge' "$CALLS" || fail "DO NOT MERGE label merged"
 write_base; jq '.labels=[{"name":"Do__Not--Merge"}]' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"; expect_pass "normalized hold label is a terminal no-op" run_promote; ! grep -q 'pr merge' "$CALLS" || fail "normalized hold label merged"
 write_base; jq '.title="chore: DO NOT MERGE until QA"' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"; expect_pass "DO NOT MERGE title is a terminal no-op" run_promote; ! grep -q 'pr merge' "$CALLS" || fail "DO NOT MERGE title merged"
+write_base; jq --arg title $'DO NOT MERGE\u212a' '.title=$title' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"; expect_pass "Unicode boundary title is a terminal no-op" run_promote; ! grep -q 'pr merge' "$CALLS" || fail "Unicode boundary title merged"
+write_base; jq '.title="REDO NOT MERGEABLE: QA"' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"; expect_pass "embedded title words are not a hold" run_promote; grep -q 'pr merge' "$CALLS" || fail "embedded title words blocked a valid promotion"
 for malformed in truncated labels-not-array label-name-not-string title-not-string; do
   write_base
   case "$malformed" in
