@@ -1,52 +1,63 @@
 name: Changelog contract fleet report
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - .github/workflows/changelog-contract-fleet-report.yml
-      - scripts/fleet-contract-inventory.py
-      - scripts/contract_reference.py
-      - scripts/render-fleet-contract-inventory-report.py
-  schedule:
-    - cron: '17 7 * * 1'
+  workflow_call:
+    inputs:
+      contract_sha:
+        description: Immutable Verjson/.github commit containing the inventory scripts.
+        required: true
+        type: string
+      app_client_id:
+        description: GitHub App client ID for the read-only organization inventory.
+        required: true
+        type: string
+    secrets:
+      RENOVATE_COMPATIBILITY_APP_PRIVATE_KEY:
+        required: true
 
 permissions:
   contents: read
 
-concurrency:
-  group: changelog-contract-fleet-report
-  cancel-in-progress: false
-
 jobs:
   report:
-    runs-on: ubuntu-24.04
+    if: github.repository == 'Verjson/verjson-agents' && github.ref == 'refs/heads/main'
+    runs-on: ${{ fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Require compatibility App client ID
+      - name: Validate caller inputs
         env:
-          RENOVATE_COMPATIBILITY_CLIENT_ID: ${{ vars.RENOVATE_COMPATIBILITY_CLIENT_ID }}
+          APP_CLIENT_ID: ${{ inputs.app_client_id }}
+          CONTRACT_SHA: ${{ inputs.contract_sha }}
         run: |
-          if [[ -z "$RENOVATE_COMPATIBILITY_CLIENT_ID" || ! "$RENOVATE_COMPATIBILITY_CLIENT_ID" =~ ^[0-9]+$ ]]; then
-            echo "::error::RENOVATE_COMPATIBILITY_CLIENT_ID must be a numeric GitHub App client ID."
+          if [[ ! "$APP_CLIENT_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::app_client_id must be a numeric GitHub App client ID."
             exit 1
           fi
+          if [[ ! "$CONTRACT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::contract_sha must be a full lowercase 40-character commit SHA."
+            exit 1
+          fi
+
+      - name: Check out the pinned inventory implementation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Verjson/.github
+          ref: ${{ inputs.contract_sha }}
+          path: contract-source
+          persist-credentials: false
 
       - name: Mint read-only organization inventory token
         id: inventory-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
-          client-id: ${{ vars.RENOVATE_COMPATIBILITY_CLIENT_ID }}
+          client-id: ${{ inputs.app_client_id }}
           private-key: ${{ secrets.RENOVATE_COMPATIBILITY_APP_PRIVATE_KEY }}
           owner: Verjson
           permission-contents: read
 
       - name: Inventory and render contract drift
         id: inventory
+        working-directory: contract-source
         env:
           GH_TOKEN: ${{ steps.inventory-token.outputs.token }}
           INVENTORY_PATH: ${{ runner.temp }}/contract-inventory.tsv
@@ -65,7 +76,7 @@ jobs:
             --output "$REPORT_PATH" >> "$GITHUB_STEP_SUMMARY"
           echo "inventory_status=$inventory_status" >> "$GITHUB_OUTPUT"
 
-      - name: Upload immutable inventory report
+      - name: Upload private inventory report
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -80,5 +91,5 @@ jobs:
       - name: Fail on an incomplete inventory
         if: ${{ always() && steps.inventory.outputs.inventory_status != '0' }}
         run: |
-          echo "::error::The fleet inventory was incomplete; inspect the uploaded report and diagnostics."
+          echo "::error::The fleet inventory was incomplete; inspect the private report and diagnostics."
           exit 1

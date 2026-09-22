@@ -670,10 +670,15 @@ class ContractFleetReport(unittest.TestCase):
     def test_report_escapes_untrusted_table_cells(self):
         self.assertEqual(reporter.markdown_cell("path|<script>`x`"), "path\\|&lt;script&gt;\\`x\\`")
 
-    def test_scheduled_workflow_uses_read_only_fleet_access(self):
+    def test_report_workflow_is_a_private_caller_only_read_only_contract(self):
         workflow = (_root / ".github/workflows/changelog-contract-fleet-report.yml").read_text()
-        self.assertIn("schedule:", workflow)
+        self.assertIn("workflow_call:", workflow)
+        self.assertNotIn("schedule:", workflow)
+        self.assertNotIn("push:", workflow)
         self.assertNotIn("workflow_dispatch:", workflow)
+        self.assertIn("if: github.repository == 'Verjson/verjson-agents' && github.ref == 'refs/heads/main'", workflow)
+        self.assertIn("runs-on: ${{ fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]') }}", workflow)
+        self.assertIn("path: contract-source", workflow)
         self.assertIn("owner: Verjson", workflow)
         self.assertIn("permission-contents: read", workflow)
         self.assertIn("RENOVATE_COMPATIBILITY_APP_PRIVATE_KEY", workflow)
