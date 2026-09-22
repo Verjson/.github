@@ -685,6 +685,7 @@ fi
 # is trusted to place the secret-bearing job. The exact admission guard is
 # covered by the semantic privileged-caller contract, while this sweep executes
 # the hosted, persistent, and external routing expressions.
+# shellcheck disable=SC2043 # Keep this loop aligned with the privileged workflow set.
 for privileged_workflow in ai-privileged-merge.yml; do
   privileged_path="$workflows/$privileged_workflow"
   ! grep -qE 'needs\..*outputs|resolve_privileged_route' "$privileged_path" \

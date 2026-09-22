@@ -86,7 +86,6 @@ if [ -n "$repository" ]; then
   # `|| [ -n ... ]` so a final row with no trailing newline is still read: `read`
   # returns non-zero there, and dropping the row would silently withdraw a
   # granted exemption rather than reporting anything.
-  lapsed=false
   while IFS=$'\t' read -r reg_repo reg_class reg_review_by reg_reason || [ -n "${reg_repo:-}" ]; do
     case "${reg_repo:-}" in ''|'#'*) continue ;; esac
     case " $EXEMPT_CLASSES " in
@@ -109,7 +108,6 @@ if [ -n "$repository" ]; then
       finding "the $reg_class exemption for $repository lapsed on $reg_review_by — renew it in docs/repo-hygiene/exemptions.tsv or seed a README"
       # `continue`, not `break`: the rest of the register still has to be
       # validated, or a malformed row after a lapsed one is never seen.
-      lapsed=true
       continue
     fi
     printf 'repo-hygiene: %s is exempt (%s, review by %s): %s\n' \

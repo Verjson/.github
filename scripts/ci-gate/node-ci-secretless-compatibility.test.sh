@@ -838,7 +838,7 @@ run_archive_case() {
   local runner="${2:-$tmp/run-lanes.sh}"
   prepare_archive_case "$mutation"
   (
-    cd "$fixture"
+    cd "$fixture" || exit 1
     PATH="$tmp/archive-cases/bin:$PATH" \
     REAL_NPM="$real_npm" \
     NPM_GRAPH_RESOLUTION_MARKER="$fixture/npm-graph-resolution" \

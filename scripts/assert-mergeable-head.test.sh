@@ -115,7 +115,8 @@ reset_env() {
   PR_JSON_FIXTURE="$(printf '{"headRefOid":"%s","baseRefName":"main"}' "$HEAD_SHA")"
   export CHECK_RUNS_FIXTURE
   CHECK_RUNS_FIXTURE="$(runs "$green_runs")"
-  export STATUS_FIXTURE="$(stat_page '')"
+  STATUS_FIXTURE="$(stat_page '')"
+  export STATUS_FIXTURE
   export ANNOTATIONS_FIXTURE='[]'
 }
 

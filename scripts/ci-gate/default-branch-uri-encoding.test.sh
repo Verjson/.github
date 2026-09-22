@@ -328,6 +328,7 @@ source "$tmp/recovery.sh"
 
 drive_recovery() {
   local branch="$1" receipt_dir="$tmp/receipt" source_run
+  # shellcheck disable=SC2034 # The sourced recovery script reads this test fixture.
   source_run='{"path":".github/workflows/ai-review-label-rearm.yml","actor":{"login":"trusted-arm"}}'
   rm -rf "$receipt_dir"; mkdir -p "$receipt_dir"
   cat >"$receipt_dir/receipt.json" <<JSON
@@ -834,7 +835,7 @@ branch_events() { # $1 = structural text -> EVERY command-position event, or a `
         # the use reached on an empty loop list (#1464 re-review round 5). `do` is counted
         # rather than `while`/`for`/`until`/`select`, because `do` is the token that always
         # pairs with `done`, in both the same-line and the split spelling.
-        do | done | case | esac) printf '%s\n' "$word" ;;
+        'do' | 'done' | 'case' | 'esac') printf '%s\n' "$word" ;;
       esac
       # A `)` ended the word, so a `case` pattern just closed and the arm body is in command
       # position whatever the word itself was. Otherwise the word decides, and the decision
@@ -1175,12 +1176,12 @@ sha_constrained() { # $1 = variable name, $2 = block slice, $3 = the file it cam
   local var="$1"
   if [ "${3##*.}" = py ]; then
     grep -qF "[[ \"\$$var\" =~ ^[0-9a-f]{40}\$ ]]" <<<"$2" && return 0
-    grep -qE "(^|[[:space:]])$var[:=][[:space:]]*[\"']?[0-9a-f]{40}[\"']?[[:space:]]*\$" <<<"$2" && return 0
+    grep -qE "(^|[[:space:]])${var}[:=][[:space:]]*[\"']?[0-9a-f]{40}[\"']?[[:space:]]*\$" <<<"$2" && return 0
     grep -qE "^[[:space:]]*$var=\"\\\$\(jq -er .*\^\[0-9a-f\]\{40\}\\\$" <<<"$2" && return 0
     return 1
   fi
   guard_live_literal "[[ \"\$$var\" =~ ^[0-9a-f]{40}\$ ]]" slice <<<"$2" && return 0
-  guard_live_re "(^|[[:space:]])$var[:=][[:space:]]*[\"']?[0-9a-f]{40}[\"']?([[:space:]]|\$)" slice <<<"$2" && return 0
+  guard_live_re "(^|[[:space:]])${var}[:=][[:space:]]*[\"']?[0-9a-f]{40}[\"']?([[:space:]]|\$)" slice <<<"$2" && return 0
   # The same 40-hex constraint spelled inside the jq program that produced the value.
   # `jq -er` exits non-zero when `select` drops the value, and `set -euo pipefail` at the
   # top of every one of these blocks turns that into an abort, so the constraint is as
@@ -2400,7 +2401,7 @@ py_encoder_expression() { # $1 = block slice, $2 = interpolated expression -> it
   local slice="$1" subject="$2"
   if [[ "$subject" == *quote\(* ]]; then printf '%s\n' "$subject"; return 0; fi
   [[ "$subject" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 0
-  sed -nE "s/^[[:space:]]*$subject[[:space:]]*=[[:space:]]*((urllib\.parse\.)?quote\(.*\))[[:space:]]*\$/\1/p" \
+  sed -nE "s/^[[:space:]]*${subject}[[:space:]]*=[[:space:]]*((urllib\.parse\.)?quote\(.*\))[[:space:]]*\$/\1/p" \
     <<<"$slice" | tail -1
 }
 
@@ -2429,10 +2430,10 @@ py_hex_constrained() { # $1 = file, $2 = block slice, $3 = identifier
   # A dotted attribute path (`args.deployment_commit`) is as matchable as a bare name: the
   # grep below is a literal comparison against the text the file actually ships.
   [[ "$var" =~ ^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$ ]] || return 1
-  grep -qE "re\.fullmatch\(r?['\"][^,]*$hex[^,]*['\"],[[:space:]]*$var([^A-Za-z0-9_]|$)" \
+  grep -qE "re\.fullmatch\(r?['\"][^,]*${hex}[^,]*['\"],[[:space:]]*${var}([^A-Za-z0-9_]|$)" \
     <<<"$slice" && return 0
-  grep -qE "SHA_PATTERN\.fullmatch\($var([^A-Za-z0-9_]|$)" <<<"$slice" || return 1
-  grep -qE "^SHA_PATTERN = re\.compile\(r['\"]$hex['\"]\)$" "$root/$file"
+  grep -qE "SHA_PATTERN\.fullmatch\(${var}([^A-Za-z0-9_]|$)" <<<"$slice" || return 1
+  grep -qE "^SHA_PATTERN = re\.compile\(r['\"]${hex}['\"]\)$" "$root/$file"
 }
 
 assert_encoder() { # $1 = label, $2 = jq program, $3 = query|path, $4 = jq --arg name

@@ -127,7 +127,8 @@ if latest="$PATCH_JSON" latest_id=9001 latest_status=completed latest_conclusion
   pass 'a rerun resumes after a prior exact recovery marker without another patch'
 else fail 'idempotent recovery rerun did not resume'; fi
 
-export SOURCE_RUN_JSON="$(jq --arg head "$head_sha" '.path=".github/workflows/ai-review-label-rearm.yml" | .head_sha=$head | .workflow_id=77 | .actor={login:"maintainer"}' <<<"$SOURCE_RUN_JSON")"
+SOURCE_RUN_JSON="$(jq --arg head "$head_sha" '.path=".github/workflows/ai-review-label-rearm.yml" | .head_sha=$head | .workflow_id=77 | .actor={login:"maintainer"}' <<<"$SOURCE_RUN_JSON")"
+export SOURCE_RUN_JSON
 export RECEIPT_COUNT=0 REVIEW_RUNS_JSON='[]'
 if run_case >/dev/null 2>&1 && grep -q 'method PATCH' "$CALLS"; then
   pass 'interrupted lifecycle arm with no receipt is recovered without model dispatch'
@@ -136,19 +137,25 @@ export LOCAL_WORKFLOW_ID=88
 if ! run_case >/dev/null 2>&1 && ! grep -q 'method PATCH' "$CALLS"; then pass 'wrong lifecycle workflow identity rejected'; else fail 'wrong workflow accepted'; fi
 unset LOCAL_WORKFLOW_ID
 export RECEIPT_COUNT=1
-export RECEIPT_JSON="$(jq '.schema=2 | .workflow_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" | .workflow_ref="Verjson/example/.github/workflows/ai-review-label-rearm.yml@refs/heads/main" | .delivery_event="pull_request_target" | .delivery_actor="maintainer"' <<<"$RECEIPT_JSON")"
+RECEIPT_JSON="$(jq '.schema=2 | .workflow_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" | .workflow_ref="Verjson/example/.github/workflows/ai-review-label-rearm.yml@refs/heads/main" | .delivery_event="pull_request_target" | .delivery_actor="maintainer"' <<<"$RECEIPT_JSON")"
+export RECEIPT_JSON
 export REVIEW_RUNS_JSON='[{"display_title":"AI review authorization 9001 from arm 7001.1","event":"workflow_dispatch","path":".github/workflows/ai-review-merge.yml","head_branch":"main","status":"completed","head_repository":{"full_name":"Verjson/example"},"repository":{"full_name":"Verjson/example"}}]'
 if run_case >/dev/null 2>&1 && grep -q 'method PATCH' "$CALLS"; then pass 'schema-2 lifecycle receipt recovers terminal review'; else fail 'schema-2 recovery failed'; fi
-export RECEIPT_JSON="$(jq '.schema=1' <<<"$RECEIPT_JSON")"
+RECEIPT_JSON="$(jq '.schema=1' <<<"$RECEIPT_JSON")"
+export RECEIPT_JSON
 if ! run_case >/dev/null 2>&1 && ! grep -q 'method PATCH' "$CALLS"; then pass 'schema-1 receipt rejected for lifecycle wrapper'; else fail 'crossed lifecycle schema accepted'; fi
-export RECEIPT_JSON="$(jq '.schema=2' <<<"$RECEIPT_JSON")"
-export SOURCE_RUN_JSON="$(jq '.path=".github/workflows/gate-rearm.yml"' <<<"$SOURCE_RUN_JSON")"
+RECEIPT_JSON="$(jq '.schema=2' <<<"$RECEIPT_JSON")"
+export RECEIPT_JSON
+SOURCE_RUN_JSON="$(jq '.path=".github/workflows/gate-rearm.yml"' <<<"$SOURCE_RUN_JSON")"
+export SOURCE_RUN_JSON
 if ! run_case >/dev/null 2>&1 && ! grep -q 'method PATCH' "$CALLS"; then pass 'schema-2 receipt rejected for legacy arm'; else fail 'crossed legacy schema accepted'; fi
-export SOURCE_RUN_JSON="$(jq '.path=".github/workflows/ai-review-label-rearm.yml"' <<<"$SOURCE_RUN_JSON")"
+SOURCE_RUN_JSON="$(jq '.path=".github/workflows/ai-review-label-rearm.yml"' <<<"$SOURCE_RUN_JSON")"
+export SOURCE_RUN_JSON
 export RECEIPT_BLOB=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 if ! run_case >/dev/null 2>&1 && ! grep -q 'method PATCH' "$CALLS"; then pass 'changed protected caller fails lifecycle recovery closed'; else fail 'changed caller accepted'; fi
 unset RECEIPT_BLOB
-export RECEIPT_JSON="$(jq '.delivery_actor="attacker"' <<<"$RECEIPT_JSON")"
+RECEIPT_JSON="$(jq '.delivery_actor="attacker"' <<<"$RECEIPT_JSON")"
+export RECEIPT_JSON
 if ! run_case >/dev/null 2>&1 && ! grep -q 'method PATCH' "$CALLS"; then pass 'substituted lifecycle receipt actor rejected'; else fail 'substituted actor accepted'; fi
 
 printf '%d failing assertion(s)\n' "$fails"

@@ -39,8 +39,8 @@ trap 'rm -rf "$tmp"' EXIT
 # Retry a gh command (args after $1) into file $1; succeed only on valid JSON.
 gh_json() {
   local out="$1"; shift
-  local attempt
-  for attempt in 1 2; do
+  local _attempt
+  for _attempt in 1 2; do
     if "$@" >"$out" 2>/dev/null && jq -e . "$out" >/dev/null 2>&1; then
       return 0
     fi

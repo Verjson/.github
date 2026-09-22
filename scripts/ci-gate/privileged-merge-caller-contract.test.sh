@@ -277,7 +277,7 @@ cp "$gen" "$retry_shell_root/scripts/gen-privileged-merge-caller.sh"
 bash "$gen" "$contract_sha" --retry "$retry_shell_json" "$required_checks" >"$tmp/retry-shell-original.yml" 2>/dev/null
 IFS= read -r retry_regenerate < <(sed -n 's/^#   //p' "$tmp/retry-shell-original.yml") || true
 (
-  cd "$retry_shell_root"
+  cd "$retry_shell_root" || exit 1
   bash -c "$retry_regenerate"
 )
 if [ ! -e "$retry_shell_marker_substitution" ] &&

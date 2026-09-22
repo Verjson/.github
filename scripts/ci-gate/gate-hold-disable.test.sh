@@ -296,7 +296,7 @@ for permission in maintain admin; do
   : >"$GITHUB_ENV"
   : >"$CALLS"
   export ACTOR_PERMISSION="$permission"
-  if [ "$permission" = maintain ]; then base_permission=write; else base_permission=admin; fi
+  if [ "$permission" = maintain ]; then base_permission='write'; else base_permission='admin'; fi
   if run_preauthorize >"$tmp/out" 2>&1 \
     && grep -q "^HOLD_CLEAR_ACTOR_PERMISSION=$permission$" "$GITHUB_ENV" \
     && grep -q "^PERMISSION_LOOKUP maintainer permission=$base_permission role_name=$permission$" "$CALLS"; then

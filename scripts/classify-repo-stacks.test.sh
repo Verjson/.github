@@ -278,7 +278,7 @@ rc="$(NO_WORKFLOWS=true run_crs)"
   || { fail "an empty repository was flagged for review ($rc)"; out; }
 
 reset_wf
-rc="$(DEFAULT_BRANCH= run_crs)"
+rc="$(DEFAULT_BRANCH='' run_crs)"
 { [ "$rc" = "rc=0" ] && said 'stack=none' && said 'result=conformant' && ! said 'unrecognised-ci'; } \
   && pass "a repository with no default branch has no workflow inventory" \
   || { fail "a repository with no default branch was treated as unreadable ($rc)"; out; }

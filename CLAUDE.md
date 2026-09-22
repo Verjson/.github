@@ -66,6 +66,7 @@ was confirmed, since inspection-only claims go stale silently).
 
 
 - [#1451](https://github.com/Verjson/.github/issues/1451) — Complete consumer capacity validation and live host acceptance. GitHub API check on 2026-09-21 found no secrets or variables in `runner-fleet-production`; do not claim live evidence until operators provision the dedicated observation inputs and a real host run succeeds.
+- [#1502](https://github.com/Verjson/.github/issues/1502) — Lint tracked shell scripts. As of 2026-09-22, the platform Actions group does not lint standalone `.sh` files; close after the tracked-file gate is merged and green.
 - [#1540](https://github.com/Verjson/.github/issues/1540) — Remove temporary review-App `checks:write` compatibility after all active authorization receipts and adopters use Actions-owned checks; verify through the tracked migration before removing the permission.
 
 Prune an entry when its issue closes. This list loads into every session, so a

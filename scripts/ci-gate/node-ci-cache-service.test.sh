@@ -100,7 +100,7 @@ else
 fi
 
 : > "$tmp/docker.log"
-DOCKER_LOG="$tmp/docker.log" CONTAINER_ID= bash "$teardown"
+DOCKER_LOG="$tmp/docker.log" CONTAINER_ID='' bash "$teardown"
 [ ! -s "$tmp/docker.log" ] && pass "empty cache handle makes teardown a no-op" \
   || fail "empty cache handle invoked Docker"
 

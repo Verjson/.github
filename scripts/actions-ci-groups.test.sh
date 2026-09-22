@@ -353,6 +353,7 @@ changelog-release	python3 scripts/changelog.py validate --repo-root .
 changelog-release	bash scripts/changelog-fragment-schema.test.sh
 changelog-release	python3 scripts/v1-readiness-contract.test.py
 platform	bash scripts/actions-ci-python-dependencies.test.sh
+platform	git ls-files -z -- '*.sh' | xargs -0 -r shellcheck --severity=warning
 platform	bash scripts/ci-gate/hub-changelog-validate.sh
 LOAD_BEARING_COMMANDS
 }

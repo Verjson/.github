@@ -8,7 +8,8 @@ readonly RETRY_PATH=".github/workflows/ai-promotion-retry.yml"
 readonly GENERATOR="scripts/gen-privileged-merge-caller.sh"
 readonly CANONICAL_REPOSITORY="$ORG/.github"
 readonly AUDIT_SHA="${PRIVILEGED_MERGE_AUDIT_SHA:-}"
-readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly REPO_ROOT
 readonly LOCAL_CANONICAL_WORKFLOW="$REPO_ROOT/$CALLER_PATH"
 readonly LOCAL_CANONICAL_RETRY="$REPO_ROOT/$RETRY_PATH"
 readonly EVIDENCE_PAGE_SIZE=100
