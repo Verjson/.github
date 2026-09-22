@@ -11,9 +11,6 @@ fail(){ printf 'FAIL - %s\n' "$1"; fails=$((fails+1)); }
 awk '$0=="        id: arm"{f=1} f&&$0=="        run: |"{r=1;next} r{if($0~/^      - name:/)exit;sub(/^          /,"");print}' \
   "$workflow" >"$tmp/arm.sh"
 [ -s "$tmp/arm.sh" ] || { echo "FAIL - arm block missing"; exit 1; }
-mkdir -p "$tmp/.gate-trust/scripts/ci-gate"
-cp "$root/scripts/ci-gate/validate-ai-review-app-key.sh" "$tmp/.gate-trust/scripts/ci-gate/"
-openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:1024 -out "$tmp/valid-key.pem" 2>/dev/null
 python3 - "$workflow" "$tmp/preauthorize.sh" "$tmp/event-policy.sh" "$root/.github/workflows/ai-review-merge.yml" "$tmp/review-title-policy.sh" <<'PY'
 import sys
 from pathlib import Path
@@ -129,7 +126,7 @@ export EVENT_HEAD_SHA=0123456789abcdef0123456789abcdef01234567
 export EVENT_NEW_TITLE_HELD=false HOLD_CLEAR_ACTOR_PERMISSION=''
 export GITHUB_ENV="$tmp/github-env"
 export ACTIONS_TOKEN=actions-token GH_TOKEN=actions-token GITHUB_SERVER_URL=https://github.com
-export APP_KEY_POLICY_RESULT=success AI_REVIEW_ENVIRONMENT=ai-review-app AI_REVIEW_APP_PRIVATE_KEY="$(cat "$tmp/valid-key.pem")"
+export APP_KEY_POLICY_RESULT=success AI_REVIEW_ENVIRONMENT=ai-review-app
 export GITHUB_RUN_ID=8000 GITHUB_RUN_ATTEMPT=1 RUNNER_TEMP="$tmp"
 export GITHUB_OUTPUT="$tmp/github-output"
 CALLER_FILE="$tmp/current-caller.yml"
@@ -181,10 +178,13 @@ assert jobs["arm"]["permissions"].get("checks") == "write"
 assert create["env"].get("GH_TOKEN") == "${{ github.token }}"
 assert not any(step.get("name") == "Mint dedicated authorization App token" for step in steps)
 assert "--argjson app_id 15368" in create["run"] and ".app.id == $app_id" in create["run"]
-assert "validate-ai-review-app-key.sh" in create["run"]
+assert jobs["arm"]["needs"] == ["event-policy", "app-key-policy"]
+assert create["env"]["APP_KEY_POLICY_RESULT"] == "${{ needs.app-key-policy.result }}"
+assert "AI_REVIEW_APP_PRIVATE_KEY" not in create["env"]
+assert 'if [ "$APP_KEY_POLICY_RESULT" != success ]; then' in create["run"]
 receipt = next(step for step in steps if step.get("name") == "Upload immutable arm receipt")
 dispatch = next(step for step in steps if step.get("name") == "Dispatch trusted review after receipt publication")
-assert create["run"].index("gh api --method POST") < create["run"].index("validate-ai-review-app-key.sh")
+assert create["run"].index("gh api --method POST") < create["run"].index('if [ "$APP_KEY_POLICY_RESULT" != success ]; then')
 assert steps.index(receipt) < steps.index(dispatch)
 
 event_policy = jobs["event-policy"]
@@ -473,32 +473,16 @@ jq '.labels=[{"name":"ai-review"}]' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META
 printf '{}\n' >"$LATEST_FILE"
 export EVENT_ACTION=labeled EVENT_LABEL=ai-review ACTOR_PERMISSION=maintain
 WORKFLOW_REF=Verjson/example/.github/workflows/ai-review-label-rearm.yml@refs/heads/main
-if AI_REVIEW_APP_PRIVATE_KEY='' run_arm >"$tmp/out" 2>&1; then
-  fail "empty or invalid AI_REVIEW_APP_PRIVATE_KEY was accepted"
-elif grep -q 'AI_REVIEW_APP_PRIVATE_KEY is empty or invalid in the configured AI review environment' "$tmp/out" \
-  && grep -q 'failure_reason=invalid_ai_review_app_private_key' "$GITHUB_OUTPUT" \
+if APP_KEY_POLICY_RESULT=failure run_arm >"$tmp/out" 2>&1; then
+  fail "failed App-key policy was accepted"
+elif grep -q 'AI review environment policy did not succeed' "$tmp/out" \
+  && grep -q 'failure_reason=ai_review_environment_policy' "$GITHUB_OUTPUT" \
   && grep -q -- '--method POST repos/Verjson/example/check-runs' "$CALLS" \
   && ! grep -q 'workflow run ai-review-merge.yml' "$CALLS"; then
-  pass "empty or invalid AI_REVIEW_APP_PRIVATE_KEY fails arm before review dispatch"
+  pass "failed App-key policy completes a failure-visible check before review dispatch"
 else
-  fail "empty or invalid key did not fail visibly before review dispatch"
+  fail "failed App-key policy did not fail visibly before review dispatch"
 fi
-write_hold
-jq '.labels=[{"name":"ai-review"}]' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"
-printf '{}\n' >"$LATEST_FILE"
-export EVENT_ACTION=labeled EVENT_LABEL=ai-review ACTOR_PERMISSION=maintain
-WORKFLOW_REF=Verjson/example/.github/workflows/ai-review-label-rearm.yml@refs/heads/main
-if AI_REVIEW_APP_PRIVATE_KEY='malformed private key' run_arm >"$tmp/out" 2>&1; then
-  fail "malformed AI_REVIEW_APP_PRIVATE_KEY was accepted"
-elif grep -q 'AI_REVIEW_APP_PRIVATE_KEY is empty or invalid in the configured AI review environment' "$tmp/out" \
-  && grep -q 'failure_reason=invalid_ai_review_app_private_key' "$GITHUB_OUTPUT" \
-  && grep -q -- '--method POST repos/Verjson/example/check-runs' "$CALLS" \
-  && ! grep -q 'workflow run ai-review-merge.yml' "$CALLS"; then
-  pass "malformed AI_REVIEW_APP_PRIVATE_KEY fails arm before review dispatch"
-else
-  fail "malformed key did not fail visibly before review dispatch"
-fi
-write_hold
 write_hold; printf '{"data":null,"errors":[{"message":"denied"}]}\n' >"$GRAPHQL_FILE"
 expect_fail "HTTP-200 GraphQL errors fail the hold closed"
 write_hold; printf '{"data":{"disablePullRequestAutoMerge":{"pullRequest":{"id":"wrong"}}}}\n' >"$GRAPHQL_FILE"

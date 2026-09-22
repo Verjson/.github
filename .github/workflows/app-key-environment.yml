@@ -58,21 +58,25 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Resolve executing trusted workflow revision
-        id: trusted-revision
-        env:
-          EXECUTING_WORKFLOW_SHA: ${{ job.workflow_sha }}
-        run: echo "sha=$EXECUTING_WORKFLOW_SHA" >>"$GITHUB_OUTPUT"
-      - name: Check out immutable AI review key validator
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          repository: ${{ job.workflow_repository }}
-          ref: ${{ steps.trusted-revision.outputs.sha }}
-          path: .gate-trust
-          sparse-checkout: scripts/ci-gate/validate-ai-review-app-key.sh
-          sparse-checkout-cone-mode: false
-          persist-credentials: false
-      - name: Validate the resolved AI review App private key
+      - name: Validate resolved AI review App private key
         env:
           AI_REVIEW_APP_PRIVATE_KEY: ${{ secrets.AI_REVIEW_APP_PRIVATE_KEY }}
-        run: bash .gate-trust/scripts/ci-gate/validate-ai-review-app-key.sh
+        run: |
+          set -euo pipefail
+
+          key="${AI_REVIEW_APP_PRIVATE_KEY:-}"
+          if [ -z "$key" ]; then
+            echo "::error::AI_REVIEW_APP_PRIVATE_KEY is empty or unavailable" >&2
+            exit 1
+          fi
+
+          umask 077
+          key_file="$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/ai-review-app-key.XXXXXX")"
+          trap 'rm -f "$key_file"' EXIT
+          printf '%s' "$key" >"$key_file"
+          unset key
+
+          if ! openssl rsa -in "$key_file" -check -noout >/dev/null 2>&1; then
+            echo "::error::AI_REVIEW_APP_PRIVATE_KEY is not a valid PEM RSA private key" >&2
+            exit 1
+          fi

@@ -111,20 +111,16 @@ assert "check_app_id" in arm_run and "check_app_slug" in arm_run
 assert ".check_app_id // .app_id" in arm_run and ".check_app_slug // .app_slug" in arm_run
 assert "legacy AI App-owned authorization could not be safely recovered" in arm_run
 assert "no duplicate review was dispatched" in arm_run
-checkouts = [step for step in arm["steps"] if step.get("uses", "").startswith("actions/checkout@")]
-assert len(checkouts) == 1
-checkout = checkouts[0]
-assert checkout["uses"] == "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
-assert checkout["with"] == {
-    "repository": "Verjson/.github",
-    "ref": "${{ steps.trusted-revision.outputs.sha }}",
-    "path": ".gate-trust",
-    "sparse-checkout": "scripts/ci-gate/validate-ai-review-app-key.sh",
-    "sparse-checkout-cone-mode": "false",
-    "persist-credentials": "false",
-}
-resolver = next(step for step in arm["steps"] if step.get("id") == "trusted-revision")
-assert resolver["env"]["EXECUTING_WORKFLOW_SHA"] == "${{ github.workflow_sha }}"
+assert arm["needs"] == ["event-policy", "app-key-policy"]
+app_key_policy = doc["jobs"]["app-key-policy"]
+assert app_key_policy["uses"] == "Verjson/.github/.github/workflows/app-key-environment.yml@f56af66cc14f3bdc7697e527df4c8c4d04ab5935"
+assert app_key_policy["needs"] == "event-policy"
+assert not any(step.get("uses", "").startswith("actions/checkout@") for step in arm["steps"])
+assert not any(".gate-trust" in str(step) for step in arm["steps"])
+create = next(step for step in arm["steps"] if step.get("id") == "arm")
+assert create["env"]["APP_KEY_POLICY_RESULT"] == "${{ needs.app-key-policy.result }}"
+assert "AI_REVIEW_APP_PRIVATE_KEY" not in create["env"]
+assert 'if [ "$APP_KEY_POLICY_RESULT" != success ]; then' in create["run"]
 script = "\n".join(step.get("run", "") for step in arm["steps"])
 for marker in (
     '[[ "$TARGET_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]',

@@ -224,14 +224,14 @@ class WorkflowBoundaryTests(unittest.TestCase):
         self.assertEqual(job["if"], "${{ inputs.role == 'ai-review' }}")
         self.assertEqual(job["needs"], "validate")
         self.assertEqual(job["environment"], "${{ inputs.environment }}")
-        revision = next(step for step in job["steps"] if step.get("name") == "Resolve executing trusted workflow revision")
-        self.assertEqual(revision["env"]["EXECUTING_WORKFLOW_SHA"], "${{ job.workflow_sha }}")
-        checkout = next(step for step in job["steps"] if step.get("name") == "Check out immutable AI review key validator")
-        self.assertEqual(checkout["with"]["repository"], "${{ job.workflow_repository }}")
-        self.assertEqual(checkout["with"]["ref"], "${{ steps.trusted-revision.outputs.sha }}")
-        validator = next(step for step in job["steps"] if step.get("name") == "Validate the resolved AI review App private key")
+        validator = next(step for step in job["steps"] if step.get("name") == "Validate resolved AI review App private key")
         self.assertEqual(validator["env"]["AI_REVIEW_APP_PRIVATE_KEY"], "${{ secrets.AI_REVIEW_APP_PRIVATE_KEY }}")
-        self.assertIn("validate-ai-review-app-key.sh", validator["run"])
+        self.assertFalse(any(step.get("uses", "").startswith("actions/checkout@") for step in job["steps"]))
+        self.assertIn('key="${AI_REVIEW_APP_PRIVATE_KEY:-}"', validator["run"])
+        self.assertIn("umask 077", validator["run"])
+        self.assertIn("mktemp", validator["run"])
+        self.assertIn("trap 'rm -f \"$key_file\"' EXIT", validator["run"])
+        self.assertIn('openssl rsa -in "$key_file" -check -noout', validator["run"])
 
     def test_retry_inherits_context_and_retains_fixed_environment(self):
         retry = workflow("ai-promotion-retry")
@@ -294,6 +294,28 @@ class WorkflowBoundaryTests(unittest.TestCase):
         self.assertIn("needs.title-policy.outputs.title_held != 'true'", review_jobs["preflight"]["if"])
         self.assertIn("ascii_upcase", review_jobs["title-policy"]["steps"][0]["run"])
         self.assertIn(marker, review_jobs["title-policy"]["steps"][0]["run"])
+
+    def test_gate_rearm_uses_pinned_policy_result_without_caller_sha_validator_checkout(self):
+        jobs = workflow("gate-rearm")["jobs"]
+        arm = jobs["arm"]
+        self.assertIn("app-key-policy", arm["needs"])
+        self.assertFalse(
+            any(step.get("with", {}).get("path") == ".gate-trust" for step in arm["steps"])
+        )
+        self.assertFalse(
+            any(
+                step.get("with", {}).get("repository") == "Verjson/.github"
+                and "github.workflow_sha" in step.get("with", {}).get("ref", "")
+                for step in arm["steps"]
+            )
+        )
+        receipt = next(step for step in arm["steps"] if step.get("id") == "arm")
+        self.assertEqual(
+            receipt["env"]["APP_KEY_POLICY_RESULT"], "${{ needs.app-key-policy.result }}"
+        )
+        self.assertNotIn("AI_REVIEW_APP_PRIVATE_KEY", receipt["env"])
+        self.assertNotIn(".gate-trust/scripts/ci-gate/validate-ai-review-app-key.sh", receipt["run"])
+        self.assertIn('if [ "$APP_KEY_POLICY_RESULT" != success ]; then', receipt["run"])
 
     def test_native_rearm_and_retry_defaults_are_only_canonical_role_environments(self):
         rearm = workflow("gate-rearm")["jobs"]
