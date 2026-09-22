@@ -58,13 +58,19 @@ repos() {
   fi
 }
 
-# List workflow file paths in a repository. A repository with no workflow
-# directory is not an error — it is a `none` stack.
+# List workflow file paths from the default branch tree. This distinguishes a
+# repository with no workflow directory from an unreadable Contents API path.
 workflow_paths() { # $1 = repo
-  gh api "repos/$ORG/$1/contents/.github/workflows" \
-    --jq '.[]? | select(.type == "file") | select(.name | test("\\.ya?ml$")) | .path' 2>/dev/null
+  local branch branch_ref
+  branch="$(gh api "repos/$ORG/$1" \
+    --jq 'if has("default_branch") and ((.default_branch == null) or (.default_branch | type) == "string") then (.default_branch // "") else error("missing default branch") end' \
+    2>/dev/null)" || return 1
+  [ -n "$branch" ] || return 0
+  branch_ref="$(jq -nr --arg branch "$branch" '$branch | @uri')" || return 1
+  gh api "repos/$ORG/$1/git/trees/$branch_ref?recursive=1" \
+    --jq 'if .truncated != false or (.tree | type) != "array" then error("invalid or truncated repository tree") else .tree[] | select(.type == "blob") | select(.path | test("^\\.github/workflows/.*\\.ya?ml$")) | .path end' \
+    2>/dev/null
 }
-
 # Emit `<job-name>\t<reusable-filename>` for every reusable Verjson call in a
 # workflow file. Deliberately a line-oriented scan rather than a YAML parse:
 # the runner image is not guaranteed to carry a YAML tool, and the shape being

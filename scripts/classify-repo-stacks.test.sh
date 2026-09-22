@@ -30,6 +30,25 @@ for ((i = 0; i < ${#args[@]}; i++)); do
   [ "${args[$i]}" = "--jq" ] && filter="${args[$((i + 1))]}"
 done
 case "$*" in
+  *"git/trees/"*)
+    [ "${WORKFLOW_LIST_FAIL:-false}" = true ] && { echo "workflow inventory failed" >&2; exit 1; }
+    if [ "${TRUNCATED_TREE:-false}" = true ]; then
+      response='{"truncated":true,"tree":[]}'
+    elif [ "${NO_WORKFLOWS:-false}" = true ]; then
+      response='{"truncated":false,"tree":[]}'
+    else
+      tree="$(for f in "$WFDIR"/*.yml; do
+        [ -e "$f" ] || continue
+        jq -n --arg p ".github/workflows/$(basename "$f")" '{type:"blob",path:$p}'
+      done | jq -s -c '.')"
+      response="$(jq -nc --argjson tree "$tree" '{truncated:false,tree:$tree}')"
+    fi
+    printf '%s\n' "$response" | jq -r "$filter" || exit 1
+    exit 0 ;;
+  *"repos/Verjson/alpha --jq"*)
+    [ "${REPO_METADATA_FAIL:-false}" = true ] && { echo "repository metadata read failed" >&2; exit 1; }
+    printf '{"default_branch":"%s"}\n' "${DEFAULT_BRANCH-main}" | jq -r "$filter" || exit 1
+    exit 0 ;;
   *"contents/.github/workflows/"*)
     [ "${CONTENT_FAIL:-false}" = true ] && { echo "content read failed" >&2; exit 1; }
     # One file per repo fixture; return it base64 in a `.content` field.
@@ -42,14 +61,6 @@ case "$*" in
     f="$WFDIR/$(basename "$path")"
     [ -f "$f" ] || { echo '{"content":""}'; exit 0; }
     jq -n --arg c "$(base64 -w0 <"$f")" '{content:$c}' | { [ -n "$filter" ] && jq -r "$filter" || cat; }
-    exit 0 ;;
-  *"contents/.github/workflows"*)
-    [ "${WORKFLOW_LIST_FAIL:-false}" = true ] && { echo "workflow inventory failed" >&2; exit 1; }
-    [ "${NO_WORKFLOWS:-false}" = true ] && { echo '[]' | { [ -n "$filter" ] && jq -r "$filter" || cat; }; exit 0; }
-    for f in "$WFDIR"/*.yml; do
-      [ -e "$f" ] || continue
-      jq -n --arg p ".github/workflows/$(basename "$f")" '{type:"file",name:($p|split("/")|last),path:$p}'
-    done | jq -s -c '.' | { [ -n "$filter" ] && jq -r "$filter" || cat; }
     exit 0 ;;
   *"orgs/"*"/repos"*)
     printf '%s\n' "${REPOS:-alpha}"; exit 0 ;;
@@ -265,6 +276,18 @@ rc="$(NO_WORKFLOWS=true run_crs)"
 { [ "$rc" = "rc=0" ] && said 'stack=none' && said 'result=conformant' && ! said 'unrecognised-ci'; } \
   && pass "a repository with no workflows at all is plainly 'none' — nothing to review" \
   || { fail "an empty repository was flagged for review ($rc)"; out; }
+
+reset_wf
+rc="$(DEFAULT_BRANCH= run_crs)"
+{ [ "$rc" = "rc=0" ] && said 'stack=none' && said 'result=conformant' && ! said 'unrecognised-ci'; } \
+  && pass "a repository with no default branch has no workflow inventory" \
+  || { fail "a repository with no default branch was treated as unreadable ($rc)"; out; }
+
+reset_wf
+rc="$(TRUNCATED_TREE=true run_crs)"
+{ [ "$rc" = "rc=2" ] && said 'result=classify-read-failed'; } \
+  && pass "a truncated workflow tree fails closed" \
+  || { fail "a truncated workflow tree was accepted ($rc)"; out; }
 
 # --- two stacks in one repository needs a decision, not a guess -------------
 reset_wf; caller ci node-ci.yml a; caller ci helm-ci.yml b
