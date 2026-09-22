@@ -227,8 +227,11 @@ class WorkflowBoundaryTests(unittest.TestCase):
         validator = next(step for step in job["steps"] if step.get("name") == "Validate resolved AI review App private key")
         self.assertEqual(validator["env"]["AI_REVIEW_APP_PRIVATE_KEY"], "${{ secrets.AI_REVIEW_APP_PRIVATE_KEY }}")
         self.assertFalse(any(step.get("uses", "").startswith("actions/checkout@") for step in job["steps"]))
-        helper = (ROOT / "scripts/ci-gate/validate-ai-review-app-key.sh").read_text(encoding="utf-8")
-        self.assertEqual(validator["run"].strip(), helper.removeprefix("#!/usr/bin/env bash").strip())
+        self.assertIn('key="${AI_REVIEW_APP_PRIVATE_KEY:-}"', validator["run"])
+        self.assertIn("umask 077", validator["run"])
+        self.assertIn("mktemp", validator["run"])
+        self.assertIn("trap 'rm -f \"$key_file\"' EXIT", validator["run"])
+        self.assertIn('openssl rsa -in "$key_file" -check -noout', validator["run"])
 
     def test_retry_inherits_context_and_retains_fixed_environment(self):
         retry = workflow("ai-promotion-retry")

@@ -302,9 +302,9 @@ def main() -> int:
     dispatch_step = next(step for step in arm["steps"] if step.get("name") == "Dispatch trusted review after receipt publication")
     receipt_step = next(step for step in arm["steps"] if step.get("name") == "Upload immutable arm receipt")
     require(arm_script.index('gh api --method POST "repos/$TARGET_REPO/check-runs"') <
-            arm_script.index("validate-ai-review-app-key.sh") and
+            arm_script.index('if [ "$APP_KEY_POLICY_RESULT" != success ]; then') and
             arm["steps"].index(receipt_step) < arm["steps"].index(dispatch_step),
-            "arm must create the failure-visible check, validate the key, publish the receipt, then dispatch")
+            "arm must create a failure-visible check, enforce pinned key policy, publish the receipt, then dispatch")
 
     app_token_uses = [authorization_app_token_uses(review, "complete-authorization")]
     validate_authorization_app_token_pins(app_token_uses)
