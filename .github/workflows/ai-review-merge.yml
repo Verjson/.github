@@ -699,8 +699,13 @@ jobs:
           # fires `synchronize` and re-enters classify for a real review;
           # `workflow_dispatch` forces a review past the gate.
           if [ "${GITHUB_EVENT_NAME:-}" != "workflow_dispatch" ]; then
-            age_pending=$(gh api "repos/$REPO/commits/$head_sha/status" \
-              --jq '[.statuses[]? | select(.context == "renovate/stability-days" and .state == "pending")] | length' 2>/dev/null || echo 0)
+            if ! age_pending=$(gh api "repos/$REPO/commits/$head_sha/status" \
+              --jq '[.statuses[]? | select(.context == "renovate/stability-days" and .state == "pending")] | length' 2>/dev/null); then
+              out lane defer
+              out reason "Could not verify Renovate release-age gate; deferring review until status is readable"
+              out model none
+              exit 0
+            fi
             if [ "${age_pending:-0}" -gt 0 ]; then
               out lane defer
               out reason "Renovate release-age gate pending (renovate/stability-days) — deferring review until minimumReleaseAge elapses and Renovate rebases"

@@ -163,16 +163,16 @@ run_classify
 deferred && fail "an unrelated pending status deferred the review" \
   || pass "an unrelated pending status does not defer"
 
-# --- the documented fail-open ---------------------------------------------------
-# Losing `statuses: read` (or any transient failure of that read) must leave the PR
-# reviewable rather than stalled. Nothing is authorized by not deferring; the pending
-# status still blocks the merge on GitHub's side.
+# --- unreadable status defers conservatively --------------------------------
+# Losing `statuses: read` (or a transient failure) must not make the PR look
+# like it cleared the release-age gate. Deferring is safe: GitHub still blocks
+# merge on a genuinely pending status, and a later event retries review.
 status_fixture pending
 if (export STATUS_RC=1; run_classify); then
-  deferred && fail "an unreadable age-gate status deferred the review" \
-    || pass "an unreadable age-gate status fails open to a normal review (deliberate)"
+  deferred && pass "an unreadable age-gate status defers the review" \
+    || fail "an unreadable age-gate status did not defer the review"
 else
-  fail "an unreadable age-gate status aborted classification instead of failing open"
+  fail "an unreadable age-gate status aborted classification instead of deferring"
 fi
 
 # --- workflow_dispatch forces a review past the gate ----------------------------
