@@ -186,28 +186,11 @@ jobs:
             *) echo "::error::$REQUEST_ACTOR lacks maintain/admin permission to clear a hold"; exit 1 ;;
           esac
 
-      - name: Resolve executing trusted workflow revision
-        id: trusted-revision
-        env:
-          EXECUTING_WORKFLOW_SHA: ${{ github.workflow_sha }}
-        run: echo "sha=$EXECUTING_WORKFLOW_SHA" >>"$GITHUB_OUTPUT"
-
-      - name: Check out trusted AI review key validator
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          repository: Verjson/.github
-          ref: ${{ steps.trusted-revision.outputs.sha }}
-          path: .gate-trust
-          sparse-checkout: scripts/ci-gate/validate-ai-review-app-key.sh
-          sparse-checkout-cone-mode: false
-          persist-credentials: false
-
       - name: Create exact-head authorization receipt
         id: arm
         env:
           ACTIONS_TOKEN: ${{ github.token }}
           GH_TOKEN: ${{ github.token }}
-          AI_REVIEW_APP_PRIVATE_KEY: ${{ secrets.AI_REVIEW_APP_PRIVATE_KEY }}
           APP_KEY_POLICY_RESULT: ${{ needs.app-key-policy.result }}
         run: |
           set -euo pipefail
@@ -729,11 +712,6 @@ jobs:
             exit 1
           fi
 
-          if ! bash .gate-trust/scripts/ci-gate/validate-ai-review-app-key.sh; then
-            echo 'failure_reason=invalid_ai_review_app_private_key' >>"$GITHUB_OUTPUT"
-            echo "::error::AI_REVIEW_APP_PRIVATE_KEY is empty or invalid in the configured AI review environment; no review was dispatched"
-            exit 1
-          fi
           if [ "$APP_KEY_POLICY_RESULT" != success ]; then
             echo 'failure_reason=ai_review_environment_policy' >>"$GITHUB_OUTPUT"
             echo "::error::AI review environment policy did not succeed; no review was dispatched"

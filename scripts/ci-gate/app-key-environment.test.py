@@ -292,6 +292,28 @@ class WorkflowBoundaryTests(unittest.TestCase):
         self.assertIn("ascii_upcase", review_jobs["title-policy"]["steps"][0]["run"])
         self.assertIn(marker, review_jobs["title-policy"]["steps"][0]["run"])
 
+    def test_gate_rearm_uses_pinned_policy_result_without_caller_sha_validator_checkout(self):
+        jobs = workflow("gate-rearm")["jobs"]
+        arm = jobs["arm"]
+        self.assertIn("app-key-policy", arm["needs"])
+        self.assertFalse(
+            any(step.get("with", {}).get("path") == ".gate-trust" for step in arm["steps"])
+        )
+        self.assertFalse(
+            any(
+                step.get("with", {}).get("repository") == "Verjson/.github"
+                and "github.workflow_sha" in step.get("with", {}).get("ref", "")
+                for step in arm["steps"]
+            )
+        )
+        receipt = next(step for step in arm["steps"] if step.get("id") == "arm")
+        self.assertEqual(
+            receipt["env"]["APP_KEY_POLICY_RESULT"], "${{ needs.app-key-policy.result }}"
+        )
+        self.assertNotIn("AI_REVIEW_APP_PRIVATE_KEY", receipt["env"])
+        self.assertNotIn(".gate-trust/scripts/ci-gate/validate-ai-review-app-key.sh", receipt["run"])
+        self.assertIn('if [ "$APP_KEY_POLICY_RESULT" != success ]; then', receipt["run"])
+
     def test_native_rearm_and_retry_defaults_are_only_canonical_role_environments(self):
         rearm = workflow("gate-rearm")["jobs"]
         expression = "${{ inputs.ai_review_environment || 'ai-review-app' }}"
