@@ -271,6 +271,12 @@ def validate_metadata(path: Path, metadata: dict[str, str]) -> str:
         raise ChangelogError(f"{path}: exactly one of issue or id is required")
     if "issue" in metadata:
         if not metadata["issue"].isdigit() or int(metadata["issue"]) < 1:
+            if re.fullmatch(r"(?:[0-9]{8}T[0-9]{6}Z|[0-9a-fA-F]{6,12})", metadata["issue"]):
+                raise ChangelogError(
+                    f"{path}: issue must be a positive integer; {metadata['issue']} "
+                    "is an issue-less identity — move it to the id key "
+                    "(the filename keeps its -issue- segment either way)"
+                )
             raise ChangelogError(f"{path}: issue must be a positive integer")
         reference_issues(path, metadata)
         return f"issue:{int(metadata['issue'])}"
