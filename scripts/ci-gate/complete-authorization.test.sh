@@ -32,7 +32,7 @@ def valid(document):
         and env.get("APP_CLIENT_ID") == "${{ vars.AI_REVIEW_CLIENT_ID }}"
         and token["with"].get("client-id") == "${{ vars.AI_REVIEW_CLIENT_ID }}"
         and "app-id" not in token["with"]
-        and "permission-checks" not in token["with"]
+        and token["with"].get("permission-checks") == "write"
         and token["with"].get("permission-contents") == "read"
         and token["with"].get("permission-pull-requests") == "write"
         and document["jobs"]["complete-authorization"]["permissions"].get("actions") == "write"
@@ -45,7 +45,7 @@ def valid(document):
         and "GH_TOKEN" not in complete["env"]
         and 'GH_TOKEN="$APP_TOKEN" gh api' in run
         and 'app_api app-approval "$approval_file" --method POST' in run
-        and 'GH_TOKEN="$ACTIONS_TOKEN" gh api --method PATCH "repos/$TARGET_REPO/check-runs/$AUTHORIZATION_CHECK_ID"' in run
+        and 'GH_TOKEN="$check_token" gh api --method PATCH "repos/$TARGET_REPO/check-runs/$AUTHORIZATION_CHECK_ID"' in run
         and 'app_api persisted-approval "$persisted_file"' in run
         and 'approval="$(app_api' not in run
         and 'persisted="$(app_api' not in run
@@ -161,6 +161,8 @@ assert "AI review authorization" in finalizer["run"]
 assert ".app.id == 15368" in finalizer["run"] and '.app.slug == "github-actions"' in finalizer["run"]
 assert "$legacy_app_id" in finalizer["run"] and "$legacy_app_slug" in finalizer["run"]
 assert "$parts[5] == $run" in finalizer["run"] and "$parts[6] == $attempt" in finalizer["run"]
+assert finalizer["env"]["APP_TOKEN"] == "${{ steps.app-token.outputs.token }}"
+assert 'GH_TOKEN="$check_token" gh api --method PATCH' in finalizer["run"]
 assert "conclusion=failure" in finalizer["run"] and "conclusion=success" not in finalizer["run"]
 PY
 [ "$?" -eq 0 ] || exit 1
@@ -180,7 +182,7 @@ SH
 chmod 0644 "$tmp/run/.gate-trust/scripts/ci-gate/verify-arm-receipt.sh"
 cat >"$tmp/bin/gh" <<'SH'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >>"$CALLS"
+printf 'token=%s %s\n' "${GH_TOKEN:-}" "$*" >>"$CALLS"
 case "$*" in
   "api repos/Verjson/example/check-runs/9001")
     jq -nc --argjson id "$AUTHORIZATION_CHECK_ID" --arg head "$EXPECTED_AUTHORIZED_HEAD_SHA" \
@@ -233,6 +235,7 @@ fi
 if run_complete >"$tmp/out" 2>&1 && grep -q 'conclusion=success' "$CALLS" \
    && grep -Fq 'output[title]=AI approval persisted for exact head' "$CALLS" \
    && grep -Fq 'output[summary]=The required AI review approved this exact head.' "$CALLS" \
+   && grep -q 'token=actions-token api --method PATCH' "$CALLS" \
    && grep -q "ai-review-authorized:v1:${AUTHORIZATION_CHECK_ID}:${EXPECTED_AUTHORIZED_HEAD_SHA}:ai-merge" "$CALLS"; then
   pass "trusted preflight head receives persisted App approval before authorization completion"
 else fail "valid completion head handoff failed: $(tail -1 "$tmp/out")"; fi
@@ -241,7 +244,8 @@ else fail "valid completion head handoff failed: $(tail -1 "$tmp/out")"; fi
 : >"$CALLS"; : >"$GITHUB_OUTPUT"
 if CHECK_APP_ID=4242 CHECK_APP_SLUG=verjson-ai-review run_complete >"$tmp/out" 2>&1 \
   && grep -q 'conclusion=success' "$CALLS" \
-  && grep -q 'ai_authorized=true' "$GITHUB_OUTPUT"; then
+  && grep -q 'ai_authorized=true' "$GITHUB_OUTPUT" \
+  && grep -q 'token=app-token api --method PATCH' "$CALLS"; then
   pass "legacy App-owned authorization check completes during rollout"
 else
   fail "legacy App-owned authorization check was rejected during rollout"
@@ -401,6 +405,19 @@ else
   fail "mismatched completion head left the authorization check unresolved"
 fi
 
+
+# If completion aborts for an App-owned legacy check, the always-run fallback
+# must use that check owner's token while still only failing the exact receipt.
+: >"$CALLS"
+if CHECK_APP_ID=4242 CHECK_APP_SLUG=verjson-ai-review run_finalizer >"$tmp/out" 2>&1 \
+  && grep -q 'token=app-token api --method PATCH' "$CALLS" \
+  && grep -q 'conclusion=failure' "$CALLS" \
+  && ! grep -q 'token=actions-token api --method PATCH' "$CALLS" \
+  && ! grep -q 'api --method POST' "$CALLS"; then
+  pass "legacy App-owned authorization check finalizer uses owner token and only fails"
+else
+  fail "legacy App-owned authorization check finalizer did not fail through its owner token"
+fi
 
 : >"$CALLS"
 if run_finalizer APP_KEY_POLICY_RESULT=failure AI_REVIEW_ENVIRONMENT=ai-review-app >"$tmp/out" 2>&1 \
