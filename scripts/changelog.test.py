@@ -139,6 +139,15 @@ class ChangelogContractTests(unittest.TestCase):
         with self.assertRaisesRegex(changelog.ChangelogError, "move it to the id key"):
             list(changelog.fragments(self.root))
 
+    def test_hex_identity_explains_the_id_key(self) -> None:
+        fragment(
+            self.root,
+            "2026-07-30-issue-abc123-identity.md",
+            issue="abc123",
+        )
+        with self.assertRaisesRegex(changelog.ChangelogError, "move it to the id key"):
+            list(changelog.fragments(self.root))
+
     # YAML requires a quoted scalar wherever a value contains `: `, so every
     # `Fix: …` title is quoted by anyone who checks their fragment parses. The
     # line-wise parser kept the quotes, so those fragments — the correct ones —
