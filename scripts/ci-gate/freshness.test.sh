@@ -49,6 +49,9 @@ cat >"$tmp/bin/gh" <<'GH'
 if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
   printf '%s ' "$@" | grep -- '--json comments' >/dev/null && { cat "$COMMENTS_FILE" 2>/dev/null; exit 0; }
   [ "${PRVIEW_FAIL:-0}" = "1" ] && exit 1
+ if [ "${MERGEABLE_FAIL:-0}" = "1" ] && printf '%s ' "$@" | grep -- '--json mergeable' >/dev/null; then
+   exit 1
+ fi
   # After update-branch runs, return the post-update mergeable so a CONFLICTING
   # branch whose conflict was mere base drift reads as cleared on the re-check.
   if [ -n "${POST_UPDATE_MERGEABLE:-}" ] && grep -q UPDATE "$ACTIONLOG" 2>/dev/null; then
@@ -184,6 +187,19 @@ COMPARE_MODE=recovers COMPARE_FAILURES=1 BEHIND_BY=0 run_case "$H" >/dev/null
 [ "$(grep -c COMPARE "$tmp/act.log")" -eq 2 ] \
   && pass "the retry stops as soon as the compare answers" \
   || fail "retry did not stop on the first answer ($(grep -c COMPARE "$tmp/act.log"))"
+
+# A mergeability read through pr_json must not become `{}` and then UNKNOWN
+# that proceeds through the freshness gate. An unreadable or permanently
+# UNKNOWN state holds the PR after the bounded retries.
+rc=$(MERGEABLE_FAIL=1 run_case '{"author":{"login":"human"},"headRefName":"feat/x","headRefOid":"s","baseRefName":"main","mergeable":"UNKNOWN"}')
+[ "$rc" = "rc=1" ] && ! out_has 'proceed=true' \
+  && pass "unreadable mergeability holds instead of proceeding" \
+  || fail "unreadable mergeability did not hold"
+
+rc=$(run_case '{"author":{"login":"human"},"headRefName":"feat/x","headRefOid":"s","baseRefName":"main","mergeable":"UNKNOWN"}')
+[ "$rc" = "rc=1" ] && ! out_has 'proceed=true' \
+  && pass "persistently unknown mergeability holds instead of proceeding" \
+  || fail "persistently unknown mergeability did not hold"
 
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."
