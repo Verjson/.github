@@ -28,6 +28,7 @@ def _load(name, filename):
 
 
 fci = _load("fleet_contract_inventory", "fleet-contract-inventory.py")
+reporter = _load("fleet_contract_report", "render-fleet-contract-inventory-report.py")
 # Loaded here so the agreement between the two sweeps can be asserted rather
 # than maintained by hand -- Verjson/.github#1482.
 cv = _load("contract_version", "contract-version.py")
@@ -590,6 +591,94 @@ class RecognizerAgreement(unittest.TestCase):
         # reference, it is two unrelated lines.
         text = f"    uses:\n    Verjson/.github/{PATH}@{A}\n"
         self.assertEqual(sorted(fci.pins(text)), [])
+
+
+class ContractFleetReport(unittest.TestCase):
+    def test_report_names_drift_and_unresolved_references(self):
+        inventory = (
+            "repo\tadopter_file\tupstream_path\tpinned_sha\tstatus\n"
+            "verjson-cli\t.github/workflows/changelog.yml\tscripts/changelog.py\t" + A + "\tDRIFTED\n"
+            "verjson-ci\t.github/workflows/node-ci.yml\t.github/workflows/node-ci.yml\t" + B + "\tUNKNOWN\n"
+            "verjson-current\t.github/workflows/changelog.yml\tscripts/changelog.py\t" + A + "\tCURRENT\n"
+            "\n"
+            "repo\tadopter_file\theader_sha\tfile_uses_sha\theader_invariant\n"
+            "verjson-cli\t.github/workflows/changelog.yml\t" + A + "\t" + B + "\tHEADER_PIN_SPLIT\n"
+        )
+        diagnostics = "rows=3 repos_referencing_hub=3 {\'CURRENT\': 1, \'DRIFTED\': 1, \'UNKNOWN\': 1}\nincomplete listing: Verjson/new-repo: truncated\n"
+
+        report = reporter.render_report(inventory, diagnostics, "2026-09-22T07:00:00Z", 1)
+
+        drift_section = report.split("## Unresolved references", 1)[0]
+        self.assertIn("verjson-cli", drift_section)
+        self.assertIn("## Unresolved references", report)
+        self.assertIn("verjson-ci", report)
+        self.assertIn("HEADER_PIN_SPLIT", report)
+        self.assertIn("incomplete listing: Verjson/new-repo", report)
+        self.assertIn("Inventory status: **incomplete**", report)
+        self.assertNotIn("verjson-current", drift_section)
+
+    def test_report_rejects_missing_or_malformed_inventory_tables(self):
+        with self.assertRaises(ValueError):
+            reporter.parse_inventory("repo\tstatus\n")
+
+    def test_failed_inventory_without_tables_still_produces_diagnostics(self):
+        report = reporter.render_report(
+            "",
+            "fatal: could not resolve Verjson/.github default-branch tree",
+            "2026-09-22T07:00:00Z",
+            1,
+        )
+
+        self.assertIn("Inventory status: **incomplete**", report)
+        self.assertIn("References: 0 across 0 repositories.", report)
+        self.assertIn("fatal: could not resolve Verjson/.github", report)
+        self.assertIn("Inventory output unavailable:", report)
+
+    def test_failed_inventory_bounds_rendered_diagnostics_for_valid_tables(self):
+        inventory = (
+            "repo\tadopter_file\tupstream_path\tpinned_sha\tstatus\n\n"
+            "repo\tadopter_file\theader_sha\tfile_uses_sha\theader_invariant\n"
+        )
+        diagnostics = "gh: " + ("&" * (reporter.MAX_DIAGNOSTIC_CELL_CHARS * 100))
+
+        report = reporter.render_report(
+            inventory, diagnostics, "2026-09-22T07:00:00Z", 1
+        )
+
+        self.assertIn("&amp;", report)
+        self.assertIn("… [truncated]", report)
+        self.assertLess(len(report), 30_000)
+
+    def test_failed_inventory_omits_excess_diagnostic_lines(self):
+        inventory = (
+            "repo\tadopter_file\tupstream_path\tpinned_sha\tstatus\n\n"
+            "repo\tadopter_file\theader_sha\tfile_uses_sha\theader_invariant\n"
+        )
+        diagnostics = "\n".join("gh: diagnostic" for _ in range(reporter.MAX_DIAGNOSTIC_LINES + 5))
+
+        report = reporter.render_report(
+            inventory, diagnostics, "2026-09-22T07:00:00Z", 1
+        )
+
+        self.assertIn("Additional diagnostic lines omitted.", report)
+        self.assertLess(report.count("gh: diagnostic"), reporter.MAX_DIAGNOSTIC_LINES + 1)
+
+    def test_complete_inventory_still_rejects_malformed_tables(self):
+        with self.assertRaises(ValueError):
+            reporter.render_report("", "", "2026-09-22T07:00:00Z", 0)
+
+    def test_report_escapes_untrusted_table_cells(self):
+        self.assertEqual(reporter.markdown_cell("path|<script>`x`"), "path\\|&lt;script&gt;\\`x\\`")
+
+    def test_scheduled_workflow_uses_read_only_fleet_access(self):
+        workflow = (_root / ".github/workflows/changelog-contract-fleet-report.yml").read_text()
+        self.assertIn("schedule:", workflow)
+        self.assertNotIn("workflow_dispatch:", workflow)
+        self.assertIn("owner: Verjson", workflow)
+        self.assertIn("permission-contents: read", workflow)
+        self.assertIn("RENOVATE_COMPATIBILITY_APP_PRIVATE_KEY", workflow)
+        self.assertNotIn("permission-contents: write", workflow)
+        self.assertNotIn("permission-pull-requests: write", workflow)
 
 
 if __name__ == "__main__":

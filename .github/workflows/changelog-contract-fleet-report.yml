@@ -1,0 +1,84 @@
+name: Changelog contract fleet report
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/changelog-contract-fleet-report.yml
+      - scripts/fleet-contract-inventory.py
+      - scripts/contract_reference.py
+      - scripts/render-fleet-contract-inventory-report.py
+  schedule:
+    - cron: '17 7 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: changelog-contract-fleet-report
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Require compatibility App client ID
+        env:
+          RENOVATE_COMPATIBILITY_CLIENT_ID: ${{ vars.RENOVATE_COMPATIBILITY_CLIENT_ID }}
+        run: |
+          if [[ -z "$RENOVATE_COMPATIBILITY_CLIENT_ID" || ! "$RENOVATE_COMPATIBILITY_CLIENT_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::RENOVATE_COMPATIBILITY_CLIENT_ID must be a numeric GitHub App client ID."
+            exit 1
+          fi
+
+      - name: Mint read-only organization inventory token
+        id: inventory-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.RENOVATE_COMPATIBILITY_CLIENT_ID }}
+          private-key: ${{ secrets.RENOVATE_COMPATIBILITY_APP_PRIVATE_KEY }}
+          owner: Verjson
+          permission-contents: read
+
+      - name: Inventory and render contract drift
+        id: inventory
+        env:
+          GH_TOKEN: ${{ steps.inventory-token.outputs.token }}
+          INVENTORY_PATH: ${{ runner.temp }}/contract-inventory.tsv
+          DIAGNOSTICS_PATH: ${{ runner.temp }}/contract-inventory.log
+          REPORT_PATH: ${{ runner.temp }}/contract-inventory-report.md
+        run: |
+          set +e
+          python3 scripts/fleet-contract-inventory.py >"$INVENTORY_PATH" 2>"$DIAGNOSTICS_PATH"
+          inventory_status=$?
+          set -e
+          python3 scripts/render-fleet-contract-inventory-report.py \
+            --inventory "$INVENTORY_PATH" \
+            --diagnostics "$DIAGNOSTICS_PATH" \
+            --generated-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --inventory-status "$inventory_status" \
+            --output "$REPORT_PATH" >> "$GITHUB_STEP_SUMMARY"
+          echo "inventory_status=$inventory_status" >> "$GITHUB_OUTPUT"
+
+      - name: Upload immutable inventory report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: changelog-contract-fleet-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/contract-inventory.tsv
+            ${{ runner.temp }}/contract-inventory.log
+            ${{ runner.temp }}/contract-inventory-report.md
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Fail on an incomplete inventory
+        if: ${{ always() && steps.inventory.outputs.inventory_status != '0' }}
+        run: |
+          echo "::error::The fleet inventory was incomplete; inspect the uploaded report and diagnostics."
+          exit 1
