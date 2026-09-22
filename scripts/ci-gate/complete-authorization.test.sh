@@ -437,7 +437,7 @@ else fail "failed head lookup left the authorization check unresolved"; fi
 
 # Fail-closed direction: a verifier failure must never reach conclusion=success,
 # even when every other precondition is green.
-: >"$CALLS"; : >"$GITHUB_OUTPUT"; EXPECTED_HEAD_SHA= GATE_STATUS=success run_complete >"$tmp/out" 2>&1
+: >"$CALLS"; : >"$GITHUB_OUTPUT"; EXPECTED_HEAD_SHA='' GATE_STATUS=success run_complete >"$tmp/out" 2>&1
 if ! grep -q 'conclusion=success' "$CALLS"; then
   pass "unverified receipt cannot conclude success while the gate is green"
 else fail "unverified receipt concluded success — fail-open"; fi

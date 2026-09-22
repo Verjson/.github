@@ -84,7 +84,8 @@ export REQUIRED_CHECK_POLICY='[{"name":"shell-tests","app_id":15368,"workflow_id
 encode_policy() { python3 "$root/scripts/ci-gate/review-policy-envelope.py" encode "$1"; }
 ai_merge_policy='{"actor":"trusted-arm","actor_permission":"automation","authority":"ai-merge","budget_usd":"5.00","fallback_budget_usd":"5.00","fallback_model":"deepseek-v4-flash","model":"deepseek-v4-pro","pricing_version":"deepseek-v4-2026-08-10","provider":"deepseek"}'
 ai_approve_policy='{"actor":"trusted-arm","actor_permission":"automation","authority":"ai-approve","budget_usd":"5.00","fallback_budget_usd":"5.00","fallback_model":"deepseek-v4-flash","model":"deepseek-v4-pro","pricing_version":"deepseek-v4-2026-08-10","provider":"deepseek"}'
-export REVIEW_POLICY="$(encode_policy "$ai_merge_policy")"
+REVIEW_POLICY="$(encode_policy "$ai_merge_policy")"
+export REVIEW_POLICY
 
 write_base() {
   : >"$CALLS"
@@ -236,7 +237,7 @@ grep -q 'closed without merging' "$tmp/out" \
 write_base; jq '.headRefOid="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"; expect_pass "superseded promotion is a terminal no-op" run_promote
 ! grep -q 'verify-arm-receipt' "$CALLS" || fail "stale promotion verified an obsolete receipt"
 ! grep -q 'pr merge' "$CALLS" || fail "stale promotion attempted a merge"
-write_base; GH_TOKEN= expect_fail "missing privileged credential fails before mutation" run_promote
+write_base; GH_TOKEN='' expect_fail "missing privileged credential fails before mutation" run_promote
 
 [ "$fails" -eq 0 ] && { echo "All tests passed."; exit 0; }
 echo "$fails test(s) failed."

@@ -38,6 +38,10 @@ skip() { printf 'skip - %s\n' "$1"; }
 # cause, and keep the emptiness and its explanation in one verdict. Status is
 # taken on the failure branch itself — `if ! bash ...` would invert the very
 # status being read and turn a refusal into a silent empty capture again.
+workflow='' generated_artifacts='' generated_artifacts_with_adr=''
+adr_index_generator='' pr_gate='' release_node_workflow=''
+renovate_attribution='' default_release='' custom_release=''
+custom_contract='' adr_index_test=''
 mode_capture_failures=0
 capture_mode() {
   local target="$1"

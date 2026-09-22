@@ -9,7 +9,7 @@ trap 'rm -rf -- "$dependency_dir"' EXIT
 
 # Prove the test cannot fall back to a runner-provided package. The final test uses
 # the same isolated interpreter, so removing acquisition makes its import fail.
-if PYTHONPATH= "$python" -S -c 'import jsonschema' >/dev/null 2>&1; then
+if PYTHONPATH='' "$python" -S -c 'import jsonschema' >/dev/null 2>&1; then
   printf 'jsonschema is unexpectedly importable without declared dependencies\n' >&2
   exit 1
 fi

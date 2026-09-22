@@ -620,7 +620,7 @@ GH
 chmod +x "$comment_bin/gh"
 
 run_comment_case() {
-  local fixture="$1" case_name="$2" case_dir="$tmp/comment-$2" rc
+  local fixture="$1" case_dir="$tmp/comment-$2" rc
   mkdir -p "$case_dir"
   : >"$case_dir/actions"
   COMMENT_FIXTURE="$fixture" COMMENT_ACTIONS="$case_dir/actions" \
@@ -819,7 +819,7 @@ DEFAULT_VAR='{"value":"[\"ubuntu-24.04\"]","visibility":"all"}'
 UNTRUSTED_VAR='{"value":"[\"ubuntu-24.04\"]","visibility":"all"}'
 PRIVILEGED_VAR='{"value":"[\"ubuntu-24.04\"]","visibility":"all"}'
 LEGACY_DEFAULT_VAR=''
-LEGACY_UNTRUSTED_VAR=''
+export LEGACY_UNTRUSTED_VAR=''
 out="$(run_case)"
 [ "$(code_of)" = "0" ] \
   && grep -qF 'No drift' <<<"$out" \
@@ -859,6 +859,7 @@ set_all_untrusted_aliases() {
   local record="$1" name
   for name in "${untrusted_alias_envs[@]}"; do
     printf -v "$name" '%s' "$record"
+    # shellcheck disable=SC2163 # The fixture names the variable to export.
     export "$name"
   done
 }

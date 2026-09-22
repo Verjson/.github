@@ -101,7 +101,7 @@ expect_identity_error() {
   fi
 }
 
-export EXPECTED_APP_ID= EXPECTED_APP_SLUG=
+export EXPECTED_APP_ID='' EXPECTED_APP_SLUG=''
 if : >"$GITHUB_OUTPUT" \
    && (cd "$tmp/run" && bash "$tmp/adoption.sh") \
    && grep -qx 'adopted=false' "$GITHUB_OUTPUT" \
@@ -113,12 +113,12 @@ else
   fail "an unadopted repository did not stop before promotion lookup"
 fi
 
-export EXPECTED_APP_ID=4242 EXPECTED_APP_SLUG= PULL_REQUESTS='[]'
+export EXPECTED_APP_ID=4242 EXPECTED_APP_SLUG='' PULL_REQUESTS='[]'
 expect_identity_error \
   "partial App identity fails closed before event eligibility" \
   "AI_REVIEW_APP_SLUG is required when AI_REVIEW_APP_ID is configured"
 
-export EXPECTED_APP_ID= EXPECTED_APP_SLUG=ai-review-authorization PULL_REQUESTS='[{"number":7}]'
+export EXPECTED_APP_ID='' EXPECTED_APP_SLUG=ai-review-authorization PULL_REQUESTS='[{"number":7}]'
 expect_identity_error \
   "partial App identity fails closed when the ID is absent" \
   "AI_REVIEW_APP_ID is required when AI_REVIEW_APP_SLUG is configured"
@@ -143,7 +143,8 @@ else
   fail "valid App identity did not enter exact-head authorization resolution"
 fi
 
-export REVIEW_POLICY="$(policy ai-merge)"
+REVIEW_POLICY="$(policy ai-merge)"
+export REVIEW_POLICY
 write_check 'Deterministic merge policy completed. GitHub branch protection remains authoritative for human approval.'
 expect_noop "human-path authorization is a successful terminal no-op"
 
@@ -174,7 +175,8 @@ fi
 write_check $'The opted-in AI review approved this exact head.\n\n<!-- ai-review-authorized:v1:9001:0123456789abcdef0123456789abcdef01234567:ai-approve -->'
 expect_noop "ai-approve marker cannot satisfy an ai-merge receipt"
 
-export REVIEW_POLICY="$(policy ai-approve)"
+REVIEW_POLICY="$(policy ai-approve)"
+export REVIEW_POLICY
 write_check $'The opted-in AI review approved this exact head.\n\n<!-- ai-review-authorized:v1:9001:0123456789abcdef0123456789abcdef01234567:ai-approve -->'
 expect_noop "ai-approve authorization cannot dispatch privileged promotion"
 

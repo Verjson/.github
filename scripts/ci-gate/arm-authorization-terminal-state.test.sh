@@ -78,7 +78,8 @@ chmod +x "$tmp/bin/gh"
 export PATH="$tmp/bin:$PATH" CALLS="$tmp/calls"
 export TARGET_REPO=Verjson/example CHECK_ID=9001 ACTIONS_TOKEN=actions-token
 export EXPECTED_HEAD_SHA=0123456789abcdef0123456789abcdef01234567
-export EXPECTED_EXTERNAL_ID="ai-review:v1:Verjson/example:7:$EXPECTED_HEAD_SHA:8000:1:$(printf 'a%.0s' {1..64})"
+EXPECTED_EXTERNAL_ID="ai-review:v1:Verjson/example:7:$EXPECTED_HEAD_SHA:8000:1:$(printf 'a%.0s' {1..64})"
+export EXPECTED_EXTERNAL_ID
 export ARM_FAILURE_REASON=invalid_ai_review_app_private_key AI_REVIEW_ENVIRONMENT=ai-review-app
 run_guard(){ : >"$CALLS"; bash "$tmp/guard.sh"; }
 

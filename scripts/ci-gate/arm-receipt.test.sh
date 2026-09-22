@@ -17,7 +17,8 @@ export CHECK_APP_ID=15368 CHECK_APP_SLUG=github-actions
 encode_policy() { python3 "$here/review-policy-envelope.py" encode "$1"; }
 anthropic_policy='{"actor":"trusted-arm","actor_permission":"automation","authority":"human","budget_usd":"auto","fallback_budget_usd":"","fallback_model":"","model":"auto","pricing_version":"anthropic-native-v1","provider":"anthropic"}'
 openai_policy='{"actor":"maintainer","actor_permission":"maintain","authority":"ai-approve","budget_usd":"1.00","fallback_budget_usd":"","fallback_model":"","model":"gpt-5.6-luna","pricing_version":"openai-luna-long-context-2026-08-08","provider":"openai"}'
-export REVIEW_POLICY="$(encode_policy "$anthropic_policy")"
+REVIEW_POLICY="$(encode_policy "$anthropic_policy")"
+export REVIEW_POLICY
 export GITHUB_SERVER_URL=https://github.com RUNNER_TEMP="$tmp"
 nonce=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 external_id="ai-review:v1:$TARGET_REPO:$PR_NUMBER:$EXPECTED_HEAD_SHA:$ARM_RUN_ID:$ARM_RUN_ATTEMPT:$nonce"
@@ -117,7 +118,9 @@ repack() {
 }
 
 write_label_run() {
-  export ARM_RUN_ATTEMPT=1 REVIEW_POLICY="$(encode_policy "$openai_policy")"
+  export ARM_RUN_ATTEMPT=1
+  REVIEW_POLICY="$(encode_policy "$openai_policy")"
+  export REVIEW_POLICY
   external_id="ai-review:v1:$TARGET_REPO:$PR_NUMBER:$EXPECTED_HEAD_SHA:$ARM_RUN_ID:$ARM_RUN_ATTEMPT:$nonce"
   write_base
   workflow_sha=fedcba9876543210fedcba9876543210fedcba98
@@ -150,7 +153,9 @@ jq '.arm_run_attempt=2 | .external_id=(.external_id | sub(":1:[0-9a-f]{64}$"; ":
 jq '.external_id=(.external_id | sub(":1:[0-9a-f]{64}$"; ":2:" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))' "$CHECK_FILE" >"$tmp/x" && mv "$tmp/x" "$CHECK_FILE"
 repack; expect_fail "label delivery rejects attempt greater than one" verify
 write_label_run; jq '.path=".github/workflows/gate-rearm.yml"' "$RUN_FILE" >"$tmp/x" && mv "$tmp/x" "$RUN_FILE"; expect_fail "required arm run rejects label-caller schema-2 cross-mode receipt" verify
-export ARM_RUN_ATTEMPT=2 REVIEW_POLICY="$(encode_policy "$anthropic_policy")"
+export ARM_RUN_ATTEMPT=2
+REVIEW_POLICY="$(encode_policy "$anthropic_policy")"
+export REVIEW_POLICY
 external_id="ai-review:v1:$TARGET_REPO:$PR_NUMBER:$EXPECTED_HEAD_SHA:$ARM_RUN_ID:$ARM_RUN_ATTEMPT:$nonce"
 write_ruleset_run
 printf '%s\n' '[{"type":"workflows","ruleset_source_type":"Repository","ruleset_source":"Verjson/example","parameters":{"workflows":[{"path":".github/workflows/gate-rearm.yml","ref":"refs/heads/main","repository_id":1269388380}]}}]' >"$RULES_FILE"
@@ -173,7 +178,8 @@ write_base; REVIEW_POLICY="$(encode_policy "$openai_policy")" expect_fail "a pro
 REVIEW_POLICY="$(encode_policy "$openai_policy")"; write_base; expect_pass "maintainer re-review evidence is reauthorized" verify
 write_base; CURRENT_PERMISSION=triage REVERIFY_ACTOR_PERMISSION=false expect_pass "completion trusts the immutable arm permission without repository administration access" verify
 write_base; CURRENT_PERMISSION=triage expect_fail "permission revocation after authorization fails closed" verify; unset CURRENT_PERMISSION
-export REVIEW_POLICY="$(encode_policy "$anthropic_policy")"
+REVIEW_POLICY="$(encode_policy "$anthropic_policy")"
+export REVIEW_POLICY
 write_base; jq '.details_url="https://github.com/Verjson/example/actions/runs/9999"' "$CHECK_FILE" >"$tmp/x" && mv "$tmp/x" "$CHECK_FILE"; expect_fail "forged same-App details URL is rejected" verify
 write_base; jq '.check_run_id=9002' "$tmp/archive/receipt.json" >"$tmp/x" && mv "$tmp/x" "$tmp/archive/receipt.json"; repack; expect_fail "receipt/check ID mismatch is rejected" verify
 write_base; jq '.nonce="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' "$tmp/archive/receipt.json" >"$tmp/x" && mv "$tmp/x" "$tmp/archive/receipt.json"; repack; expect_fail "nonce/external_id mismatch is rejected" verify

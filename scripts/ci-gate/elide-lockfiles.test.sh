@@ -45,7 +45,11 @@ grep -q 'elided_lockfiles=' "$slice" || { echo "FAIL - could not extract elided_
 run_filter() {
   rm -rf "$tmp/work"; mkdir -p "$tmp/work/.ai-review"
   cp "$1" "$tmp/work/.ai-review/pr.full.diff"
-  ( cd "$tmp/work" && source "$slice" && printf '%s' "$elided_lockfiles" > elided.out )
+  # shellcheck disable=SC1090,SC2154 # The generated fixture defines this value.
+  (
+    cd "$tmp/work" && source "$slice" &&
+      printf '%s' "$elided_lockfiles" >elided.out
+  )
   filtered="$tmp/work/.ai-review/pr.diff"
   elided="$(cat "$tmp/work/elided.out")"
 }
