@@ -67,7 +67,6 @@ workflow_paths() { # $1 = repo
     2>/dev/null)" || return 1
   [ -n "$branch" ] || return 0
   branch_ref="$(jq -rn --arg branch "$branch" '$branch | @uri')"
-  [ -n "$branch_ref" ] || return 1
   gh api "repos/$ORG/$1/git/trees/$branch_ref?recursive=1" \
     --jq 'if .truncated != false or (.tree | type) != "array" then error("invalid or truncated repository tree") else .tree[] | select(.type == "blob") | select(.path | test("^\\.github/workflows/.*\\.ya?ml$")) | .path end' \
     2>/dev/null
