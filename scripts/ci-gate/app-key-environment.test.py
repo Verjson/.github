@@ -224,14 +224,11 @@ class WorkflowBoundaryTests(unittest.TestCase):
         self.assertEqual(job["if"], "${{ inputs.role == 'ai-review' }}")
         self.assertEqual(job["needs"], "validate")
         self.assertEqual(job["environment"], "${{ inputs.environment }}")
-        revision = next(step for step in job["steps"] if step.get("name") == "Resolve executing trusted workflow revision")
-        self.assertEqual(revision["env"]["EXECUTING_WORKFLOW_SHA"], "${{ job.workflow_sha }}")
-        checkout = next(step for step in job["steps"] if step.get("name") == "Check out immutable AI review key validator")
-        self.assertEqual(checkout["with"]["repository"], "${{ job.workflow_repository }}")
-        self.assertEqual(checkout["with"]["ref"], "${{ steps.trusted-revision.outputs.sha }}")
-        validator = next(step for step in job["steps"] if step.get("name") == "Validate the resolved AI review App private key")
+        validator = next(step for step in job["steps"] if step.get("name") == "Validate resolved AI review App private key")
         self.assertEqual(validator["env"]["AI_REVIEW_APP_PRIVATE_KEY"], "${{ secrets.AI_REVIEW_APP_PRIVATE_KEY }}")
-        self.assertIn("validate-ai-review-app-key.sh", validator["run"])
+        self.assertFalse(any(step.get("uses", "").startswith("actions/checkout@") for step in job["steps"]))
+        helper = (ROOT / "scripts/ci-gate/validate-ai-review-app-key.sh").read_text(encoding="utf-8")
+        self.assertEqual(validator["run"].strip(), helper.removeprefix("#!/usr/bin/env bash").strip())
 
     def test_retry_inherits_context_and_retains_fixed_environment(self):
         retry = workflow("ai-promotion-retry")
