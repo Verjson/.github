@@ -12,6 +12,7 @@ Reverse-chronological index of org-level decisions.
 <!-- prettier-ignore -->
 | # | Date | Decision |
 |---|------|----------|
+| [0201](0201-secret-bearing-fleet-report-uses-default-branch/README.md) | 2026-09-22 | Keep the full fleet report in a private workflow run |
 | [0200](0200-temporary-legacy-authorization-check-write/README.md) | 2026-09-22 | Temporarily authorize exact legacy review-App checks |
 | [0199](0199-authorization-checks-fail-without-review-app-credentials/README.md) | 2026-09-21 | Authorization checks fail without review App credentials |
 | [0198](0198-confine-runner-host-evidence-credentials/README.md) | 2026-09-21 | Confine runner host-evidence credentials to the protected deployment environment |

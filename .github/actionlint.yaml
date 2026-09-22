@@ -58,6 +58,12 @@ paths:
     ignore:
       - '^property "workflow_repository" is not defined in object type \{container: \{id: string; network: string\}; services: \{string => \{id: string; network: string; ports: \{string => string\}\}\}; status: string\}$'
       - '^property "workflow_sha" is not defined in object type \{container: \{id: string; network: string\}; services: \{string => \{id: string; network: string; ports: \{string => string\}\}\}; status: string\}$'
+  # GitHub Cloud supports these job-context identity fields; actionlint's pinned schema does not.
+  # Limit the exception to this workflow and the two diagnostic prefixes.
+  .github/workflows/changelog-contract-fleet-report.yml:
+    ignore:
+      - '^property "workflow_repository" is not defined in object type .*'
+      - '^property "workflow_sha" is not defined in object type .*'
   .github/workflows/node-release.yml:
     ignore:
       - '^property "workflow_repository" is not defined in object type \{container: \{id: string; network: string\}; services: \{string => \{id: string; network: string; ports: \{string => string\}\}\}; status: string\}$'

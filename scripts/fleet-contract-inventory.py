@@ -17,7 +17,7 @@ reports "current" when both calls fail, which is how the previous sweep missed
 the drift it was written to find.
 """
 from __future__ import annotations
-import base64, json, re, subprocess, sys, collections, pathlib
+import base64, csv, json, re, subprocess, sys, collections, pathlib
 
 # Run as `python3 scripts/fleet-contract-inventory.py` and also loaded
 # straight from its path by the CI-gate suite, which does not put `scripts/`
@@ -288,6 +288,15 @@ def classify(path: str | None,
     return "CURRENT" if a == b else "DRIFTED"
 
 
+def write_inventory(rows, header_rows, stream=sys.stdout) -> None:
+    writer = csv.writer(stream, delimiter="\t", lineterminator="\n")
+    writer.writerow(("repo", "adopter_file", "upstream_path", "pinned_sha", "status"))
+    writer.writerows(rows)
+    stream.write("\n")
+    writer.writerow(("repo", "adopter_file", "header_sha", "file_uses_sha", "header_invariant"))
+    writer.writerows(header_rows)
+
+
 def main() -> int:
     main_tree = hub_tree("main")
     if main_tree is None:
@@ -325,13 +334,7 @@ def main() -> int:
                                     ",".join(sorted(used)) or "-", state))
         print(f"... {repo}", file=sys.stderr)
 
-    print("repo\tadopter_file\tupstream_path\tpinned_sha\tstatus")
-    for r in rows:
-        print("\t".join(r))
-    print()
-    print("repo\tadopter_file\theader_sha\tfile_uses_sha\theader_invariant")
-    for r in header_rows:
-        print("\t".join(r))
+    write_inventory(rows, header_rows)
 
     tally = collections.Counter(r[4] for r in rows)
     repos_with_rows = {r[0] for r in rows}
