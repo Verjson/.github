@@ -37,6 +37,9 @@ enforce = steps["Refuse literal hosted selectors in Verjson callers"]
 cleanup = steps["Remove hosted-selector policy dependency"]
 assert install["if"] == "github.repository_owner == 'Verjson'"
 assert enforce["if"] == "github.repository_owner == 'Verjson'"
+assert enforce["env"] == {
+    "VERJSON_HOSTED_SELECTOR_POLICY_SHA": "${{ job.workflow_sha }}"
+}
 assert cleanup["if"] == "${{ always() && github.repository_owner == 'Verjson' }}"
 assert cleanup["working-directory"] == "${{ github.workspace }}"
 for step in (install, enforce, cleanup):

@@ -157,6 +157,8 @@ jobs:
           test -f "$dependency_dir/yaml/__init__.py"
       - name: Refuse literal hosted selectors in Verjson callers
         if: github.repository_owner == 'Verjson'
+        env:
+          VERJSON_HOSTED_SELECTOR_POLICY_SHA: ${{ job.workflow_sha }}
         run: |
           set -euo pipefail
           runner_temp="$(cd "${{ runner.temp }}" && pwd -P)"

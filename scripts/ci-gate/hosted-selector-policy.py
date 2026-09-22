@@ -305,6 +305,11 @@ REVIEWED_SELECTOR_EXPRESSIONS = frozenset(
 # step inputs and prose-bearing reusable inputs must not become policy text.
 REUSABLE_RUNNER_INPUTS = ("runner", "runner_labels")
 
+FASTLANE_REUSABLE_INPUT_EXPRESSION = (
+    "vars.CI_RUNNER_FASTLANE || '[\"ubuntu-24.04\"]'"
+)
+POLICY_CONTRACT_SHA_ENV = "VERJSON_HOSTED_SELECTOR_POLICY_SHA"
+
 # A reusable input receives selector JSON rather than a resolved runs-on value,
 # so its reviewed grammar is intentionally smaller than runs-on's. The first
 # expression is emitted by gen-changelog-caller.sh. Static matrix references are
@@ -319,6 +324,42 @@ REVIEWED_REUSABLE_INPUT_EXPRESSIONS = frozenset(
         "matrix.runner_labels",
     )
 )
+
+
+def reviewed_reusable_input_expressions(
+    body: dict,
+    input_name: str,
+    inputs: dict,
+    guarded_fastlane_caller: bool,
+) -> frozenset[str]:
+    contract_sha = os.environ.get(POLICY_CONTRACT_SHA_ENV, "")
+    if (
+        guarded_fastlane_caller
+        and input_name == "runner"
+        and re.fullmatch(r"[0-9a-f]{40}", contract_sha)
+        and body.get("uses")
+        == f"Verjson/.github/.github/workflows/node-ci.yml@{contract_sha}"
+        and " ".join(flatten(inputs.get("secretless-pr")).split())
+        == "${{ github.event_name == 'pull_request' }}"
+    ):
+        return REVIEWED_REUSABLE_INPUT_EXPRESSIONS | {
+            FASTLANE_REUSABLE_INPUT_EXPRESSION
+        }
+    return REVIEWED_REUSABLE_INPUT_EXPRESSIONS
+
+
+def is_guarded_fastlane_caller(document: dict) -> bool:
+    has_text_key = "on" in document
+    has_yaml11_key = True in document
+    if has_text_key == has_yaml11_key:
+        return False
+    trigger = document.get("on") if has_text_key else document.get(True)
+    if not isinstance(trigger, dict) or set(trigger) != {"push", "pull_request"}:
+        return False
+    return (
+        trigger["pull_request"] in (None, {})
+        and trigger["push"] == {"branches": ["main"]}
+    )
 CANONICAL_RUNNER_CANARY = "runner-canary.yml"
 CANONICAL_RUNNER_CANARY_SELECTOR = [
     "self-hosted",
@@ -596,6 +637,7 @@ def check_reusable_runner_inputs(
     name: str,
     body: dict,
     line: int,
+    guarded_fastlane_caller: bool,
 ) -> None:
     """Apply R1 only to canonical job-level runner-routing inputs.
 
@@ -638,7 +680,12 @@ def check_reusable_runner_inputs(
             for selector_value in selector_values:
                 validate_selector_expressions(
                     selector_value,
-                    REVIEWED_REUSABLE_INPUT_EXPRESSIONS,
+                    reviewed_reusable_input_expressions(
+                        body,
+                        input_name,
+                        inputs,
+                        guarded_fastlane_caller,
+                    ),
                 )
         except Undetermined as error:
             report.anomaly(
@@ -671,9 +718,17 @@ def check_reusable_runner_inputs(
 def check_job(report: Report, path: str, name: str, body: dict, line: int,
               visibility: str, consumer_policy: bool = False,
               canonical_canary: bool = False,
-              canonical_changelog_pr_gate: bool = False) -> None:
+              canonical_changelog_pr_gate: bool = False,
+              guarded_fastlane_caller: bool = False) -> None:
     if consumer_policy:
-        check_reusable_runner_inputs(report, path, name, body, line)
+        check_reusable_runner_inputs(
+            report,
+            path,
+            name,
+            body,
+            line,
+            guarded_fastlane_caller,
+        )
     if "runs-on" not in body:
         # A job-level `uses:` calls a reusable workflow and declares no runner
         # of its own. Consumer mode checks the two canonical pass-through inputs
@@ -1026,6 +1081,7 @@ def main(argv: list[str]) -> int:
                 arguments.consumer_policy,
                 name in canonical_jobs,
                 arguments.consumer_policy and is_canonical_changelog_pr_gate(document),
+                arguments.consumer_policy and is_guarded_fastlane_caller(document),
             )
 
     for message in report.anomalies:

@@ -1,0 +1,11 @@
+name: mismatched contract fastlane reusable selector
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  delegated:
+    uses: Verjson/.github/.github/workflows/node-ci.yml@ffffffffffffffffffffffffffffffffffffffff
+    with:
+      runner: ${{ vars.CI_RUNNER_FASTLANE || '["ubuntu-24.04"]' }}
+      secretless-pr: ${{ github.event_name == 'pull_request' }}
