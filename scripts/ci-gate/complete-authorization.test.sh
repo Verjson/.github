@@ -406,6 +406,19 @@ else
 fi
 
 
+# If completion aborts for an App-owned legacy check, the always-run fallback
+# must use that check owner's token while still only failing the exact receipt.
+: >"$CALLS"
+if CHECK_APP_ID=4242 CHECK_APP_SLUG=verjson-ai-review run_finalizer >"$tmp/out" 2>&1 \
+  && grep -q 'token=app-token api --method PATCH' "$CALLS" \
+  && grep -q 'conclusion=failure' "$CALLS" \
+  && ! grep -q 'token=actions-token api --method PATCH' "$CALLS" \
+  && ! grep -q 'api --method POST' "$CALLS"; then
+  pass "legacy App-owned authorization check finalizer uses owner token and only fails"
+else
+  fail "legacy App-owned authorization check finalizer did not fail through its owner token"
+fi
+
 : >"$CALLS"
 if run_finalizer APP_KEY_POLICY_RESULT=failure AI_REVIEW_ENVIRONMENT=ai-review-app >"$tmp/out" 2>&1 \
   && grep -Fq 'AI_REVIEW_APP_PRIVATE_KEY validation or review environment admission failed for ai-review-app' "$CALLS"; then
