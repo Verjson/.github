@@ -261,7 +261,7 @@ def mint_host_export_app_jwt(app_id, private_key, now, run=subprocess.run):
     header = _base64url(canonical({'alg': 'RS256', 'typ': 'JWT'}))
     payload = _base64url(canonical({'iat': issued_at, 'exp': issued_at + 540, 'iss': str(app_id)}))
     signing_input = f'{header}.{payload}'.encode('ascii')
-    with tempfile.TemporaryDirectory(prefix='deployment-host-app-key-') as temporary:
+    with _runner_temp_directory('deployment-host-app-key-') as temporary:
         key_path = Path(temporary) / 'app-private-key.pem'
         _write_private_file(key_path, private_key, 64_000, 'host export App private key')
         try:
@@ -372,6 +372,18 @@ def validate_probe_receipt(value, receipt, run_record, job, artifact, now):
     unsigned = dict(receipt) | {'artifact': {'name': 'runner-promotion-receipt', 'contentDigest': ''}}
     require(receipt.get('artifact', {}).get('name') == 'runner-promotion-receipt' and digest(canonical(unsigned)) == self_digest, 'receipt content digest differs')
     require(artifact.get('expired') is False and positive(artifact.get('workflow_run', {}).get('id')) and artifact['workflow_run']['id'] == run_record['id'], 'artifact run provenance differs')
+
+
+def _runner_temp_directory(prefix):
+    runner_temp = os.environ.get('RUNNER_TEMP')
+    require(
+        isinstance(runner_temp, str) and Path(runner_temp).is_absolute(),
+        'runner temporary directory unavailable',
+    )
+    try:
+        return tempfile.TemporaryDirectory(prefix=prefix, dir=runner_temp)
+    except OSError:
+        raise TransportError('runner temporary directory unavailable') from None
 
 
 def _write_private_file(path, contents, maximum, description):
@@ -516,7 +528,7 @@ def host_export(value, token, manifest_result=None, *, run=subprocess.run, clock
             'read-only host observation credentials are unavailable')
     cli = _deployment_cli()
     attestations = []
-    with tempfile.TemporaryDirectory(prefix='deployment-host-export-') as temporary:
+    with _runner_temp_directory('deployment-host-export-') as temporary:
         root = Path(temporary)
         home = root / 'home'
         doctl_config = home / '.config' / 'doctl' / 'config.yaml'

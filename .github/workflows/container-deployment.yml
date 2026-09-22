@@ -40,8 +40,25 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  verify-default-branch:
+    runs-on: ubuntu-24.04
+    permissions: {}
+    steps:
+      - name: Require the repository default branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          ENTRY_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          [[ -n "$DEFAULT_BRANCH" ]]
+          [[ "$ENTRY_REF" == "refs/heads/$DEFAULT_BRANCH" ]] || {
+            echo "::error::deployment can run only from the repository default branch"
+            exit 1
+          }
+
   dry-run:
     if: inputs.dry-run
+    needs: verify-default-branch
     environment: production
     runs-on: ${{ github.repository_owner != 'Verjson' && 'ubuntu-24.04' || fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     timeout-minutes: 10
@@ -156,6 +173,7 @@ jobs:
 
   deploy:
     if: ${{ !inputs.dry-run }}
+    needs: verify-default-branch
     environment: production
     runs-on: ${{ github.repository_owner != 'Verjson' && 'ubuntu-24.04' || fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     timeout-minutes: 90
@@ -483,9 +501,11 @@ jobs:
             --output deployment-plan.json)
           python3 scripts/container_deployment_controller.py "${args[@]}"
           mkdir -p deployment-receipts
-          python3 scripts/container_deployment_controller.py admit \
-            --plan deployment-plan.json --config "$CONFIG_PATH" \
-            --evidence deployment-evidence.json --receipt-dir deployment-receipts
+              python3 scripts/container_deployment_controller.py admit \
+                --plan deployment-plan.json --config "$CONFIG_PATH" \
+                --evidence deployment-evidence.json --receipt-dir deployment-receipts \
+                --fleet "$FLEET_SELECTOR" --action "$ACTION" \
+                --contract-ref "$CONTRACT_REF"
           python3 scripts/container_deployment_controller.py reconcile \
             --plan deployment-plan.json --config "$CONFIG_PATH" \
             --evidence deployment-evidence.json --receipt-dir deployment-receipts

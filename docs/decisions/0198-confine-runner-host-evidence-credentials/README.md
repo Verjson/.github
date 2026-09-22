@@ -58,3 +58,22 @@ those values or assert that production has them. The existing production
 environment binding is a sensitive workflow surface; any later move to a
 separate host-observation environment must preserve the same parent-owned
 credential boundary and synchronous evidence binding.
+
+## 2026-09-21 implementation follow-up
+
+The host-export App signing key, SSH key, DigitalOcean configuration, and known-host
+files now live under the Actions `RUNNER_TEMP` directory, which the runner empties at
+the start and end of each job. Missing, relative, or unusable `RUNNER_TEMP` fails closed
+before private credentials are written. The controller forwards `RUNNER_TEMP` through
+its child-process allowlist so the transport uses the same job-scoped directory. The
+transport retains a mode-0700 temporary directory and deletes it on normal return or
+failure. The controller also verifies that the host-export request's `planDigest` equals
+the canonical digest of the admitted plan before invoking transport. These checks
+complete the accepted boundary without changing credential authority or the supported
+observation API. Follow-ups #1526 and #1527 are delivered under #1451.
+
+The reusable workflow rejects non-default-branch calls in a credential-free job
+before either production-environment job starts. The controller validates all three
+review gates and reconstructs a submitted plan from reviewed configuration and
+admission evidence before persisting its receipt; a caller-supplied plan digest
+alone is not admission authority.

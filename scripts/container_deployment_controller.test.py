@@ -18,6 +18,7 @@ assert SPEC and SPEC.loader
 controller = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = controller
 SPEC.loader.exec_module(controller)
+TEST_NOW = datetime.now(timezone.utc)
 
 
 def release(version: str, digit: str) -> dict:
@@ -123,7 +124,7 @@ def configuration() -> dict:
 
 
 def evidence() -> dict:
-    now = datetime.now(timezone.utc)
+    now = TEST_NOW
     manifest = release_manifest("2.0.0", "3")
     selected = manifest_release(manifest)
     baseline_manifest = release_manifest("1.0.0", "1")
@@ -218,6 +219,8 @@ def evidence() -> dict:
             ]
         },
     }
+
+
     target_bytes = json.dumps(candidate["manifest"], indent=2, sort_keys=True) + "\n"
     target_identity = "sha256:" + hashlib.sha256(target_bytes.encode()).hexdigest()
     candidate["manifestBytes"] = target_bytes
@@ -295,6 +298,49 @@ def evidence() -> dict:
         "baselineAttestations": attestations,
     }
     return candidate
+
+def invoke_admission(plan: dict, candidate: dict) -> tuple[int, str, list[str]]:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        plan_path = root / "plan.json"
+        config_path = root / "config.json"
+        evidence_path = root / "evidence.json"
+        receipt_dir = root / "receipts"
+        for path, value in (
+            (plan_path, plan),
+            (config_path, configuration()),
+            (evidence_path, candidate),
+        ):
+            path.write_text(json.dumps(value), encoding="utf-8")
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(MODULE_PATH),
+                "admit",
+                "--plan",
+                str(plan_path),
+                "--config",
+                str(config_path),
+                "--evidence",
+                str(evidence_path),
+                "--receipt-dir",
+                str(receipt_dir),
+                "--fleet",
+                "production",
+                "--action",
+                "deploy",
+                "--contract-ref",
+                "0" * 40,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        receipts = [
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in sorted(receipt_dir.glob("revision-*.json"))
+        ]
+        return result.returncode, result.stderr, receipts
 
 
 def refresh_host_export_binding(candidate: dict, config: dict | None = None) -> None:
@@ -399,6 +445,45 @@ class HostExportRequestTests(unittest.TestCase):
         self.assertIsNone(capacity["hostExport"]["runnerName"])
         self.assertEqual(contract_ref, baseline["deploymentContractCommit"])
         self.assertNotIn("ssh-private-key-material", json.dumps(baseline))
+
+    def test_host_export_rejects_request_not_bound_to_admitted_plan(self):
+        config = configuration()
+        candidate = evidence()
+        plan = controller.build_plan(config, candidate, "production")
+        adapter = controller.ProcessAdapter(config, {}, candidate, plan)
+        request = {"planDigest": "sha256:" + "0" * 64}
+
+        with mock.patch.object(controller, "_build_host_export_request", return_value=request), \
+                mock.patch.object(controller, "_run_host_export_transport") as run:
+            with self.assertRaisesRegex(
+                controller.DeploymentError, "does not bind admitted plan"
+            ):
+                adapter._host_export("post-update", "gha-gate-1")
+
+        run.assert_not_called()
+
+    def test_host_export_transport_forwards_runner_temp_to_child(self):
+        request = {"operation": "host-export"}
+        receipt = {
+            "schemaVersion": 1,
+            "requestDigest": controller.canonical_digest(request),
+            "outcome": "passed",
+        }
+        secrets = {name: "credential" for name in controller.HOST_EXPORT_SECRET_ENV}
+
+        with tempfile.TemporaryDirectory() as runner_temp:
+            def run(command, **kwargs):
+                self.assertEqual(runner_temp, kwargs["env"]["RUNNER_TEMP"])
+                output = Path(command[command.index("--output") + 1])
+                output.write_text(json.dumps(receipt), encoding="utf-8")
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            environment = {"PATH": "/usr/bin", "RUNNER_TEMP": runner_temp, **secrets}
+            with mock.patch.dict(controller.os.environ, environment, clear=True), \
+                    mock.patch.object(controller.subprocess, "run", side_effect=run):
+                result = controller._run_host_export_transport(request)
+
+        self.assertEqual(receipt, result)
 
     def test_host_export_collection_stops_before_legacy_evidence_when_authority_is_missing(self):
         config = configuration()
@@ -588,6 +673,106 @@ class DeploymentPlannerTests(unittest.TestCase):
         self.assertEqual(["canary", "rollout", "rollout"], [s["phase"] for s in plan["steps"]])
         self.assertEqual("sequential", plan["rolloutMode"])
 
+    def test_admission_rejects_a_tampered_rollout_plan(self):
+        candidate = evidence()
+        plan = controller.build_plan(
+            configuration(), candidate, "production", now=TEST_NOW
+        )
+        plan["steps"][0]["runner"] = plan["steps"][1]["runner"]
+        code, error, receipts = invoke_admission(plan, candidate)
+        self.assertEqual(1, code, error)
+        self.assertIn("differs from reviewed configuration", error)
+        self.assertEqual([], receipts)
+
+    def test_admission_rejects_incomplete_review_authority(self):
+        candidate = evidence()
+        plan = controller.build_plan(
+            configuration(), candidate, "production", now=TEST_NOW
+        )
+        candidate["authorization"]["reviewGates"].pop()
+        code, error, receipts = invoke_admission(plan, candidate)
+        self.assertEqual(1, code, error)
+        self.assertIn("exactly three review gates", error)
+        self.assertEqual([], receipts)
+
+    def test_admission_rejects_plan_selectors_that_differ_from_dispatch(self):
+        for field, value in (
+            ("fleetSelector", "staging"),
+            ("action", "rollback"),
+            ("deploymentContractCommit", "a" * 40),
+        ):
+            with self.subTest(field=field):
+                candidate = evidence()
+                plan = controller.build_plan(
+                    configuration(), candidate, "production", now=TEST_NOW
+                )
+                plan[field] = value
+                code, error, receipts = invoke_admission(plan, candidate)
+                self.assertEqual(1, code, error)
+                self.assertIn("selectors differ from the reviewed request", error)
+                self.assertEqual([], receipts)
+
+    def test_admission_persists_receipt_for_a_valid_plan(self):
+        candidate = evidence()
+        plan = controller.build_plan(
+            configuration(), candidate, "production", now=TEST_NOW
+        )
+
+        code, error, receipts = invoke_admission(plan, candidate)
+
+        self.assertEqual(0, code, error)
+        self.assertEqual(1, len(receipts))
+        self.assertEqual("admitted", receipts[0]["outcome"])
+        self.assertEqual(plan["attemptId"], receipts[0]["attemptId"])
+
+    def test_retained_plan_admission_validates_authority_and_persists_receipt(self):
+        config = configuration()
+        candidate = evidence()
+        plan = controller.build_plan(
+            config, candidate, "production", now=TEST_NOW
+        )
+        admitted = controller.admitted_receipt(plan, config, candidate, TEST_NOW)
+        pending = controller._next_revision(
+            admitted,
+            outcome="in_progress",
+            runners=[
+                {
+                    "name": "gha-gate-1",
+                    "beforeDigest": "sha256:" + "1" * 64,
+                    "afterDigest": "sha256:" + "3" * 64,
+                    "afterRelease": copy.deepcopy(plan["selectedRelease"]),
+                    "state": "updated",
+                    "probe": "not_run",
+                    "observation": "pending",
+                    "completedAt": None,
+                }
+            ],
+            completed_at=None,
+        )
+        candidate["fleet"]["runners"][0]["release"] = copy.deepcopy(
+            plan["selectedRelease"]
+        )
+        candidate["retainedPlan"] = copy.deepcopy(plan)
+        candidate["retainedRevisions"] = [admitted, pending]
+        candidate["retainedReceiptAuthority"] = (
+            f"{pending['attemptId']}/42@"
+            f"{controller.retained_authority_digest(plan, [admitted, pending])}"
+        )
+
+        code, error, receipts = invoke_admission(plan, candidate)
+
+        self.assertEqual(0, code, error)
+        self.assertEqual(2, len(receipts))
+        self.assertEqual("admitted", receipts[0]["outcome"])
+        self.assertEqual("in_progress", receipts[1]["outcome"])
+
+        candidate["authorization"]["reviewGates"].pop()
+        code, error, receipts = invoke_admission(plan, candidate)
+        self.assertEqual(1, code, error)
+        self.assertIn("exactly three review gates", error)
+        self.assertEqual([], receipts)
+
+
     def test_rejects_mutable_manifest_tag(self):
         candidate = evidence()
         candidate["manifestIdentity"] = (
@@ -752,6 +937,7 @@ class DeploymentExecutionTests(unittest.TestCase):
         source["outcome"] = "failed"
         source["completedAt"] = "2026-08-14T00:01:00Z"
         rollback = copy.deepcopy(candidate)
+        rollback["rollbackSource"] = source
         baseline = rollback["fleet"]["runners"][0]
         rollback["manifest"] = baseline["releaseManifest"]
         bind_manifest_bytes(rollback, baseline["releaseManifestBytes"])
@@ -1158,6 +1344,7 @@ class DeploymentExecutionTests(unittest.TestCase):
         source["outcome"] = "failed"
         source["completedAt"] = "2026-08-14T00:01:00Z"
         rollback_evidence = evidence()
+        rollback_evidence["rollbackSource"] = source
         rollback_evidence["manifestIdentity"] = rollback_evidence["fleet"]["runners"][0][
             "manifestIdentity"
         ]
@@ -1207,6 +1394,7 @@ class DeploymentExecutionTests(unittest.TestCase):
         source["completedAt"] = "2026-08-14T00:01:00Z"
         source["failure"] = "fixture failure"
         rollback_evidence = evidence()
+        rollback_evidence["rollbackSource"] = source
         rollback_evidence["manifestIdentity"] = rollback_evidence["fleet"]["runners"][0][
             "manifestIdentity"
         ]
@@ -1713,6 +1901,7 @@ class DeploymentExecutionTests(unittest.TestCase):
             controller.os.environ,
             {
                 "PATH": "/usr/bin",
+                "RUNNER_TEMP": "/runner/temp",
                 "HOME": "/runner-home",
                 "SSH_AUTH_SOCK": "/tmp/agent.sock",
                 "VERJSON_DEPLOYMENT_CLI": "/runner/bin/verjson-cloud",
@@ -1724,7 +1913,7 @@ class DeploymentExecutionTests(unittest.TestCase):
             clear=True,
         ):
             child = controller._child_environment()
-        self.assertEqual({"PATH": "/usr/bin"}, child)
+            self.assertEqual({"PATH": "/usr/bin"}, child)
 
     def test_probe_child_process_receives_no_ssh_agent_or_control_capability(self):
         completed = mock.Mock(
