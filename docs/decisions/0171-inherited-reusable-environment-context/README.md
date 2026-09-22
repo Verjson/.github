@@ -80,3 +80,14 @@ required-invocation acceptance at exact head, and verified teardown), with full
 run and job projections retained privately at
 `.git/pm-runs/ready-queue-20260911-receipts/1285-canary/` in the owning checkout,
 following ADR 0173's private-receipt convention for this public repository.
+
+## 2026-09-22 — Check out the validator from the reusable workflow revision (#1540)
+
+An adopter's AI review authorization run failed while fetching the key validator:
+`app-key-environment.yml` paired the fixed `Verjson/.github` repository with
+`github.workflow_sha`, which belongs to the caller workflow. GitHub documents
+`job.workflow_repository` and `job.workflow_sha` as the reusable workflow's
+identity. The validator checkout now uses both job-context fields, preserving
+the immutable source boundary and ensuring the validator revision exists in
+the selected repository. This repairs the implementation without changing the
+environment-only key or inheritance decisions above.
