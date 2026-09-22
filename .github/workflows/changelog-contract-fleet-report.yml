@@ -3,10 +3,6 @@ name: Changelog contract fleet report
 on:
   workflow_call:
     inputs:
-      contract_sha:
-        description: Immutable Verjson/.github commit containing the inventory scripts.
-        required: true
-        type: string
       app_client_id:
         description: GitHub App client ID for the read-only organization inventory.
         required: true
@@ -27,22 +23,17 @@ jobs:
       - name: Validate caller inputs
         env:
           APP_CLIENT_ID: ${{ inputs.app_client_id }}
-          CONTRACT_SHA: ${{ inputs.contract_sha }}
         run: |
           if [[ ! "$APP_CLIENT_ID" =~ ^[0-9]+$ ]]; then
             echo "::error::app_client_id must be a numeric GitHub App client ID."
-            exit 1
-          fi
-          if [[ ! "$CONTRACT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::contract_sha must be a full lowercase 40-character commit SHA."
             exit 1
           fi
 
       - name: Check out the pinned inventory implementation
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: Verjson/.github
-          ref: ${{ inputs.contract_sha }}
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
           path: contract-source
           persist-credentials: false
 
