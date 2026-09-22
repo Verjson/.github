@@ -54,6 +54,10 @@ paths:
       # The registered App-key contract test binds both reads to the environment.
       - '^property "ai_review_app_private_key" is not defined in object type \{actions_runner_debug: string; actions_step_debug: string; anthropic_api_key: string; claude_code_oauth_token: string; deepseek_api_key: string; github_token: string; openai_api_key: string\}$'
       - '^property "workflow_sha" is not defined in object type \{container: \{id: string; network: string\}; services: \{string => \{id: string; network: string; ports: \{string => string\}\}\}; status: string\}$'
+  .github/workflows/app-key-environment.yml:
+    ignore:
+      - '^property "workflow_repository" is not defined in object type \{container: \{id: string; network: string\}; services: \{string => \{id: string; network: string; ports: \{string => string\}\}\}; status: string\}$'
+      - '^property "workflow_sha" is not defined in object type \{container: \{id: string; network: string\}; services: \{string => \{id: string; network: string; ports: \{string => string\}\}\}; status: string\}$'
   .github/workflows/node-release.yml:
     ignore:
       - '^property "workflow_repository" is not defined in object type \{container: \{id: string; network: string\}; services: \{string => \{id: string; network: string; ports: \{string => string\}\}\}; status: string\}$'

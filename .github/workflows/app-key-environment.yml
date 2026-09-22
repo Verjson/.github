@@ -61,12 +61,12 @@ jobs:
       - name: Resolve executing trusted workflow revision
         id: trusted-revision
         env:
-          EXECUTING_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          EXECUTING_WORKFLOW_SHA: ${{ job.workflow_sha }}
         run: echo "sha=$EXECUTING_WORKFLOW_SHA" >>"$GITHUB_OUTPUT"
       - name: Check out immutable AI review key validator
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          repository: Verjson/.github
+          repository: ${{ job.workflow_repository }}
           ref: ${{ steps.trusted-revision.outputs.sha }}
           path: .gate-trust
           sparse-checkout: scripts/ci-gate/validate-ai-review-app-key.sh
