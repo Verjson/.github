@@ -48,7 +48,7 @@ cat >"$tmp/bin/gh" <<'GH'
 #!/usr/bin/env bash
 if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
   printf '%s ' "$@" | grep -- '--json comments' >/dev/null && { cat "$COMMENTS_FILE" 2>/dev/null; exit 0; }
- [ "${PRVIEW_FAIL:-0}" = "1" ] && exit 1
+  [ "${PRVIEW_FAIL:-0}" = "1" ] && exit 1
  if [ "${MERGEABLE_FAIL:-0}" = "1" ] && printf '%s ' "$@" | grep -- '--json mergeable' >/dev/null; then
    exit 1
  fi
