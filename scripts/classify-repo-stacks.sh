@@ -58,13 +58,20 @@ repos() {
   fi
 }
 
-# List workflow file paths in a repository. A repository with no workflow
-# directory is not an error — it is a `none` stack.
+# List workflow file paths from the default branch tree. This distinguishes a
+# repository with no workflow directory from an unreadable Contents API path.
 workflow_paths() { # $1 = repo
-  gh api "repos/$ORG/$1/contents/.github/workflows" \
-    --jq '.[]? | select(.type == "file") | select(.name | test("\\.ya?ml$")) | .path' 2>/dev/null || true
+  local branch branch_ref
+  branch="$(gh api "repos/$ORG/$1" \
+    --jq 'if has("default_branch") and ((.default_branch == null) or (.default_branch | type) == "string") then (.default_branch // "") else error("missing default branch") end' \
+    2>/dev/null)" || return 1
+  [ -n "$branch" ] || return 0
+  branch_ref="$(jq -rn --arg branch "$branch" '$branch | @uri')"
+  [ -n "$branch_ref" ] || return 1
+  gh api "repos/$ORG/$1/git/trees/$branch_ref?recursive=1" \
+    --jq 'if .truncated != false or (.tree | type) != "array" then error("invalid or truncated repository tree") else .tree[] | select(.type == "blob") | select(.path | test("^\\.github/workflows/.*\\.ya?ml$")) | .path end' \
+    2>/dev/null
 }
-
 # Emit `<job-name>\t<reusable-filename>` for every reusable Verjson call in a
 # workflow file. Deliberately a line-oriented scan rather than a YAML parse:
 # the runner image is not guaranteed to carry a YAML tool, and the shape being
@@ -117,8 +124,16 @@ classify_repo() {
   local repo="$1" stack='' ci_job='' changelog_job='' findings=() path kind job wf
   local local_jobs='' artifact_jobs='' changelog_inputs='' matrix_jobs=''
 
+  local workflow_list
+  if ! workflow_list="$(workflow_paths "$repo")"; then
+    fault classify-read classify-read-failed "repo=$repo workflows=.github/workflows — could not read workflow inventory"
+  fi
   while read -r path; do
     [ -n "$path" ] || continue
+    local calls
+    if ! calls="$(calls_in_file "$repo" "$path")"; then
+      fault classify-read classify-read-failed "repo=$repo path=$path — could not decode workflow content"
+    fi
     while IFS=$'\t' read -r kind job wf; do
       if [ "$kind" = job ]; then
         local_jobs="$local_jobs$job"$'\n'
@@ -133,21 +148,19 @@ classify_repo() {
         continue
       fi
       [ -n "$wf" ] || continue
-      local s; s="$(stack_for_workflow "$wf")"
-      if [ -n "$s" ]; then
-        # Two different stack workflows in one repository is not something the
-        # contract can express — the repository needs a decision, not a guess.
-        if [ -n "$stack" ] && [ "$stack" != "$s" ]; then
-          findings+=("calls both $stack and $s CI; the contract has no combined stack")
+      local stack_for_call; stack_for_call="$(stack_for_workflow "$wf")"
+      if [ -n "$stack_for_call" ]; then
+        if [ -n "$stack" ] && [ "$stack" != "$stack_for_call" ]; then
+          findings+=("calls both $stack and $stack_for_call CI; the contract has no combined stack")
         fi
-        stack="$s"; ci_job="$job"
+        stack="$stack_for_call"; ci_job="$job"
       elif [ "$wf" = "changelog-validate.yml" ]; then
         changelog_job="$job"
       elif [ "$wf" = "generated-artifacts.yml" ]; then
         artifact_jobs="$artifact_jobs$job"$'\n'
       fi
-    done < <(calls_in_file "$repo" "$path")
-  done < <(workflow_paths "$repo")
+    done <<<"$calls"
+  done <<<"$workflow_list"
 
   # A `generated-artifacts.yml` caller is on the changelog contract only if it
   # actually asked for the changelog check. Resolved here rather than inline
