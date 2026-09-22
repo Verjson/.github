@@ -8,6 +8,7 @@ survived a sweep written to find it.
 """
 import base64
 import importlib.util
+import io
 import json
 import pathlib
 import sys
@@ -668,7 +669,26 @@ class ContractFleetReport(unittest.TestCase):
             reporter.render_report("", "", "2026-09-22T07:00:00Z", 0)
 
     def test_report_escapes_untrusted_table_cells(self):
-        self.assertEqual(reporter.markdown_cell("path|<script>`x`"), "path\\|&lt;script&gt;\\`x\\`")
+        self.assertEqual(
+            reporter.markdown_cell("![x](https://evil.test)|<script>`x`"),
+            "&#33;&#91;x&#93;&#40;https://evil.test&#41;&#124;&lt;script&gt;&#96;x&#96;",
+        )
+
+    def test_inventory_serialization_preserves_untrusted_paths_as_single_rows(self):
+        adopter_file = ".github/workflows/a\tname\n![x](https://evil.test)"
+        output = io.StringIO()
+        fci.write_inventory(
+            [("Verjson/example", adopter_file, "scripts/changelog.py", A, "DRIFTED")],
+            [("Verjson/example", adopter_file, A, B, "HEADER_PIN_SPLIT")],
+            output,
+        )
+
+        references, headers = reporter.parse_inventory(output.getvalue())
+
+        self.assertEqual([row["adopter_file"] for row in references], [adopter_file])
+        self.assertEqual([row["adopter_file"] for row in headers], [adopter_file])
+        report = reporter.render_report(output.getvalue(), "", "2026-09-22T07:00:00Z", 0)
+        self.assertNotIn("![x](https://evil.test)", report)
 
     def test_report_workflow_is_a_private_caller_only_read_only_contract(self):
         workflow = (_root / ".github/workflows/changelog-contract-fleet-report.yml").read_text()
@@ -676,8 +696,11 @@ class ContractFleetReport(unittest.TestCase):
         self.assertNotIn("schedule:", workflow)
         self.assertNotIn("push:", workflow)
         self.assertNotIn("workflow_dispatch:", workflow)
-        self.assertIn("if: github.repository == 'Verjson/verjson-agents' && github.ref == 'refs/heads/main'", workflow)
-        self.assertIn("runs-on: ${{ fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]') }}", workflow)
+        self.assertIn("github.repository == 'Verjson/verjson-agents'", workflow)
+        self.assertIn("github.event_name == 'schedule'", workflow)
+        self.assertIn("github.event_name == 'push' && github.ref == 'refs/heads/main'", workflow)
+        self.assertIn("runs-on: ubuntu-24.04", workflow)
+        self.assertNotIn("CI_LANE_TRUSTED", workflow)
         self.assertIn("path: contract-source", workflow)
         self.assertIn("repository: ${{ job.workflow_repository }}", workflow)
         self.assertIn("ref: ${{ job.workflow_sha }}", workflow)

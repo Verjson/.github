@@ -23,26 +23,44 @@ DIAGNOSTIC_PREFIXES = (
 )
 
 
-def parse_table(text: str, fields: tuple[str, ...]) -> list[dict[str, str]]:
-    reader = csv.DictReader(io.StringIO(text), delimiter="\t")
-    if tuple(reader.fieldnames or ()) != fields:
+def parse_table(rows: list[list[str]], fields: tuple[str, ...]) -> list[dict[str, str]]:
+    if not rows or tuple(rows[0]) != fields:
         raise ValueError(f"expected TSV columns {fields!r}")
-    rows = list(reader)
-    if any(None in row or any(value is None for value in row.values()) for row in rows):
+    if any(len(row) != len(fields) for row in rows[1:]):
         raise ValueError("inventory contains a row with the wrong number of columns")
-    return rows
+    return [dict(zip(fields, row)) for row in rows[1:]]
 
 
 def parse_inventory(text: str) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
-    sections = text.strip().split("\n\n", 1)
-    if len(sections) != 2:
+    tables: list[list[list[str]]] = []
+    table: list[list[str]] = []
+    for row in csv.reader(io.StringIO(text), delimiter="\t"):
+        if row:
+            table.append(row)
+        elif table:
+            tables.append(table)
+            table = []
+    if table:
+        tables.append(table)
+    if len(tables) != 2:
         raise ValueError("inventory must contain contract and header tables")
-    return parse_table(sections[0], CONTRACT_FIELDS), parse_table(sections[1], HEADER_FIELDS)
+    return parse_table(tables[0], CONTRACT_FIELDS), parse_table(tables[1], HEADER_FIELDS)
 
 
 def markdown_cell(value: str) -> str:
     escaped = html.escape(value.replace("\r", " ").replace("\n", " "), quote=False)
-    return escaped.replace("|", "\\|").replace("`", "\\`")
+    replacements = {
+        "\\": "&#92;",
+        "`": "&#96;",
+        "*": "&#42;",
+        "[": "&#91;",
+        "]": "&#93;",
+        "(": "&#40;",
+        ")": "&#41;",
+        "!": "&#33;",
+        "|": "&#124;",
+    }
+    return "".join(replacements.get(character, character) for character in escaped)
 
 
 def render_table(rows: list[dict[str, str]], fields: tuple[str, ...], labels: tuple[str, ...]) -> list[str]:

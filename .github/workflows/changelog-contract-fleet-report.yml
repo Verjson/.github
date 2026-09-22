@@ -16,8 +16,11 @@ permissions:
 
 jobs:
   report:
-    if: github.repository == 'Verjson/verjson-agents' && github.ref == 'refs/heads/main'
-    runs-on: ${{ fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    if: >-
+      github.repository == 'Verjson/verjson-agents' &&
+      (github.event_name == 'schedule' ||
+       (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - name: Validate caller inputs
