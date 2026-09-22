@@ -47,7 +47,11 @@ jq -e --argjson run "$REVIEW_RUN_ID" --argjson attempt "$REVIEW_RUN_ATTEMPT" \
     .id == $run and .run_attempt == $attempt and .event == "workflow_dispatch" and
     .path == ".github/workflows/ai-review-merge.yml" and .display_title == $title and
     .head_branch == $branch and .head_repository.full_name == $repo and
-    .repository.full_name == $repo and .status == "in_progress"
+    .repository.full_name == $repo and
+    # A workflow_dispatch run can remain queued while an environment-gated
+    # sibling job is waiting for admission. That live status is still the
+    # current run and must not be mistaken for a different dispatch (#1393).
+    (.status == "queued" or .status == "in_progress")
   ' "$tmp/review-run.json" >/dev/null || {
     echo "::error::zero-provider recovery run identity mismatch"
     exit 1
