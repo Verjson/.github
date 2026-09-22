@@ -314,6 +314,7 @@ REVIEWED_REUSABLE_INPUT_EXPRESSIONS = frozenset(
     " ".join(expression.split())
     for expression in (
         "github.repository_owner == 'Verjson' && (vars.CI_RUNNER_DEFAULT || '[\"self-hosted\",\"general\"]') || '[\"ubuntu-24.04\"]'",
+        "vars.CI_RUNNER_ISOLATED || '[\"ubuntu-24.04\"]'",
         "matrix.os",
         "matrix.runner",
         "matrix.runner_labels",

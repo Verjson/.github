@@ -352,6 +352,10 @@ assert_metered_only("reusable-input-malformed", 2,
                     "consumer mode fails closed on a malformed reusable with mapping")
 assert_metered_only("reusable-input-canonical", 0,
                     "consumer mode preserves the generated canonical runner expression")
+assert_metered_only("reusable-input-isolated-lane", 0,
+                    "consumer mode accepts the reviewed isolated hosted runner lane")
+assert_metered_only("reusable-input-isolated-lane-drift", 2,
+                    "consumer mode refuses unreviewed isolated runner routing")
 assert_metered_only("reusable-input-static-matrix", 1,
                     "consumer mode resolves and refuses a static Linux input matrix")
 assert_metered_only("reusable-input-metered-matrix", 1,

@@ -67,6 +67,7 @@ was confirmed, since inspection-only claims go stale silently).
 
 - [#1451](https://github.com/Verjson/.github/issues/1451) — Complete consumer capacity validation and live host acceptance. GitHub API check on 2026-09-21 found no secrets or variables in `runner-fleet-production`; do not claim live evidence until operators provision the dedicated observation inputs and a real host run succeeds.
 - [#1540](https://github.com/Verjson/.github/issues/1540) — Remove temporary review-App `checks:write` compatibility after all active authorization receipts and adopters use Actions-owned checks; verify through the tracked migration before removing the permission.
+- [#1545](https://github.com/Verjson/.github/issues/1545) — Allow the reviewed `CI_RUNNER_ISOLATED` lane through reusable workflow runner inputs; found while upgrading `verjson-cli#265` to the current selector policy.
 
 Prune an entry when its issue closes. This list loads into every session, so a
 closed entry costs context in each one and misreports the state of the work.
