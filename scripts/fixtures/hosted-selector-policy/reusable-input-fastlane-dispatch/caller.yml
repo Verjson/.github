@@ -1,8 +1,9 @@
-name: reviewed fastlane reusable selector
+name: dispatch fastlane reusable selector
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 jobs:
   delegated:
     uses: Verjson/.github/.github/workflows/node-ci.yml@0123456789abcdef0123456789abcdef01234567

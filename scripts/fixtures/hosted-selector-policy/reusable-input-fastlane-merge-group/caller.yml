@@ -1,8 +1,9 @@
-name: reviewed fastlane reusable selector
+name: merge-group fastlane reusable selector
 on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
 jobs:
   delegated:
     uses: Verjson/.github/.github/workflows/node-ci.yml@0123456789abcdef0123456789abcdef01234567

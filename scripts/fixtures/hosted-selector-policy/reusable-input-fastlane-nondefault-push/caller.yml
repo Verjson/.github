@@ -1,7 +1,6 @@
-name: reviewed fastlane reusable selector
+name: non-default push fastlane reusable selector
 on:
   push:
-    branches: [main]
   pull_request:
 jobs:
   delegated:

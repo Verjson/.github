@@ -26,6 +26,7 @@ SCRIPT = os.path.join(HERE, "hosted-selector-policy.py")
 FIXTURES = os.path.join(os.path.dirname(HERE), "fixtures", "hosted-selector-policy")
 REPOSITORY_ROOT = os.path.dirname(os.path.dirname(HERE))
 CANONICAL_WORKFLOWS = os.path.join(REPOSITORY_ROOT, ".github", "workflows")
+FIXTURE_CONTRACT_SHA = "0123456789abcdef0123456789abcdef01234567"
 
 failures = 0
 
@@ -41,9 +42,12 @@ def fail(label: str) -> None:
 
 
 def run_policy(*arguments: str) -> tuple[int, str]:
+    environment = os.environ.copy()
+    environment["VERJSON_HOSTED_SELECTOR_POLICY_SHA"] = FIXTURE_CONTRACT_SHA
     completed = subprocess.run(
         [sys.executable, SCRIPT, *arguments],
         capture_output=True,
+        env=environment,
         text=True,
     )
     return completed.returncode, completed.stdout + completed.stderr
@@ -352,8 +356,41 @@ assert_metered_only("reusable-input-malformed", 2,
                     "consumer mode fails closed on a malformed reusable with mapping")
 assert_metered_only("reusable-input-canonical", 0,
                     "consumer mode preserves the generated canonical runner expression")
-assert_metered_only("reusable-input-fastlane", 0, "consumer mode allows the reviewed fastlane reusable runner expression")
-assert_metered_only("reusable-input-fastlane-unreviewed", 2, "consumer mode refuses unreviewed reusable runner expressions")
+assert_metered_only(
+    "reusable-input-fastlane",
+    0,
+    "consumer mode allows the guarded node-ci fastlane runner expression",
+)
+assert_metered_only(
+    "reusable-input-fastlane-unguarded",
+    2,
+    "consumer mode refuses fork PR fastlane routing without secretless isolation",
+)
+assert_metered_only(
+    "reusable-input-fastlane-merge-group",
+    2,
+    "consumer mode refuses merge-group code on the fastlane",
+)
+assert_metered_only(
+    "reusable-input-fastlane-nondefault-push",
+    2,
+    "consumer mode refuses non-default push code on the fastlane",
+)
+assert_metered_only(
+    "reusable-input-fastlane-dispatch",
+    2,
+    "consumer mode refuses dispatch-selected ref code on the fastlane",
+)
+assert_metered_only(
+    "reusable-input-fastlane-wrong-pin",
+    2,
+    "consumer mode binds node-ci and selector policy to one immutable contract",
+)
+assert_metered_only(
+    "reusable-input-fastlane-unreviewed",
+    2,
+    "consumer mode refuses unreviewed reusable runner expressions",
+)
 assert_metered_only("reusable-input-static-matrix", 1,
                     "consumer mode resolves and refuses a static Linux input matrix")
 assert_metered_only("reusable-input-metered-matrix", 1,

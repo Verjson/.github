@@ -127,3 +127,18 @@ before the cut is attempted again.
   unavailable; there is deliberately no automatic persistent fallback.
 - The attended live cut and consumer canary remain unperformed in this source
   change and must be recorded separately.
+
+## 2026-09-22 amendment — bind reusable fastlane inputs to secretless PR execution
+
+Issue #1548 requires private compatibility validation to use the centrally
+configured GitHub-hosted fastlane after merge. The consumer policy may accept
+that runner input only when the caller exposes exactly `pull_request` and
+`push` to `main`, calls `node-ci.yml` at the same immutable contract SHA that
+supplied the selector policy, and binds `secretless-pr` exactly to the
+`pull_request` event. `node-ci.yml` gives that mode precedence over the
+caller-supplied runner, so PR-authored code remains on `CI_LANE_UNTRUSTED`; the
+fastlane input applies only to trusted `main` validation. The policy rejects
+the same selector on merge queues, dispatches, non-default pushes, mismatched
+contract pins, unguarded calls, and unrelated reusable workflows because
+expression shape alone does not prove the called workflow and event preserve
+this trust boundary.
