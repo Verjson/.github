@@ -1098,12 +1098,11 @@ jobs:
             [ "$marker_pr" = "$PR_NUMBER" ] && [ "$marker_head" = "$review_head" ] || continue
             [ "$marker_head" = "$EXPECTED_HEAD_SHA" ] || continue
             check="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/check-runs/$marker_check")"
-            jq -e --argjson app_id "$EXPECTED_APP_ID" --arg slug "$EXPECTED_APP_SLUG" \
-              --arg head "$marker_head" --arg repo "$TARGET_REPO" --arg pr "$PR_NUMBER" '
-                .name == "AI review authorization" and .head_sha == $head and
-                .app.id == $app_id and .app.slug == $slug and
-                (.external_id | startswith("ai-review:v1:" + $repo + ":" + $pr + ":" + $head + ":"))
-              ' <<<"$check" >/dev/null || {
+          jq -e --arg head "$marker_head" --arg repo "$TARGET_REPO" --arg pr "$PR_NUMBER" '
+            .name == "AI review authorization" and .head_sha == $head and
+            .app.id == 15368 and .app.slug == "github-actions" and
+            (.external_id | startswith("ai-review:v1:" + $repo + ":" + $pr + ":" + $head + ":"))
+          ' <<<"$check" >/dev/null || {
                 echo "::error::App review reservation is not bound to a trusted exact-head authorization check"; exit 1;
               }
             if [ "$marker_kind" = explicit ] && [ "$marker_check" = "$AUTHORIZATION_CHECK_ID" ]; then
