@@ -16,6 +16,9 @@ on:
       - 'Makefile'
       - 'renovate.json'
       - 'scripts/**'
+      # shellcheck-tracked.sh scans every tracked shell script, including
+      # scripts outside the conventional scripts/ and action directories.
+      - '**/*.sh'
       - 'docs/**'
       - 'NEXT/**'
       # Repository-wide scanners read every tracked Markdown file. Omitting a
@@ -35,6 +38,7 @@ on:
       - 'Makefile'
       - 'renovate.json'
       - 'scripts/**'
+      - '**/*.sh'
       - 'docs/**'
       - 'NEXT/**'
       - '**/*.md'

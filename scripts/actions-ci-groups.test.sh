@@ -133,6 +133,25 @@ def validate_hosted_compatibility(candidate, candidate_manifest):
 
 validate_hosted_compatibility(document, manifest_text)
 
+def validate_shellcheck_trigger_scope(candidate):
+    events = candidate.get("on", candidate.get(True))
+    assert isinstance(events, dict)
+    for event in ("pull_request", "push"):
+        paths = events[event]["paths"]
+        assert paths.count("**/*.sh") == 1
+
+validate_shellcheck_trigger_scope(document)
+for event in ("pull_request", "push"):
+    mutant = copy.deepcopy(document)
+    events = mutant.get("on", mutant.get(True))
+    events[event]["paths"].remove("**/*.sh")
+    try:
+        validate_shellcheck_trigger_scope(mutant)
+    except (AssertionError, KeyError, TypeError, ValueError):
+        print(f"ok - {event} shellcheck path removal fails closed")
+    else:
+        raise AssertionError(f"{event} shellcheck path removal passed")
+
 missing_job_mutant = copy.deepcopy(document)
 del missing_job_mutant["jobs"]["hosted-compatibility-tests"]
 try:
@@ -353,7 +372,8 @@ changelog-release	python3 scripts/changelog.py validate --repo-root .
 changelog-release	bash scripts/changelog-fragment-schema.test.sh
 changelog-release	python3 scripts/v1-readiness-contract.test.py
 platform	bash scripts/actions-ci-python-dependencies.test.sh
-platform	git ls-files -z -- '*.sh' | xargs -0 -r shellcheck --severity=warning
+platform	bash scripts/shellcheck-tracked.test.sh
+platform	bash scripts/shellcheck-tracked.sh
 platform	bash scripts/ci-gate/hub-changelog-validate.sh
 LOAD_BEARING_COMMANDS
 }
