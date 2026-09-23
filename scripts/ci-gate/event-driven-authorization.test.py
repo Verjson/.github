@@ -40,6 +40,21 @@ HEREDOC = re.compile(
     r"|(?P<plain>[A-Za-z_][A-Za-z0-9_]*))"
 )
 SAFE_SHELL_COMMENT = re.compile(r"^[ \t]*#[ A-Za-z0-9.,:/_-]*(?:\r?\n)?$")
+SHELL_ANSI_C_LITERAL = re.compile(r"\$'(?P<body>(?:\\.|[^'])*)'")
+ANSI_C_ESCAPE = re.compile(
+    r"\\(?:x[0-9A-Fa-f]{1,2}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|[0-7]{1,3}|[abefnrtv\\'\"?])"
+)
+SHELL_LITERAL_QUOTE = re.compile(
+    r"(?P<locale>\$)?(?P<quote>['\"])(?P<body>(?:\\.|[A-Za-z*])*)(?P=quote)"
+)
+ESCAPED_SHELL_ALPHA = re.compile(r"\\(?P<character>[A-Za-z])")
+SHELL_PUNCTUATION = frozenset(";|&(){}<>\n")
+SHELL_COMMAND_SEPARATORS = frozenset({";", ";;", "|", "||", "&&", "&", "\n", "{", "("})
+SHELL_REDIRECTIONS = frozenset({"<", ">", "<<", ">>", "<>", "<&", ">&", ">|"})
+SHELL_COMMAND_WRAPPERS = frozenset({"command", "env", "exec", "time", "nice", "nohup"})
+SHELL_CONTROL_COMMANDS = frozenset({"!", "if", "elif", "while", "until", "then", "do", "else"})
+SHELL_NON_COMMAND_CLAUSES = frozenset({"case", "for", "select"})
+SHELL_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 
 def heredoc_specs(
@@ -73,7 +88,7 @@ def heredoc_specs(
             index += 3
             continue
         if line.startswith("<<", index):
-            arithmetic_start = line.rfind("$((", 0, index)
+            arithmetic_start = line.rfind("((", 0, index)
             arithmetic_end = line.rfind("))", 0, index)
             if arithmetic_start > arithmetic_end and "))" in line[index + 2 :]:
                 index += 2
@@ -191,6 +206,352 @@ def strip_shell_comments(script: str) -> str:
     return "".join(result)
 
 
+def balanced_shell_expansion_end(
+    script: str, index: int, opening: str, closing: str
+) -> int:
+    depth = 1
+    quote: str | None = None
+    escaped = False
+
+    while index < len(script):
+        character = script[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+        if character == "\\" and quote != "'":
+            escaped = True
+            index += 1
+            continue
+        if quote is not None:
+            if character == quote:
+                quote = None
+            index += 1
+            continue
+        if character in {"'", '"', "`"}:
+            quote = character
+            index += 1
+            continue
+        if character == opening:
+            depth += 1
+        elif character == closing:
+            depth -= 1
+            if depth == 0:
+                return index + 1
+        index += 1
+
+    raise AssertionError("workflow run block contains an unterminated shell expansion")
+
+
+def backtick_expansion_end(script: str, index: int) -> int:
+    escaped = False
+    while index < len(script):
+        character = script[index]
+        if escaped:
+            escaped = False
+        elif character == "\\":
+            escaped = True
+        elif character == "`":
+            return index + 1
+        index += 1
+    raise AssertionError("workflow run block contains an unterminated backtick expansion")
+
+
+def mask_shell_dynamic_fragments(script: str) -> str:
+    result: list[str] = []
+    quote: str | None = None
+    escaped = False
+    index = 0
+
+    while index < len(script):
+        character = script[index]
+        if escaped:
+            result.append(character)
+            escaped = False
+            index += 1
+            continue
+        if character == "\\" and quote != "'":
+            result.append(character)
+            escaped = True
+            index += 1
+            continue
+        if quote == "'":
+            result.append(character)
+            if character == "'":
+                quote = None
+            index += 1
+            continue
+        if character == "'" and quote is None:
+            quote = character
+            result.append(character)
+            index += 1
+            continue
+        if character == '"':
+            quote = None if quote == '"' else '"'
+            result.append(character)
+            index += 1
+            continue
+        if script.startswith("$(", index) and not script.startswith("$((", index):
+            index = balanced_shell_expansion_end(script, index + 2, "(", ")")
+            result.append("*")
+            continue
+        if script.startswith("${", index):
+            index = balanced_shell_expansion_end(script, index + 2, "{", "}")
+            result.append("*")
+            continue
+        if character == "`":
+            index = backtick_expansion_end(script, index + 1)
+            result.append("*")
+            continue
+        result.append(character)
+        index += 1
+
+    return "".join(result)
+
+
+def shell_tokens(script: str) -> list[str]:
+    tokens: list[str] = []
+    word: list[str] = []
+    quote: str | None = None
+    escaped = False
+    index = 0
+
+    def flush_word() -> None:
+        if word:
+            tokens.append("".join(word))
+            word.clear()
+
+    while index < len(script):
+        character = script[index]
+        if escaped:
+            word.append(character)
+            escaped = False
+            index += 1
+            continue
+        if character == "\\" and quote != "'":
+            escaped = True
+            index += 1
+            continue
+        if quote is not None:
+            if character == quote:
+                quote = None
+            else:
+                word.append(character)
+            index += 1
+            continue
+        if character in {"'", '"'}:
+            quote = character
+            index += 1
+            continue
+        if character in " \t\r":
+            flush_word()
+            index += 1
+            continue
+        if character in SHELL_PUNCTUATION:
+            flush_word()
+            pair = script[index:index + 2]
+            if pair in {";;", "&&", "||", "<<", ">>", "<>", "<&", ">&", ">|", "((", "))"}:
+                tokens.append(pair)
+                index += 2
+            else:
+                tokens.append(character)
+                index += 1
+            continue
+        word.append(character)
+        index += 1
+
+    flush_word()
+    return tokens
+
+
+def skip_shell_redirection(tokens: list[str], index: int) -> int | None:
+    if (
+        index + 1 < len(tokens)
+        and tokens[index].isdigit()
+        and tokens[index + 1] in SHELL_REDIRECTIONS
+    ):
+        index += 1
+    if index >= len(tokens) or tokens[index] not in SHELL_REDIRECTIONS:
+        return None
+    index += 1
+    return min(index + 1, len(tokens))
+
+
+def shell_wrapper_command(tokens: list[str], index: int) -> tuple[str | None, int]:
+    option_arguments = {
+        "env": {"-u", "--unset", "-C", "--chdir", "-S", "--split-string"},
+        "exec": {"-a"},
+        "nice": {"-n", "--adjustment"},
+        "time": {"-f", "--format", "-o", "--output"},
+    }
+
+    while index < len(tokens):
+        redirected = skip_shell_redirection(tokens, index)
+        if redirected is not None:
+            index = redirected
+            continue
+        token = tokens[index]
+        if SHELL_ASSIGNMENT.match(token):
+            index += 1
+            continue
+
+        command = token.rsplit("/", 1)[-1]
+        index += 1
+        if command not in SHELL_COMMAND_WRAPPERS:
+            return token, index
+
+        while index < len(tokens):
+            redirected = skip_shell_redirection(tokens, index)
+            if redirected is not None:
+                index = redirected
+                continue
+            argument = tokens[index]
+            if command == "env" and SHELL_ASSIGNMENT.match(argument):
+                index += 1
+                continue
+            if argument == "--":
+                index += 1
+                break
+            option = argument.split("=", 1)[0]
+            if argument.startswith("-"):
+                index += 1
+                if option in option_arguments.get(command, set()) and "=" not in argument:
+                    index = min(index + 1, len(tokens))
+                continue
+            break
+
+    return None, index
+
+
+def shell_word_may_form(candidate: str, forbidden_word: str) -> bool:
+    if "*" not in candidate:
+        return False
+    possible_word = re.escape(candidate).replace(r"\*", ".*")
+    return re.fullmatch(possible_word, forbidden_word, re.I) is not None
+
+
+def dynamic_shell_word_may_form(script: str, forbidden_word: str) -> bool:
+    tokens = shell_tokens(script)
+    expect_command = True
+    case_patterns: list[bool] = []
+    index = 0
+
+    while index < len(tokens):
+        token = tokens[index]
+        if case_patterns and case_patterns[-1]:
+            if token == ")":
+                case_patterns[-1] = False
+                expect_command = True
+            index += 1
+            continue
+        if token == ";;" and case_patterns:
+            case_patterns[-1] = True
+            expect_command = False
+            index += 1
+            continue
+        if token == "esac" and case_patterns:
+            case_patterns.pop()
+            expect_command = False
+            index += 1
+            continue
+        if token == "case":
+            case_patterns.append(True)
+            expect_command = False
+            index += 1
+            continue
+        if token == "[[" and expect_command:
+            index += 1
+            while index < len(tokens) and tokens[index] != "]]":
+                index += 1
+            index = min(index + 1, len(tokens))
+            expect_command = False
+            continue
+        if token == "((" and expect_command:
+            depth = 1
+            index += 1
+            while index < len(tokens) and depth:
+                depth += tokens[index] == "(("
+                depth -= tokens[index] == "))"
+                index += 1
+            expect_command = False
+            continue
+        if token in SHELL_COMMAND_SEPARATORS or token == ")":
+            expect_command = True
+            index += 1
+            continue
+        if token in SHELL_CONTROL_COMMANDS:
+            expect_command = True
+            index += 1
+            continue
+        if token in SHELL_NON_COMMAND_CLAUSES:
+            expect_command = False
+            index += 1
+            continue
+        if not expect_command:
+            index += 1
+            continue
+
+        command, index = shell_wrapper_command(tokens, index)
+        if command is None:
+            break
+        if shell_word_may_form(command, forbidden_word):
+            return True
+        expect_command = False
+
+    return False
+
+
+def normalize_shell_literal_fragments(script: str) -> str:
+    def ansi_c_literal(match: re.Match[str]) -> str:
+        simple_escapes = {
+            "a": "\a",
+            "b": "\b",
+            "e": "\x1b",
+            "f": "\f",
+            "n": "\n",
+            "r": "\r",
+            "t": "\t",
+            "v": "\v",
+            "\\": "\\",
+            "'": "'",
+            '"': '"',
+            "?": "?",
+        }
+
+        def decode_escape(escape: re.Match[str]) -> str:
+            value = escape.group()[1:]
+            if value[0] == "x":
+                return chr(int(value[1:], 16))
+            if value[0] == "u":
+                return chr(int(value[1:], 16))
+            if value[0] == "U":
+                return chr(int(value[1:], 16))
+            if value[0].isdigit():
+                return chr(int(value, 8))
+            return simple_escapes[value]
+
+        return ANSI_C_ESCAPE.sub(decode_escape, match.group("body"))
+
+    def normalize_literals(value: str) -> str:
+        while True:
+            previous = value
+            value = SHELL_ANSI_C_LITERAL.sub(ansi_c_literal, value)
+            value = SHELL_LITERAL_QUOTE.sub(
+                lambda match: match.group("body"), value
+            )
+            value = ESCAPED_SHELL_ALPHA.sub(
+                lambda match: match.group("character"), value
+            )
+            if value == previous:
+                return value
+
+    normalized = normalize_literals(script)
+    masked = normalize_literals(mask_shell_dynamic_fragments(script))
+    if dynamic_shell_word_may_form(masked, "sleep"):
+        normalized += "\nsleep\n"
+    return normalized
+
+
 def executable_run_text(workflow: dict) -> str:
     scripts: list[str] = []
     for job in workflow.get("jobs", {}).values():
@@ -198,7 +559,9 @@ def executable_run_text(workflow: dict) -> str:
             run = step.get("run")
             if not isinstance(run, str):
                 continue
-            scripts.append(strip_shell_comments(run))
+            scripts.append(
+                normalize_shell_literal_fragments(strip_shell_comments(run))
+            )
     return "\n".join(scripts)
 
 
@@ -235,7 +598,9 @@ def validate_runner_free_external_ci_wait(workflow: dict, job_name: str) -> None
                 "privileged_merge must retain its one audited literal CI snapshot")
 
     for step in job.get("steps", []):
-        script = strip_shell_comments(step.get("run", ""))
+        script = normalize_shell_literal_fragments(
+            strip_shell_comments(step.get("run", ""))
+        )
         require(not re.search(r"\bsleep\b|ci-wait|MERGE_PROBE", script, re.I),
                 f"{job_name} must not sleep or retain a polling-era CI wait")
         queries = list(endpoint.finditer(script))
@@ -639,9 +1004,55 @@ def main() -> int:
         forbidden.search(executable_run_text(mutated_continuation)) is not None,
         "runner-held waiting detector must reject waits after a continued word",
     )
+    nested_default = "l"
+    for depth in range(9):
+        nested_default = f"${{V{depth}:-{nested_default}}}"
+
     for script, description in (
         ("printf %s $'foo\\' # still quoted'; sleep 30\n", "ANSI-C quotes"),
         ('printf %s "${x:-"foo # still nested"}"; sleep 30\n', "nested expansions"),
+        ("s''leep 0\n", "adjacent empty quotes in a command word"),
+        ("s$''leep 0\n", "adjacent empty ANSI-C quotes in a command word"),
+        ('s"l"eep 0\n', "quoted literal fragments in a command word"),
+        ("s\\leep 0\n", "escaped literal fragments in a command word"),
+        ("s$'\\x6c'eep 0\n", "escaped ANSI-C literals in a command word"),
+        ('s$"l"eep 0\n', "locale-quoted literal fragments in a command word"),
+        ('s$""leep 0\n', "empty locale-quoted fragments in a command word"),
+        ("s${EMPTY:-l}eep 0\n", "literal parameter defaults in a command word"),
+        (f"s{nested_default}eep 0\n", "deeply nested parameter defaults"),
+        ("s$(printf l)eep 0\n", "command-substitution fragments"),
+        ("$(printf s%s leep) 0\n", "command-substitution command words"),
+        (
+            "IGNORED=1 $(printf s%s leep) 0\n",
+            "assignment-prefixed command substitutions",
+        ),
+        ("command $(printf s%s leep) 0\n", "command builtin substitutions"),
+        ("env $(printf s%s leep) 0\n", "environment command substitutions"),
+        ("env -u NEVER_SET $(printf s%s leep) 0\n", "option-bearing environment substitutions"),
+        ("nice -n 5 $(printf s%s leep) 0\n", "option-bearing nice substitutions"),
+        ("exec -a harmless $(printf s%s leep) 0\n", "option-bearing exec substitutions"),
+        ("if $(printf s%s leep) 0; then :; fi\n", "conditional command substitutions"),
+        ("! $(printf s%s leep) 0\n", "negated command substitutions"),
+        (
+            "case x in x) $(printf s%s leep) 0;; esac\n",
+            "case-arm command substitutions",
+        ),
+        (
+            "IGNORED='some value' $(printf s%s leep) 0\n",
+            "quoted assignment-prefixed substitutions",
+        ),
+        ("2>&1 $(printf s%s leep) 0\n", "file-descriptor-prefixed substitutions"),
+        ("/usr/bin/env $(printf s%s leep) 0\n", "absolute environment substitutions"),
+        ("{ $(printf s%s leep) 0; }\n", "grouped command substitutions"),
+        ("( $(printf s%s leep) 0 )\n", "subshell command substitutions"),
+        (">/dev/null $(printf s%s leep) 0\n", "redirected command substitutions"),
+        ("s$(\nprintf l\n)eep 0\n", "multiline command-substitution fragments"),
+        (
+            "s$(printf %s $(printf l))eep 0\n",
+            "nested command-substitution fragments",
+        ),
+        ("s`printf l`eep 0\n", "backtick-substitution fragments"),
+        ("`printf s%s leep` 0\n", "backtick-substitution command words"),
         ("[[ x =~ (#$(sleep 30)) ]]\n", "conditional regular expressions"),
         (
             "[[ x =~ (\n# $(sleep 30)\n) ]]\n",
@@ -662,6 +1073,23 @@ def main() -> int:
         "sleep 30" in strip_shell_comments("count=${#items}; sleep 30\n"),
         "parameter-length expansion must not hide executable waiting",
     )
+    require(
+        "sleep 0" in strip_shell_comments("(( x << 1 )); sleep 0\n"),
+        "arithmetic shifts must not be parsed as heredocs",
+    )
+    for safe_wrapper_argument in (
+        "command printf '%s\\n' *\n",
+        "env printf '%s\\n' *\n",
+        "time printf '%s\\n' *\n",
+    ):
+        safe_wrapper = yaml.safe_load(yaml.safe_dump(review))
+        safe_wrapper["jobs"]["gate"]["steps"].append(
+            {"run": safe_wrapper_argument}
+        )
+        require(
+            forbidden.search(executable_run_text(safe_wrapper)) is None,
+            "safe wrapper arguments must not be treated as command words",
+        )
     require(
         "sleep 30" in strip_shell_comments("cat <<EOF\n# $(sleep 30)\nEOF\n"),
         "unquoted heredoc expansion must remain executable to the detector",
