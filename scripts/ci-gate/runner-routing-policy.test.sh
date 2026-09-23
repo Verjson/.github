@@ -73,6 +73,7 @@ expected_literal_hosted_sites="$(printf '%s\n' \
   $'cli-projects-package-surface-required.yml:admission:    runs-on: ubuntu-24.04\ncli-projects-package-surface-required.yml:package-surface:    runs-on: ubuntu-24.04' \
   $'node-ci.yml:deferred-ci:    runs-on: ubuntu-24.04\nnode-ci-protected.yml:deferred-ci:    runs-on: ubuntu-24.04' \
   | sort)"
+expected_literal_hosted_sites="$expected_literal_hosted_sites"$'\ntype-surface-ci.yml:resolve:    runs-on: ubuntu-24.04\ntype-surface-ci.yml:type-surface-receipt:    runs-on: ubuntu-24.04'
 
 validate_literal_hosted_inventory() {
   local sites="$1"
