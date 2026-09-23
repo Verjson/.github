@@ -1,6 +1,6 @@
 ---
 date: 2026-09-23
-issue: 1575
+id: 20260923T000006Z
 title: Harden declaration-only protected baseline execution
 impact: patch
 ---
