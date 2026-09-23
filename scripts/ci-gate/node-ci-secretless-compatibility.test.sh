@@ -468,7 +468,7 @@ for category in auth-fail access-fail missing empty; do
     exit 1
   fi
 done
-if [ "${4:-}" = version ] && [ "$#" -eq 4 ]; then
+if [ "$#" -eq 4 ] && { [ "${4:-}" = version ] || [ "${3:-}" = versions ]; }; then
   printf '%s\n' '["0.2.1","0.2.2"]'
 else
   printf '%s\n' "{\"name\":\"@verjson/identity-contracts\",\"version\":\"0.2.2\",\"dist.integrity\":\"$NPM_STUB_INTEGRITY\",\"dist.tarball\":\"https://npm.pkg.github.com/download/@verjson/identity-contracts/0.2.2/archive\"}"
