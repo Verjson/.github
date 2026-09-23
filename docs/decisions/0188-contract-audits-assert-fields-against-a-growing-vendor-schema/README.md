@@ -104,3 +104,18 @@ pull request gates on it.
   branch policy — remains outside the audit. It is #1401's follow-up, and it was
   blocked behind this decision because it would have sat after an unreachable
   precondition.
+
+## 2026-09-23 amendment — require reviewed coverage for every bypass-bearing ruleset (#1408)
+
+The organization-wide ruleset conformance audit now enumerates every organization
+ruleset regardless of target or ref selector. A ruleset with a non-empty
+`bypass_actors` list must match one current id/name entry and its exact actor image in
+the reviewed bypass contract registry. Actor ordering is not policy. An unlisted
+bypassless ruleset remains valid. A missing, renamed, or actor-drifted contracted
+ruleset fails instead of leaving a reusable allowance behind.
+
+Ruleset-specific image audits remain defense in depth, while this cross-ruleset
+invariant closes the gap where a new ruleset could carry an entirely unrecorded bypass
+grant and stay invisible to every image audit. The live inventory at amendment time
+contained seven organization rulesets: six bypass-bearing rulesets matched reviewed
+actor images, and the bypassless cli-projects ruleset required none.

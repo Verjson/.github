@@ -112,6 +112,7 @@ def read_policy(policy: Path):
             "release_authorization_bypass",
             "required_check_producer_app_id",
             "bypassless_required_workflows",
+            "bypass_actor_contracts",
         },
         "ruleset policy",
     )
@@ -189,7 +190,69 @@ def read_policy(policy: Path):
             )
         names.add(parsed["name"])
         parsed_exceptions.append(parsed)
-    return organization, expected, producer_app_id, parsed_exceptions
+
+    contracts = require_array(
+        document["bypass_actor_contracts"],
+        "ruleset policy.bypass_actor_contracts",
+    )
+    parsed_contracts = []
+    contract_ids = set()
+    contract_names = set()
+    for index, value in enumerate(contracts):
+        location = f"ruleset policy.bypass_actor_contracts[{index}]"
+        item = require_mapping(value, location)
+        require_exact_keys(item, {"ruleset_id", "name", "bypass_actors"}, location)
+        actor_values = require_array(item["bypass_actors"], f"{location}.bypass_actors")
+        if not actor_values:
+            raise AuditDataError(f"{location}.bypass_actors must not be empty")
+        bypass_actors = []
+        actor_identities = set()
+        for actor_index, actor_value in enumerate(actor_values):
+            actor_location = f"{location}.bypass_actors[{actor_index}]"
+            actor = require_mapping(actor_value, actor_location)
+            require_exact_keys(
+                actor,
+                {"actor_type", "actor_id", "bypass_mode"},
+                actor_location,
+            )
+            actor_id = actor["actor_id"]
+            if actor_id is not None:
+                require_positive_integer(actor_id, f"{actor_location}.actor_id")
+            parsed_actor = {
+                "actor_type": require_string(
+                    actor["actor_type"], f"{actor_location}.actor_type"
+                ),
+                "actor_id": actor_id,
+                "bypass_mode": require_string(
+                    actor["bypass_mode"], f"{actor_location}.bypass_mode"
+                ),
+            }
+            identity = tuple(parsed_actor.values())
+            if identity in actor_identities:
+                raise AuditDataError(
+                    f"{location} contains duplicate bypass actor {identity!r}"
+                )
+            actor_identities.add(identity)
+            bypass_actors.append(parsed_actor)
+        parsed = {
+            "ruleset_id": require_positive_integer(
+                item["ruleset_id"], f"{location}.ruleset_id"
+            ),
+            "name": require_string(item["name"], f"{location}.name"),
+            "bypass_actors": bypass_actors,
+        }
+        if parsed["ruleset_id"] in contract_ids:
+            raise AuditDataError(
+                f"ruleset policy contains duplicate bypass contract id {parsed['ruleset_id']}"
+            )
+        if parsed["name"] in contract_names:
+            raise AuditDataError(
+                f"ruleset policy contains duplicate bypass contract name {parsed['name']}"
+            )
+        contract_ids.add(parsed["ruleset_id"])
+        contract_names.add(parsed["name"])
+        parsed_contracts.append(parsed)
+    return organization, expected, producer_app_id, parsed_exceptions, parsed_contracts
 
 
 def list_ruleset_ids(organization: str):
@@ -243,7 +306,7 @@ def read_ruleset(organization: str, ruleset_id: int):
         raise AuditDataError(
             f"ruleset {ruleset_id}.source_type must be 'Organization'"
         )
-    require_string(ruleset.get("target"), f"ruleset {ruleset_id}.target")
+    target = require_string(ruleset.get("target"), f"ruleset {ruleset_id}.target")
     enforcement = require_string(
         ruleset.get("enforcement"), f"ruleset {ruleset_id}.enforcement"
     )
@@ -253,15 +316,18 @@ def read_ruleset(organization: str, ruleset_id: int):
     conditions = require_mapping(
         ruleset.get("conditions"), f"ruleset {ruleset_id}.conditions"
     )
-    ref_name = require_mapping(
-        conditions.get("ref_name"), f"ruleset {ruleset_id}.conditions.ref_name"
-    )
-    validate_string_array(
-        ref_name.get("include"), f"ruleset {ruleset_id}.conditions.ref_name.include"
-    )
-    validate_string_array(
-        ref_name.get("exclude"), f"ruleset {ruleset_id}.conditions.ref_name.exclude"
-    )
+    if target == "branch" or "ref_name" in conditions:
+        ref_name = require_mapping(
+            conditions.get("ref_name"), f"ruleset {ruleset_id}.conditions.ref_name"
+        )
+        validate_string_array(
+            ref_name.get("include"),
+            f"ruleset {ruleset_id}.conditions.ref_name.include",
+        )
+        validate_string_array(
+            ref_name.get("exclude"),
+            f"ruleset {ruleset_id}.conditions.ref_name.exclude",
+        )
 
     actors = require_array(
         ruleset.get("bypass_actors"), f"ruleset {ruleset_id}.bypass_actors"
@@ -269,6 +335,11 @@ def read_ruleset(organization: str, ruleset_id: int):
     for actor_index, actor_value in enumerate(actors):
         actor = require_mapping(
             actor_value, f"ruleset {ruleset_id} bypass actor {actor_index}"
+        )
+        require_exact_keys(
+            actor,
+            {"actor_type", "actor_id", "bypass_mode"},
+            f"ruleset {ruleset_id} bypass actor {actor_index}",
         )
         require_string(
             actor.get("actor_type"),
@@ -379,10 +450,62 @@ def producer_binding_findings(ruleset: dict, producer_app_id: int):
     return findings
 
 
+def bypass_contract_findings(rulesets: list[dict], contracts: list[dict]):
+    """Require every non-empty bypass list to match one reviewed actor image."""
+    live_by_id = {ruleset["id"]: ruleset for ruleset in rulesets}
+    contracts_by_id = {contract["ruleset_id"]: contract for contract in contracts}
+    findings = []
+
+    for contract in contracts:
+        ruleset = live_by_id.get(contract["ruleset_id"])
+        label = f"reviewed bypass contract {contract['name']} ({contract['ruleset_id']})"
+        if ruleset is None:
+            findings.append(f"{label}: ruleset is absent; remove the stale contract")
+        elif ruleset["name"] != contract["name"]:
+            findings.append(
+                f"{label}: live ruleset name is {ruleset['name']!r}; contract identity drifted"
+            )
+        elif canonical_bypass_actors(ruleset["bypass_actors"]) != canonical_bypass_actors(
+            contract["bypass_actors"]
+        ):
+            findings.append(f"{label}: bypass actors differ from the reviewed contract")
+
+    for ruleset in rulesets:
+        if not ruleset["bypass_actors"]:
+            continue
+        contract = contracts_by_id.get(ruleset["id"])
+        if contract is None or contract["name"] != ruleset["name"]:
+            findings.append(
+                f"{ruleset['name']} ({ruleset['id']}): bypass actors are not covered "
+                "by a reviewed contract"
+            )
+    return findings
+
+
+def canonical_bypass_actors(actors: list[dict]):
+    return sorted(
+        [
+            (
+                actor["actor_type"],
+                actor["actor_id"],
+                actor["bypass_mode"],
+            )
+            for actor in actors
+        ],
+        key=lambda actor: (actor[0], str(actor[1]), actor[2]),
+    )
+
+
 def main(arguments: list[str] | None = None) -> int:
     try:
         policy = select_policy(sys.argv[1:] if arguments is None else arguments)
-        organization, expected_actor, producer_app_id, bypassless_exceptions = read_policy(policy)
+        (
+            organization,
+            expected_actor,
+            producer_app_id,
+            bypassless_exceptions,
+            bypass_contracts,
+        ) = read_policy(policy)
         ruleset_ids = list_ruleset_ids(organization)
         rulesets = [read_ruleset(organization, ruleset_id) for ruleset_id in ruleset_ids]
     except (OSError, AuditDataError, RuntimeError) as error:
@@ -405,7 +528,8 @@ def main(arguments: list[str] | None = None) -> int:
         for ruleset in rulesets
         for context, diagnostic in producer_binding_findings(ruleset, producer_app_id)
     ]
-    if failures or unbound:
+    bypass_findings = bypass_contract_findings(rulesets, bypass_contracts)
+    if failures or unbound or bypass_findings:
         for ruleset in failures:
             print(
                 f"ERROR: {ruleset['name']} ({ruleset['id']}): "
@@ -418,6 +542,8 @@ def main(arguments: list[str] | None = None) -> int:
                 f"required status check {context!r} {diagnostic}",
                 file=sys.stderr,
             )
+        for finding in bypass_findings:
+            print(f"ERROR: {finding}", file=sys.stderr)
         return 1
 
     print(
