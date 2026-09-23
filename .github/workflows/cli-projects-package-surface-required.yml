@@ -71,7 +71,7 @@ jobs:
         @verjson/eslint-config
         @verjson/tsconfig
       secretless-ci-script-plan: >-
-        ["build","lint","test","test:contract","test:npm-config","test:package-surface","test:public-docs","test:release-v1"]
+        ["build","lint","test","test:contract","test:npm-config","test:package-surface","test:public-docs","test:release"]
       event-name: ${{ needs.admission.outputs.event-name }}
       head-repository: ${{ needs.admission.outputs.head-repository }}
       head-sha: ${{ needs.admission.outputs.head-sha }}
