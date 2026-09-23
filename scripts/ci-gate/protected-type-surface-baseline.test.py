@@ -92,6 +92,21 @@ def run_resolver(declaration):
 
 
 class ProtectedBaselineTest(unittest.TestCase):
+    def test_generated_range_guard_accepts_stable_declarations(self):
+        run = step("Validate approved internal dependency lock")["run"]
+        lines = run.splitlines()
+        prerelease = next(
+            index for index, line in enumerate(lines)
+            if "ALLOW_PRERELEASE" in line and "is_bounded_range" not in line
+        )
+        stable = next(
+            index for index, line in enumerate(lines)
+            if line.strip() == "if re.fullmatch(core_pattern, value):"
+        )
+        self.assertEqual(lines[prerelease].index("if"), lines[stable].index("if"))
+        self.assertEqual(lines[stable + 1].strip(), "return True")
+        self.assertGreater(stable, prerelease)
+
     def test_base_sha_is_resolved_once_and_head_or_merge_tree_cannot_supply_declaration(self):
         result, calls, output_text, receipt_text = run_resolver(
             '{"package":"@verjson/authn","version":"3.0.0","script":"test:type-surface-compatibility"}'

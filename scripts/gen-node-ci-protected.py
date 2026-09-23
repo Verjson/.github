@@ -1087,7 +1087,7 @@ def configure_protected_baseline(document: str) -> str:
         index = matches[0]
         indentation = lines[index][: len(lines[index]) - len(lines[index].lstrip())]
         body_lines = [
-            f"{indentation}  {line}\n" for line in body.splitlines()
+            f"{indentation}    {line}\n" for line in body.splitlines()
         ]
         lines[index + 1 : index + 1] = body_lines
         return "".join(lines)
