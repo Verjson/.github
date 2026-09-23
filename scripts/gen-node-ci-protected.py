@@ -786,7 +786,11 @@ def render() -> str:
     auxiliary_if = "inputs.secretless-auxiliary-source != ''"
     document = replace_once(document, "      - name: Acquire immutable auxiliary source\n", verifier_step(auxiliary_if) + "      - name: Acquire immutable auxiliary source\n")
     document = replace_once(document, "      - name: Populate verified private dependency cache\n", verifier_step() + "      - name: Populate verified private dependency cache\n")
-    document = replace_once(document, "    permissions:\n      contents: read\n    steps:\n", "    permissions:\n      actions: read\n      contents: read\n      pull-requests: read\n    steps:\n")
+    document = replace_once(
+        document,
+        "    permissions:\n      contents: read\n    outputs:\n      compatibility-provenance: ${{ steps.expose-compatibility-provenance.outputs.provenance }}\n    steps:\n",
+        "    permissions:\n      actions: read\n      contents: read\n      pull-requests: read\n    outputs:\n      compatibility-provenance: ${{ steps.expose-compatibility-provenance.outputs.provenance }}\n    steps:\n",
+    )
     checkout = "        with:\n          submodules: ${{ (inputs.secretless-pr || inputs.secretless-trusted-ref) && 'false' || 'recursive' }}\n"
     document = replace_once(document, checkout, "        with:\n          ref: ${{ inputs.head-sha }}\n          submodules: ${{ (inputs.secretless-pr || inputs.secretless-trusted-ref) && 'false' || 'recursive' }}\n")
     rebuild_if = "needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.secretless-rebuild-packages != ''"
