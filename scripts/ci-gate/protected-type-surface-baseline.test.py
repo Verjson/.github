@@ -111,8 +111,8 @@ def run_acquisition(request, *, allow_prerelease):
             "set -euo pipefail\n"
             "printf '%s\\n' \"$*\" >> \"$NPM_LOG\"\n"
             "case \"$*\" in\n"
-            f"  'view --json {package}@{version} version') "
-            f"printf '%s\\n' '\"{version}\"' ;;\n"
+            f"  'view {package} versions --json') "
+            f"printf '%s\\n' '[\"{version}\"]' ;;\n"
             f"  'view --json {package}@{version} name version dist.integrity dist.tarball') "
             f"printf '%s\\n' '{{\"name\":\"{package}\",\"version\":\"{version}\","
             f"\"dist.integrity\":\"{integrity}\",\"dist.tarball\":\"{tarball}\"}}' ;;\n"
@@ -247,7 +247,7 @@ class ProtectedBaselineTest(unittest.TestCase):
         self.assertEqual(
             calls,
             [
-                "view --json @verjson/authn@3.0.0-rc.1 version",
+                "view @verjson/authn versions --json",
                 "view --json @verjson/authn@3.0.0-rc.1 name version "
                 "dist.integrity dist.tarball",
             ],
@@ -258,12 +258,12 @@ class ProtectedBaselineTest(unittest.TestCase):
         )
         self.assertNotEqual(denied.returncode, 0)
         self.assertIn(
-            "registry resolved a version outside the declared bounded range",
+            "compatibility range returned no released version: 3.0.0-rc.1",
             denied.stderr,
         )
         self.assertEqual(
             denied_calls,
-            ["view --json @verjson/authn@3.0.0-rc.1 version"],
+            ["view @verjson/authn versions --json"],
         )
 
     def test_malformed_duplicate_and_unauthorized_declarations_fail_closed(self):
