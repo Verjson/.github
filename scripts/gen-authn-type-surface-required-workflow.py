@@ -39,7 +39,7 @@ jobs:
         @verjson/identity-contracts
         @verjson/tsconfig
       secretless-compatibility-ranges: >-
-        {"package":"@verjson/authn","ranges":["2.0.0"],"script":"test:type-surface-compatibility"}
+        {"package":"@verjson/authn","ranges":["3.0.0"],"script":"test:type-surface-compatibility"}
       secretless-auxiliary-source: >-
         {"repository":"Verjson/verjson-authn","pinFile":".github/ci/type-surface-base.json","checkoutPath":".authn-type-base","sparsePath":"NEXT"}
       secretless-ci-script-plan: >-
