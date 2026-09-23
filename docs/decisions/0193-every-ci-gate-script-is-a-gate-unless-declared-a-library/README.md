@@ -3,7 +3,7 @@
 - **Date:** 2026-09-18
 - **Status:** Accepted
 - **Related:** [ADR 0076](../0076-bounded-actions-ci-shell-test-groups/README.md), [ADR 0184](../0184-merge-gates-assert-execution-not-absence-of-red/README.md)
-- **Issues:** [#1320](https://github.com/Verjson/.github/issues/1320), [#1450](https://github.com/Verjson/.github/issues/1450)
+- **Issues:** [#1320](https://github.com/Verjson/.github/issues/1320), [#1450](https://github.com/Verjson/.github/issues/1450), [#1477](https://github.com/Verjson/.github/issues/1477)
 
 ## Context
 
@@ -42,7 +42,8 @@ Three candidate discriminators were evaluated against the tree:
 
 Every tracked `*.sh` or `*.py` file under `scripts/ci-gate/` is a gate script and must be
 reachable in Actions, unless it is declared a library module in
-`scripts/actions-ci-groups.test.sh` with a stated reason.
+`scripts/actions-ci-groups.test.sh` with a stated reason, is imported by another tracked
+`scripts/ci-gate/` script, and is not invoked as a command on a tracked execution path.
 
 "Reachable in Actions" means the path is named:
 
@@ -60,11 +61,12 @@ Consequences of the classification:
 - Adding a file under `scripts/ci-gate/` has exactly two honest outcomes: register it
   where Actions runs it, or declare it a library with a reason. Neither happens by
   accident, and nothing is exempt by virtue of what it is called.
-- A declaration that goes stale — the path stops being tracked, or becomes registered
-  after all — reddens the same check. That bounds decay, not misuse: whether a file is
-  genuinely a library is not a computable property here, so declaring a real gate in the
-  exception list passes silently. What prevents that is review of a diff to this list,
-  which is why the list lives in the gate file rather than in a data file nobody reads.
+- A declaration that goes stale — the path stops being tracked, is no longer imported, or
+  is invoked as a command after all — reddens the same check. These checks bind the
+  declaration to the common, observable library shape rather than trusting its prose.
+  Whether an imported file also has meaningful standalone gate behavior is still not a
+  computable property here; review of a diff to this list remains the final control, which
+  is why the list lives in the gate file rather than in a data file nobody reads.
 - The candidate set is enumerated with `git ls-files`, not a filesystem walk: the index is
   what Actions checks out, so an untracked scratch file is correctly not a gate and a
   tracked one cannot hide from a glob.
@@ -73,6 +75,37 @@ Consequences of the classification:
   load-bearing command list in `scripts/actions-ci-groups.test.sh`, which owns group
   assignment. Per-file pins are not the pattern; if one is ever needed again, that is
   evidence this rule is wrong rather than evidence the pin was right.
+
+## 2026-09-23 refinement — bind declarations to observable module behavior
+
+[#1477](https://github.com/Verjson/.github/issues/1477) demonstrated that the declaration
+list still acted as a review-only suppression vector: a real, executable, unregistered
+gate could be added to `NON_GATE_MODULES` and the check passed. The earlier staleness
+assertions proved only that the path existed and was not registered; they did not test the
+reason the declaration gave for exemption.
+
+Each declaration now has two additional invariants: at least one other tracked
+`scripts/ci-gate/` Python script must statically import the exact module, and no tracked
+Actions execution block may invoke the declared path as a command. Imports are resolved
+to tracked paths relative to the ci-gate root and the importing package; a coincidental
+basename or suffix does not satisfy the declaration, and an import that resolves to more
+than one tracked path fails as ambiguous. Relative imports resolve aliases from the
+importing package; an empty module never aliases a sibling file, and packages resolve only
+through tracked `__init__.py` files. For `from module import Name`, a resolved `module.py`
+makes `Name` an attribute; alias submodules are considered only when the base is a regular
+or namespace package. Command discovery folds Bash line continuations before tokenization
+and treats relative, workspace-variable, trusted-checkout,
+punctuation, and unsupported wrapper spellings that mention the path as invocations.
+Tokenization errors that mention a tracked gate path fail closed.
+
+End-to-end mutation controls replace the real import with an unrelated same-basename
+import, introduce ambiguous, relative-package, and module-attribute filename collisions,
+and add each command spelling through a synthetic workflow document, including a line
+continuation and malformed shell source.
+Every mutation reruns parsing, discovery, normalization, and the declaration decision,
+and must fail while naming the declared module. This closes the tractable suppression case
+without claiming to decide whether arbitrary imported code is semantically a library. The
+general execution-path limitation below remains explicitly out of scope.
 
 ## Residual, accepted deliberately
 

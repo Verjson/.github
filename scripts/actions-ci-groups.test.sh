@@ -427,6 +427,7 @@ fi
 # real in this tree. Reachability of workflows themselves is a separate
 # invariant and a separate check.
 if python3 - "$root" "$manifest" "$workflow" <<'PY'
+import ast
 import pathlib
 import shlex
 import subprocess
@@ -498,16 +499,30 @@ if not gate_scripts:
 
 
 def referenced(text):
-    """Paths named as real command arguments, not as substrings of a longer path."""
+    """Tracked ci-gate paths mentioned by shell tokens on an execution path."""
+    logical_text = text.replace("\\\r\n", "").replace("\\\n", "")
+    lexer = shlex.shlex(logical_text, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    lexer.commenters = "#"
+    try:
+        tokens = list(lexer)
+    except ValueError as error:
+        mentioned = sorted(path for path in gate_scripts if path in logical_text)
+        if not mentioned:
+            return set()
+        evidence = ", ".join(mentioned)
+        raise SystemExit(
+            f"shell source could not be parsed while checking ci-gate paths; "
+            f"mentioned {evidence}: {error}"
+        ) from error
+
     seen = set()
-    for line in text.splitlines():
-        line = line.split("\t")[-1].strip()
-        if not line or line.startswith("#"):
-            continue
-        try:
-            seen.update(shlex.split(line))
-        except ValueError:
-            continue
+    for token in tokens:
+        # Exact, ./, trusted-checkout, workspace-variable, punctuation, and
+        # unsupported wrapper forms all retain the repository-relative path.
+        # Counting every such mention fails closed instead of letting shell
+        # spelling turn a declared library into an unregistered gate.
+        seen.update(path for path in gate_scripts if path in token)
     return seen
 
 
@@ -522,14 +537,156 @@ def workflow_source(path):
         ) from error
 
 
-workflow_text = "\n".join(
-    workflow_source(path)
+workflow_sources = {
+    path: workflow_source(path)
     for path in tracked(".github/workflows", ".github/actions")
     if path.endswith((".yml", ".yaml"))
-)
+}
+workflow_text = "\n".join(workflow_sources.values())
 
 
 exact_commands = referenced(manifest_text) | referenced(hosted_run)
+
+
+def run_blocks(value):
+    """Yield only shell execution blocks from workflow and action documents."""
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key == "run" and isinstance(child, str):
+                yield child
+            else:
+                yield from run_blocks(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from run_blocks(child)
+
+
+def invocation_paths(sources):
+    invoked = set(exact_commands)
+    for source in sources.values():
+        for run_block in run_blocks(yaml.safe_load(source)):
+            invoked.update(referenced(run_block))
+    return invoked
+
+
+invoked_paths = invocation_paths(workflow_sources)
+
+
+CI_GATE_ROOT = pathlib.PurePosixPath("scripts/ci-gate")
+python_sources = {
+    path: workflow_source(path)
+    for path in gate_scripts
+    if path.endswith(".py")
+}
+
+
+def import_roots(importer, node):
+    """Resolve an import from the ci-gate root or the importer's package."""
+    importer_parent = pathlib.PurePosixPath(importer).parent
+    if isinstance(node, ast.ImportFrom) and node.level:
+        package = importer_parent
+        for _ in range(node.level - 1):
+            package = package.parent
+        return (package,)
+    return (CI_GATE_ROOT, importer_parent)
+
+
+def module_path(root_path, module):
+    if not module:
+        return root_path
+    return root_path.joinpath(*module.split("."))
+
+
+def resolve_import_reference(importer, reference, roots, tracked_python):
+    candidates = set()
+    for root_path in roots:
+        base = module_path(root_path, reference)
+        candidates.add(str(base.with_suffix(".py")))
+        candidates.add(str(base / "__init__.py"))
+    matches = sorted(candidates & tracked_python)
+    if len(matches) > 1:
+        raise SystemExit(
+            f"{importer} import {reference!r} ambiguously resolves to tracked "
+            f"ci-gate paths: {', '.join(matches)}"
+        )
+    return matches
+
+
+def namespace_roots(reference, roots, tracked_python):
+    packages = []
+    for root_path in roots:
+        base = module_path(root_path, reference)
+        prefix = f"{base}/"
+        if any(path.startswith(prefix) for path in tracked_python):
+            packages.append(root_path)
+    return packages
+
+
+def imported_paths(importer, sources):
+    """Return exact tracked Python paths statically imported by one script."""
+    try:
+        tree = ast.parse(sources[importer], filename=importer)
+    except (KeyError, SyntaxError) as error:
+        raise SystemExit(
+            f"{importer} could not be parsed while checking non-gate imports: {error}"
+        ) from error
+
+    tracked_python = set(sources)
+    resolved = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            roots = import_roots(importer, node)
+            for alias in node.names:
+                resolved.update(
+                    resolve_import_reference(
+                        importer, alias.name, roots, tracked_python
+                    )
+                )
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            roots = import_roots(importer, node)
+            base_matches = (
+                resolve_import_reference(importer, module, roots, tracked_python)
+                if module
+                else []
+            )
+            resolved.update(base_matches)
+
+            # `from module import Name` reads an attribute when module.py is
+            # the resolved base. Alias submodules are possible only from a
+            # regular package (__init__.py), namespace package, or explicit
+            # relative package.
+            if base_matches and not all(
+                match.endswith("/__init__.py") for match in base_matches
+            ):
+                continue
+            package_roots = (
+                list(roots)
+                if not module
+                else namespace_roots(module, roots, tracked_python)
+            )
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                reference = ".".join(
+                    part for part in (module, alias.name) if part
+                )
+                resolved.update(
+                    resolve_import_reference(
+                        importer, reference, package_roots, tracked_python
+                    )
+                )
+        else:
+            continue
+    return resolved
+
+
+def importers_of(path, sources=python_sources):
+    return [
+        importer
+        for importer in sources
+        if importer != path and path in imported_paths(importer, sources)
+    ]
 
 
 def is_reachable(path):
@@ -552,25 +709,157 @@ if orphaned:
     raise SystemExit(
         "ci-gate scripts run nowhere in Actions -- they are named in neither the "
         "actions-ci manifest, the hosted-compatibility job, nor any workflow, and "
-        "are not declared library modules:\n  "
+        "are not declared library modules. See ADR 0193 and NON_GATE_MODULES in "
+        "scripts/actions-ci-groups.test.sh:\n  "
         + "\n  ".join(orphaned)
     )
 
-# A declaration that has gone stale is the same failure wearing the opposite
-# sign: it would exempt a future gate script that reused the name, or hide that a
-# module became a gate. Require every declared entry to still be a tracked,
-# unreachable module.
-for path, reason in sorted(NON_GATE_MODULES.items()):
-    if path not in gate_scripts:
-        raise SystemExit(
+DECLARATION_GUIDANCE = (
+    "See ADR 0193 and NON_GATE_MODULES in scripts/actions-ci-groups.test.sh."
+)
+
+
+def declaration_error(path, reason, *, importers, invoked, tracked_paths=gate_scripts):
+    if path not in tracked_paths:
+        return (
             f"declared non-gate module is not a tracked ci-gate script: {path} "
-            f"({reason})"
+            f"({reason}). {DECLARATION_GUIDANCE}"
         )
-    if is_reachable(path):
+    if not importers:
+        return (
+            f"declared non-gate module is not imported by any tracked ci-gate "
+            f"script: {path} ({reason}). {DECLARATION_GUIDANCE}"
+        )
+    if invoked:
+        return (
+            f"declared non-gate module is invoked as a command on a tracked "
+            f"execution path: {path} ({reason}) -- delete the declaration or the "
+            f"invocation. {DECLARATION_GUIDANCE}"
+        )
+    return None
+
+
+# A declaration is a checkable claim: the path remains tracked, another tracked
+# ci-gate script imports it, and no tracked Actions execution block invokes it.
+def declaration_errors(
+    *,
+    workflows=workflow_sources,
+    sources=python_sources,
+    declarations=NON_GATE_MODULES,
+    tracked_paths=gate_scripts,
+):
+    invoked = invocation_paths(workflows)
+    errors = {}
+    for path, reason in sorted(declarations.items()):
+        error = declaration_error(
+            path,
+            reason,
+            importers=importers_of(path, sources),
+            invoked=path in invoked,
+            tracked_paths=tracked_paths,
+        )
+        if error:
+            errors[path] = error
+    return errors
+
+
+current_errors = declaration_errors()
+if current_errors:
+    raise SystemExit(next(iter(current_errors.values())))
+
+
+def assert_mutation_rejected(
+    name,
+    *,
+    mutation_module="scripts/ci-gate/conformance/adopter.py",
+    workflows=workflow_sources,
+    sources=python_sources,
+    declarations=NON_GATE_MODULES,
+    tracked_paths=gate_scripts,
+):
+    try:
+        error = declaration_errors(
+            workflows=workflows,
+            sources=sources,
+            declarations=declarations,
+            tracked_paths=tracked_paths,
+        ).get(mutation_module)
+    except SystemExit as failure:
+        error = str(failure)
+    if not error or mutation_module not in error:
         raise SystemExit(
-            f"declared non-gate module is registered as a gate anyway: {path} "
-            f"({reason}) -- delete the declaration or the registration"
+            f"{name} mutation did not fail closed naming {mutation_module}"
         )
+
+
+# End-to-end source mutations prove discovery, parsing, normalization, and the
+# declaration decision fail closed together. Replacing the real sibling import
+# with a same-basename unrelated module also controls the collision that a
+# suffix-only resolver would incorrectly accept.
+mutation_importer = "scripts/ci-gate/conformance/conformance.test.py"
+real_import = "from adopter import ADOPTERS, AdopterContractMismatch, bind_inputs, callers_for"
+collision_import = real_import.replace("from adopter", "from unrelated.adopter")
+if real_import not in python_sources[mutation_importer]:
+    raise SystemExit("non-gate import mutation fixture no longer matches its source")
+unimported_sources = dict(python_sources)
+unimported_sources[mutation_importer] = python_sources[mutation_importer].replace(
+    real_import, collision_import, 1
+)
+assert_mutation_rejected("declared-but-unimported-basename-collision", sources=unimported_sources)
+
+ambiguous_sources = dict(python_sources)
+ambiguous_sources["scripts/ci-gate/adopter.py"] = "# duplicate-basename mutation fixture\n"
+assert_mutation_rejected("ambiguous-basename", sources=ambiguous_sources)
+
+relative_collision = "scripts/ci-gate/conformance.py"
+relative_sources = dict(python_sources)
+relative_sources[relative_collision] = "# relative-import collision fixture\n"
+relative_sources["scripts/ci-gate/conformance/relative-import.test.py"] = (
+    "from . import adopter\n"
+)
+assert_mutation_rejected(
+    "relative-package-file-collision",
+    mutation_module=relative_collision,
+    sources=relative_sources,
+    declarations={relative_collision: "relative import collision mutation"},
+    tracked_paths=[*gate_scripts, relative_collision],
+)
+
+attribute_collision = "scripts/ci-gate/collision_model/Scenario.py"
+attribute_sources = dict(python_sources)
+attribute_sources["scripts/ci-gate/collision_model.py"] = "Scenario = object()\n"
+attribute_sources[attribute_collision] = "# attribute collision fixture\n"
+attribute_sources["scripts/ci-gate/attribute-import.test.py"] = (
+    "from collision_model import Scenario\n"
+)
+assert_mutation_rejected(
+    "module-attribute-submodule-collision",
+    mutation_module=attribute_collision,
+    sources=attribute_sources,
+    declarations={attribute_collision: "module attribute collision mutation"},
+    tracked_paths=[
+        *gate_scripts,
+        "scripts/ci-gate/collision_model.py",
+        attribute_collision,
+        "scripts/ci-gate/attribute-import.test.py",
+    ],
+)
+
+mutation_module = "scripts/ci-gate/conformance/adopter.py"
+invocation_forms = {
+    "relative-path": f"python3 ./{mutation_module};",
+    "workspace-variable": f'python3 "$GITHUB_WORKSPACE/{mutation_module}"',
+    "trusted-checkout": f"python3 .gate-trust/{mutation_module}",
+    "unsupported-wrapper": f'python3 "${{TOOL:-{mutation_module}}}"',
+    "line-continuation": "python3 scripts/ci-gate/conformance/adop\\\nter.py",
+    "parse-error": f'python3 "{mutation_module}',
+}
+for name, command in invocation_forms.items():
+    mutated_workflows = dict(workflow_sources)
+    mutated_workflows[f".github/workflows/non-gate-{name}.yml"] = yaml.safe_dump(
+        {"jobs": {"mutation": {"steps": [{"run": command}]}}}
+    )
+    assert_mutation_rejected(name, workflows=mutated_workflows)
 
 # Negative controls: an empty result must mean "nothing runs nowhere", never "the
 # detector cannot see it". Feed it an unregistered test and an unregistered
@@ -589,7 +878,7 @@ PY
 then
   pass "every ci-gate script runs in the actions-ci manifest, the hosted compatibility job, or a workflow"
 else
-  fail "a ci-gate script runs nowhere in Actions, or a non-gate declaration has gone stale"
+  fail "a ci-gate script violates ADR 0193; inspect NON_GATE_MODULES in scripts/actions-ci-groups.test.sh"
 fi
 
 for command_id in schema readiness; do
