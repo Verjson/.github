@@ -41,7 +41,7 @@ permissions:
   packages: read
 
 jobs:
-  type-surface:
+  type-surface-contract:
     if: github.repository == '$repository'
     uses: Verjson/.github/.github/workflows/type-surface-ci.yml@$canonical_sha
     secrets: inherit
