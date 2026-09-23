@@ -1215,7 +1215,7 @@ def authorize_pre_contract_migration(
     require_complete_tag_visibility(repo_root)
     if source_exists_in_any_tag(repo_root, permit.source):
         raise ChangelogError("pre-contract migration cannot move a snapshot present in a tag")
-    return {permit.source}
+    return {permit.source, permit.destination}
 
 
 def validate_permit_update(repo_root: Path, base: str, head: str) -> None:
@@ -1309,9 +1309,10 @@ PRODUCTION_SOURCE_SUFFIXES = frozenset(
     }
 )
 
-# Exempt because the fragment describes a behavior change and these do not ship
-# one: the unreleased store and released snapshots themselves, documentation
-# trees, and tests, whose own change is described by the source change it covers.
+# Exempt from the production-source classifier because they are either changelog
+# stores, documentation, or tests. Documentation is still release-relevant and
+# is enforced by `is_release_relevant_change`; tests remain the only content
+# exemption because their change is described by the source change they cover.
 EXEMPT_SOURCE_PREFIXES = ("CHANGELOG/", "docs/", f"{UNRELEASED_DIR}/")
 # A test root is anchored rather than matched at any depth. `tests`, `test`, and
 # `spec` are ordinary words: `packages/api/spec/` is a package's own tree far
@@ -1332,14 +1333,10 @@ TEST_FILENAME = re.compile(
     r"|(?:^|/)[^/]*[._-]spec\.[A-Za-z0-9]+$"
 )
 
-# Renovate edits these and nothing else in a bot-automerged upgrade, so they are
-# reported rather than rejected until the organization's Renovate preset stops
-# auto-merging (Verjson/renovate-config). See the #1324 pull request.
-# A repo-root `action.yml` is the published entrypoint of a composite or JS
-# action and belongs to the same class, even though it lives outside `.github/`.
-WORKFLOW_DEFINITION = re.compile(
-    r"^\.github/(?:workflows|actions)/.+\.ya?ml$|^action\.ya?ml$"
-)
+RELEASE_LOG_EXEMPT_PATHS = frozenset({"CHANGELOG.md"})
+RELEASE_LOG_EXEMPT_PREFIXES = ("CHANGELOG/", f"{UNRELEASED_DIR}/")
+GITHUB_WORKFLOW_DEFINITION = re.compile(r"^\.github/workflows/[^/]+\.ya?ml$")
+LOCAL_ACTION_METADATA = frozenset({"action.yml", "action.yaml"})
 
 
 def is_test_source(path: str) -> bool:
@@ -1352,31 +1349,27 @@ def is_production_source(path: str) -> bool:
     return Path(path).suffix.lower() in PRODUCTION_SOURCE_SUFFIXES
 
 
+def is_release_relevant_change(path: str) -> bool:
+    """Whether a changed path needs release context in a new fragment.
+
+    The running log covers behavior, configuration, code, documentation, and
+    pins. New repository shapes therefore fail closed by default. Only the
+    changelog stores and explicitly classified test-only paths are exempt.
+    """
+    if (
+        GITHUB_WORKFLOW_DEFINITION.fullmatch(path)
+        or Path(path).name in LOCAL_ACTION_METADATA
+    ):
+        return True
+    if path in RELEASE_LOG_EXEMPT_PATHS or path.startswith(
+        RELEASE_LOG_EXEMPT_PREFIXES
+    ):
+        return False
+    return not is_test_source(path)
+
+
 def is_fragment_path(path: str) -> bool:
     return path.startswith(f"{UNRELEASED_DIR}/") and path != f"{UNRELEASED_DIR}/README.md"
-
-
-def report_warning(title: str, message: str) -> None:
-    """Surface a non-fatal finding where a human will actually see it.
-
-    A bare stderr line from a step that exits 0 is folded away in the Actions
-    log and never reaches the run summary, so the class this report exists to
-    keep visible was effectively invisible. Under Actions it becomes a warning
-    annotation and a run-summary entry; everywhere else stderr is still right.
-    """
-    if os.environ.get("GITHUB_ACTIONS") != "true":
-        print(f"warning: {message}", file=sys.stderr)
-        return
-    # Workflow commands are newline-delimited, so the payload must be escaped
-    # rather than trusted to be single-line.
-    encoded = (
-        message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-    )
-    print(f"::warning title={title}::{encoded}")
-    summary = os.environ.get("GITHUB_STEP_SUMMARY")
-    if summary:
-        with open(summary, "a", encoding="utf-8") as handle:
-            handle.write(f"> [!WARNING]\n> **{title}** — {message}\n\n")
 
 
 def valid_added_fragments(repo_root: Path, added_fragments: set[str]) -> set[str]:
@@ -1488,21 +1481,25 @@ def check_pr(repo_root: Path, base: str, head: str) -> None:
             added_fragments,
             "production source changes require a new valid NEXT fragment",
         )
-    undocumented_workflows = sorted(
-        path for path in changed if WORKFLOW_DEFINITION.match(path)
+    release_relevant = sorted(
+        path
+        for path in changed
+        if is_release_relevant_change(path)
+        and path not in permitted
+        and not is_dependency_file(path)
+        and not is_production_source(path)
     )
-    # Gated on the *valid* fragments, not merely added ones. A workflow-only
-    # pull request validates nothing, so an unparseable addition would otherwise
-    # silence the report while documenting nothing.
-    if undocumented_workflows and not valid_added_fragments(repo_root, added_fragments):
-        # Reported, not rejected: the organization Renovate preset that
-        # auto-merges action-pin bumps lives in Verjson/renovate-config and
-        # cannot be changed from here, so failing this now would stall every
-        # bot upgrade instead of documenting it.
-        report_warning(
-            "undocumented workflow definitions",
-            "workflow definitions changed with no new valid NEXT fragment: "
-            + ", ".join(undocumented_workflows),
+    if release_relevant and not added_fragments:
+        raise ChangelogError(
+            "release-relevant changes require a new NEXT fragment "
+            "(all paths except changelog stores and test-only files): "
+            + ", ".join(release_relevant)
+        )
+    if release_relevant:
+        require_valid_added_fragments(
+            repo_root,
+            added_fragments,
+            "release-relevant changes require a new valid NEXT fragment",
         )
 
 

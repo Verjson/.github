@@ -204,6 +204,17 @@ allocation never determines precedence.
 Feature pull requests must not edit `CHANGELOG.md`, released snapshots, or
 remove fragments. Release automation is the only fragment consumer.
 
+`check-pr` also requires a new valid fragment whenever the final base-to-head
+tree changes release-relevant content: behavior, configuration, code,
+documentation, or pins. The rule fails closed for new repository paths. Only
+the changelog stores (`NEXT/`, `CHANGELOG/`, and generated `CHANGELOG.md`) and
+explicitly classified test-only paths are exempt. Dependency manifests and
+production source keep their narrower diagnostics, but satisfy the same
+fragment requirement. Executable GitHub workflow definitions and any local
+action metadata named `action.yml` or `action.yaml` take precedence over
+test-like filenames or directory names. Adding a fragment and deleting it in a
+later commit does not satisfy the final-tree check.
+
 Repositories should call the reusable
 `.github/workflows/changelog-validate.yml` workflow and use
 `.github/workflows/changelog-release.yml` for releases. Pin reusable workflows

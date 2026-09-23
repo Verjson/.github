@@ -3941,6 +3941,79 @@ git -C "$fixture_root/case" commit -qm "dependency update with fragment"
 python3 "$contract" check-pr --repo-root "$fixture_root/case" --base "$base" --head HEAD
 echo "ok - a dependency change with a new valid fragment is accepted"
 
+# The generator can reproduce older immutable contracts for audits. Only run
+# this mutation suite once the pinned engine advertises the #1455 boundary.
+if grep -q '^def is_release_relevant_change' "$contract"; then
+# Behavior, configuration, code, documentation, and pins need release context
+# even when no dependency manifest is involved. The decision is based on the
+# final base-to-head tree, so adding a fragment and deleting it later cannot
+# leave an undocumented change behind (#1455).
+new_fixture
+init_fixture_repo
+printf 'base\n' >"$fixture_root/case/README.md"
+git -C "$fixture_root/case" add .
+git -C "$fixture_root/case" commit -qm base
+base="$(git -C "$fixture_root/case" rev-parse HEAD)"
+mkdir -p "$fixture_root/case/docs"
+printf 'documented behavior\n' >"$fixture_root/case/docs/runbook.md"
+write_fragment NEXT/2026-09-23-issue-1455-release-context.md \
+  2026-09-23 "issue: 1455" "Require release context" patch
+git -C "$fixture_root/case" add .
+git -C "$fixture_root/case" commit -qm "document behavior with fragment"
+python3 "$contract" check-pr --repo-root "$fixture_root/case" --base "$base" --head HEAD
+echo "ok - non-dependency change with a new valid fragment is accepted"
+
+git -C "$fixture_root/case" rm -q NEXT/2026-09-23-issue-1455-release-context.md
+git -C "$fixture_root/case" commit -qm "remove fragment"
+if python3 "$contract" check-pr --repo-root "$fixture_root/case" \
+  --base "$base" --head HEAD 2>"$fixture_root/error"; then
+  fail "non-dependency change accepted after its fragment was deleted"
+fi
+grep -q 'release-relevant changes require a new NEXT fragment' "$fixture_root/error"
+echo "ok - deleting a branch fragment cannot hide non-dependency release context"
+
+new_fixture
+init_fixture_repo
+printf 'base\n' >"$fixture_root/case/README.md"
+git -C "$fixture_root/case" add .
+git -C "$fixture_root/case" commit -qm base
+base="$(git -C "$fixture_root/case" rev-parse HEAD)"
+mkdir -p "$fixture_root/case/docs"
+printf 'undocumented behavior\n' >"$fixture_root/case/docs/runbook.md"
+git -C "$fixture_root/case" add .
+git -C "$fixture_root/case" commit -qm "document behavior without fragment"
+if python3 "$contract" check-pr --repo-root "$fixture_root/case" \
+  --base "$base" --head HEAD 2>"$fixture_root/error"; then
+  fail "non-dependency change without a fragment was accepted"
+fi
+grep -q 'release-relevant changes require a new NEXT fragment' "$fixture_root/error"
+echo "ok - non-dependency changes require a new fragment"
+
+for executable_path in \
+  .github/workflows/ci.test.yml \
+  .github/workflows/release.spec.yaml \
+  .github/actions/test/action.yml \
+  tests/action.yml \
+  packages/foo/tests/action.yaml; do
+  new_fixture
+  init_fixture_repo
+  printf 'base\n' >"$fixture_root/case/README.md"
+  git -C "$fixture_root/case" add .
+  git -C "$fixture_root/case" commit -qm base
+  base="$(git -C "$fixture_root/case" rev-parse HEAD)"
+  mkdir -p "$fixture_root/case/$(dirname "$executable_path")"
+  printf 'name: executable\n' >"$fixture_root/case/$executable_path"
+  git -C "$fixture_root/case" add .
+  git -C "$fixture_root/case" commit -qm "add executable github yaml"
+  if python3 "$contract" check-pr --repo-root "$fixture_root/case" \
+    --base "$base" --head HEAD 2>"$fixture_root/error"; then
+    fail "executable GitHub YAML escaped release context: $executable_path"
+  fi
+  grep -q 'release-relevant changes require a new NEXT fragment' "$fixture_root/error"
+done
+echo "ok - executable GitHub YAML takes precedence over test exemptions"
+fi
+
 new_fixture
 init_fixture_repo
 printf 'base\n' >"$fixture_root/case/README.md"
@@ -3968,6 +4041,9 @@ git -C "$fixture_root/case" commit -qm "restore changelog documentation"
 base="$(git -C "$fixture_root/case" rev-parse HEAD)"
 mkdir -p "$fixture_root/case/docs"
 git -C "$fixture_root/case" mv NEXT/README.md docs/changelog-fragments.md
+write_fragment NEXT/2026-08-26-issue-20260826T120000Z-move-docs.md \
+  2026-08-26 "id: 20260826T120000Z" "Move changelog documentation" patch
+git -C "$fixture_root/case" add .
 git -C "$fixture_root/case" commit -qm "move changelog documentation"
 python3 "$contract" check-pr --repo-root "$fixture_root/case" --base "$base" --head HEAD
 echo "ok - moving NEXT README does not consume a fragment (#1116)"
@@ -4004,8 +4080,20 @@ for unrelated in package.json.md package-lock.yaml requirements.md \
 done
 git -C "$fixture_root/case" add .
 git -C "$fixture_root/case" commit -qm "similarly named files"
-python3 "$contract" check-pr --repo-root "$fixture_root/case" --base "$base" --head HEAD
-echo "ok - similarly named non-dependency files do not trigger the fragment rule"
+if grep -q '^def is_release_relevant_change' "$contract"; then
+  if python3 "$contract" check-pr --repo-root "$fixture_root/case" \
+    --base "$base" --head HEAD 2>"$fixture_root/error"; then
+    fail "similarly named non-dependency files escaped release context"
+  fi
+  grep -q 'release-relevant changes require a new NEXT fragment' "$fixture_root/error"
+  if grep -q 'dependency manifests or lockfiles' "$fixture_root/error"; then
+    fail "similarly named files were misclassified as dependency manifests"
+  fi
+  echo "ok - similarly named files remain non-dependencies but require release context"
+else
+  python3 "$contract" check-pr --repo-root "$fixture_root/case" --base "$base" --head HEAD
+  echo "ok - similarly named non-dependency files do not trigger the fragment rule"
+fi
 
 if python3 "$contract" check-pr --repo-root "$fixture_root/case" \
   --base malformed-api-sha --head HEAD 2>"$fixture_root/error"; then

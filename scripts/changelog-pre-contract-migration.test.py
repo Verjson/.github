@@ -234,6 +234,18 @@ class PreContractMigrationTests(unittest.TestCase):
             destination="docs/changelog/pre-contract/2.0.0.md",
         )
         self.write_permit([first, second])
+        fragment = self.root / "NEXT" / "2026-09-23-issue-1455-permit.md"
+        fragment.parent.mkdir(parents=True, exist_ok=True)
+        fragment.write_text(
+            "---\n"
+            "date: 2026-09-23\n"
+            "issue: 1455\n"
+            "title: Authorize a future snapshot migration\n"
+            "impact: patch\n"
+            "---\n\n"
+            "Record the reviewed migration permit.\n",
+            encoding="utf-8",
+        )
         head = self.commit("append future permit")
         changelog.check_pr(self.root, base, head)
 
