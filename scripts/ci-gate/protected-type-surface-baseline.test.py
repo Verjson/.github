@@ -107,6 +107,22 @@ class ProtectedBaselineTest(unittest.TestCase):
         self.assertEqual(lines[stable + 1].strip(), "return True")
         self.assertGreater(stable, prerelease)
 
+    def test_generated_candidate_plan_allows_no_optional_runtime_cache(self):
+        run = step("Run exact credentialless consumer script plan")["run"]
+        self.assertIn(
+            'baseline_value = os.environ.get("npm_config_cache", "").strip()',
+            run,
+        )
+        self.assertIn("baseline = None", run)
+        self.assertIn(
+            "baseline is not None and inventory(baseline) != baseline_inventory",
+            run,
+        )
+        self.assertNotIn(
+            'baseline = Path(os.path.abspath(os.environ["npm_config_cache"]))',
+            run,
+        )
+
     def test_base_sha_is_resolved_once_and_head_or_merge_tree_cannot_supply_declaration(self):
         result, calls, output_text, receipt_text = run_resolver(
             '{"package":"@verjson/authn","version":"3.0.0","script":"test:type-surface-compatibility"}'
