@@ -1298,6 +1298,15 @@ chmod +x "$multi_release_adopter/scripts/changelog-contract.test.sh"
 run_adopter "$multi_release_adopter" \
   && pass "generated contract validates multiple release callers with distinct package selections" \
   || fail "generated contract rejects multiple release callers with distinct package selections"
+sed -i '0,/^  workflow_dispatch:$/s//  push:/' \
+  "$multi_release_adopter/.github/workflows/release-cli-schema.yml"
+run_adopter "$multi_release_adopter" \
+  && fail "generated contract accepted a push trigger on the first of multiple release callers" \
+  || pass "generated contract checks the trigger on every release caller (#1488)"
+grep -qF "$multi_release_adopter/.github/workflows/release-cli-schema.yml declares no readable top-level" \
+  "$tmproot/run.out" \
+  && pass "multi-release trigger failure names the non-final caller" \
+  || fail "multi-release trigger failure did not identify the non-final caller: $(tail -2 "$tmproot/run.out")"
 
 custom_adopter="$tmproot/adopter-custom-release"
 build_adopter "$custom_adopter"
