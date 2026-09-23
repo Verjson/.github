@@ -3,6 +3,7 @@
 - **Date:** 2026-08-29
 - **Status:** Accepted
 - **Issue:** [#1177](https://github.com/Verjson/.github/issues/1177)
+- **Partially superseded by:** [ADR 0204](../0204-retire-duplicate-cli-projects-repository-rule/README.md)
 
 ## Context
 
