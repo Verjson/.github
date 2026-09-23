@@ -12,6 +12,7 @@ Reverse-chronological index of org-level decisions.
 <!-- prettier-ignore -->
 | # | Date | Decision |
 |---|------|----------|
+| [0204](0204-retire-duplicate-cli-projects-repository-rule/README.md) | 2026-09-23 | Retire duplicate cli-projects repository rule |
 | [0202](0202-bind-autonomous-merge-to-independent-review-receipt/README.md) | 2026-09-23 | Bind autonomous merge to an independent-review receipt |
 | [0201](0201-secret-bearing-fleet-report-uses-default-branch/README.md) | 2026-09-22 | Keep the full fleet report in a private workflow run |
 | [0200](0200-temporary-legacy-authorization-check-write/README.md) | 2026-09-22 | Temporarily authorize exact legacy review-App checks |
