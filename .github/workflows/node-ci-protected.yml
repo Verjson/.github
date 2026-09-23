@@ -3638,8 +3638,9 @@ jobs:
           baseline_value = os.environ.get("npm_config_cache", "").strip()
           baseline = None
           if baseline_value:
-              baseline = Path(os.path.abspath(baseline_value))
-              if baseline.exists() or baseline.is_symlink():
+              candidate_baseline = Path(os.path.abspath(baseline_value))
+              if candidate_baseline.exists() or candidate_baseline.is_symlink():
+                baseline = candidate_baseline
                 if not baseline.is_absolute() or baseline.is_symlink() or not baseline.is_dir():
                   sys.exit("verified runtime cache is not an absolute regular directory")
                 if baseline.resolve() != baseline:

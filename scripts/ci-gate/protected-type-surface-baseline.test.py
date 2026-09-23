@@ -114,6 +114,8 @@ class ProtectedBaselineTest(unittest.TestCase):
             run,
         )
         self.assertIn("baseline = None", run)
+        self.assertIn("candidate_baseline = Path(os.path.abspath(baseline_value))", run)
+        self.assertIn("baseline = candidate_baseline", run)
         self.assertIn(
             "baseline is not None and inventory(baseline) != baseline_inventory",
             run,
