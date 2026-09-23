@@ -801,8 +801,8 @@ jobs:
               return tuple(int(part) for part in value.split("."))
 
           def is_bounded_range(value):
-            if os.environ.get("ALLOW_PRERELEASE") == "true" and re.fullmatch(rf"{core_pattern}-(?:[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)", value):
-              return True
+              if os.environ.get("ALLOW_PRERELEASE") == "true" and re.fullmatch(rf"{core_pattern}-(?:[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)", value):
+                return True
               if re.fullmatch(core_pattern, value):
                   return True
               if re.fullmatch(rf"[~^]{core_pattern}", value):
@@ -1266,13 +1266,13 @@ jobs:
               return tuple(int(part) for part in match.groups()) if match else None
 
           def satisfies_bounded_range(version, range_value):
-            if (
-            os.environ.get("ALLOW_PRERELEASE") == "true"
-            and "-" in range_value
-            and version == range_value
-            and version_pattern.fullmatch(version)
-            ):
-              return True
+              if (
+              os.environ.get("ALLOW_PRERELEASE") == "true"
+              and "-" in range_value
+              and version == range_value
+              and version_pattern.fullmatch(version)
+              ):
+                return True
               selected = parse_core(version)
               if selected is None:
                   return False
