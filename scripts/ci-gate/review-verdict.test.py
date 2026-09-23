@@ -49,6 +49,28 @@ class ReviewVerdictTest(unittest.TestCase):
             with self.subTest(followup=followup), self.assertRaises(review.VerdictError):
                 review.canonicalize_verdict({**base, "followups": [followup]}, sensitive=False)
 
+    def test_issue_1564_malformed_followup_fixture_fails_closed_with_path(self):
+        fixture = Path(__file__).with_name("fixtures") / "ai-review-1564-primary-malformed-followup.json"
+        raw = fixture.read_text(encoding="utf-8")
+
+        result = review.confirm_output(raw, sensitive=False)
+
+        self.assertFalse(result["usable"])
+        self.assertEqual(result["diagnostic"]["path"], "followups[0]")
+        self.assertEqual(result["diagnostic"]["observed"], "one or more unknown fields")
+        self.assertNotIn("category", json.dumps(result["diagnostic"]))
+
+    def test_issue_1564_note_object_fixture_fails_closed_with_field_path(self):
+        fixture = Path(__file__).with_name("fixtures") / "ai-review-1564-primary-note-object.json"
+        raw = fixture.read_text(encoding="utf-8")
+
+        result = review.confirm_output(raw, sensitive=False)
+
+        self.assertFalse(result["usable"])
+        self.assertEqual(result["diagnostic"]["path"], "followups[0].note")
+        self.assertEqual(result["diagnostic"]["observed"], "object with 2 fields")
+        self.assertNotIn("severity", json.dumps(result["diagnostic"]))
+
     def committed_fixture(self, root, files):
         repository = Path(root)
         for relative_path, content in files.items():

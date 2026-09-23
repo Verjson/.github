@@ -58,7 +58,11 @@ class ReviewProviderConformanceTest(unittest.TestCase):
         self.assertIn("review_first: [{location, why}]", prompt)
         self.assertIn("findings: [{location, reason, failure_scenario, evidence}]", prompt)
         self.assertIn("Every findings.location MUST contain exactly one repository-relative", prompt)
-        self.assertIn("followups: [{location, note}]", prompt)
+        self.assertIn(
+            'followups: [{location: "path/to/file.ext:42", note: "non-empty text"}]',
+            prompt,
+        )
+        self.assertIn("Both followup fields are strings.", prompt)
         self.assertIn("suggestion or\n          recommendation are accepted provider aliases", prompt)
         self.assertIn(".review_first | map(\"- `\" + .location + \"` — \" + .why)", renderer)
         self.assertIn("(.evidence | @html)", renderer)

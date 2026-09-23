@@ -1,0 +1,1 @@
+{"blocking":false,"summary":"No blocking defects found.","review_first":[],"findings":[],"followups":[{"location":"src/review.ts:42","note":{"severity":"low","recommendation":"Preserve the actionable failure diagnostic."}}]}
