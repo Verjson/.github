@@ -44,12 +44,11 @@ jobs:
   type-surface-contract:
     if: github.repository == '$repository'
     uses: Verjson/.github/.github/workflows/type-surface-ci.yml@$canonical_sha
-    secrets: inherit
     with:
-      canonical-contract-sha: $canonical_sha
-      declaration-path: $declaration_path
-      expected-package: $package_name
-      expected-script: $script_name
+      canonical-contract-sha: '$canonical_sha'
+      declaration-path: '$declaration_path'
+      expected-package: '$package_name'
+      expected-script: '$script_name'
       approved-internal-packages: |-
 $(sed 's/^/        /' <<< "$approved_packages")
 EOF

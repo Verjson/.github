@@ -40,6 +40,9 @@ on:
       should-run:
         description: Whether the lane executed or deferred on the release-age gate.
         value: ${{ jobs.eligibility.outputs.should-run }}
+      compatibility-provenance:
+        description: Exact registry provenance exercised by the credentialless compatibility lane.
+        value: ${{ jobs.build-test.outputs.compatibility-provenance }}
     inputs:
       node-version:
         description: Node.js version for actions/setup-node
@@ -1516,6 +1519,8 @@ jobs:
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: read
+    outputs:
+      compatibility-provenance: ${{ steps.expose-compatibility-provenance.outputs.provenance }}
     steps:
       - name: Report deferred CI
         # ADR 0156: the title makes the deferral legible to
@@ -6001,6 +6006,29 @@ jobs:
         with:
           path: ${{ runner.temp }}/verjson-playwright-browsers-${{ github.run_id }}-${{ github.run_attempt }}
           key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles(inputs.cache-dependency-path) }}
+      - name: Expose verified compatibility provenance
+        id: expose-compatibility-provenance
+        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.secretless-compatibility-ranges != ''
+        env:
+          PROVENANCE_PATH: ${{ runner.temp }}/secretless-compatibility-${{ github.run_id }}-${{ github.run_attempt }}/_compatibility/provenance.json
+        run: |
+          set -euo pipefail
+          python3 - "$PROVENANCE_PATH" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          source = Path(sys.argv[1])
+          if not source.is_file() or source.is_symlink() or source.stat().st_size > 1024 * 1024:
+              raise SystemExit("compatibility provenance is unavailable for receipt binding")
+          value = json.loads(source.read_text(encoding="utf-8"))
+          if not isinstance(value, dict) or value.get("schemaVersion") != 1:
+              raise SystemExit("compatibility provenance has an unexpected shape")
+          compact = json.dumps(value, sort_keys=True, separators=(",", ":"))
+          with Path(sys.argv[2]).open("a", encoding="utf-8") as output:
+              output.write(f"provenance<<VERJSON_EOF\\n{compact}\\nVERJSON_EOF\\n")
+          PY
+
       - name: Remove job-scoped Playwright browser cache
         if: always() && needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.browser-cache && steps.prepare-playwright-browser-cache.outputs.owned == 'true'
         env:

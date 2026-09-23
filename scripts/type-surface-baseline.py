@@ -256,16 +256,36 @@ def registry_metadata(package: str, version: str, token: str) -> dict:
 def resolve(arguments: argparse.Namespace) -> dict:
     github_token = os.environ.get("GITHUB_TOKEN", "")
     node_auth_token = os.environ.get("NODE_AUTH_TOKEN", "")
+    if os.environ.get("EVENT_NAME") != "pull_request":
+        raise ContractError("type-surface verification requires a pull_request event")
+    if os.environ.get("EVENT_REPOSITORY") != arguments.repository:
+        raise ContractError("workflow repository identity does not match target repository")
+    event_base_sha = os.environ.get("EVENT_BASE_SHA", "")
+    event_base_ref = os.environ.get("EVENT_BASE_REF", "")
+    event_head_sha = os.environ.get("EVENT_HEAD_SHA", "")
+    if (
+        not SHA.fullmatch(event_base_sha)
+        or not SHA.fullmatch(event_head_sha)
+        or not re.fullmatch(r"[A-Za-z0-9._/-]+", event_base_ref)
+    ):
+        raise ContractError("pull_request event identity is incomplete or mutable")
     if not github_token or not node_auth_token:
         raise ContractError("authenticated GitHub and registry credentials are required")
     pull = api_json(github_token, f"repos/{arguments.repository}/pulls/{arguments.pull_request}")
     base = pull.get("base")
     base_repo = base.get("repo") if isinstance(base, dict) else None
-    if not isinstance(base, dict) or not isinstance(base_repo, dict) or base_repo.get("full_name") != arguments.repository:
+    if (
+        not isinstance(base, dict)
+        or not isinstance(base_repo, dict)
+        or base_repo.get("full_name") != arguments.repository
+        or base.get("ref") != base_repo.get("default_branch")
+    ):
         raise ContractError("pull request base repository is not the target repository")
     base_sha = base.get("sha")
     if not isinstance(base_sha, str) or not SHA.fullmatch(base_sha):
         raise ContractError("pull request base SHA is not an immutable commit")
+    if base.get("ref") != event_base_ref or base_sha != event_base_sha:
+        raise ContractError("pull_request event base identity changed during resolution")
 
     encoded_path = quote(arguments.declaration_path, safe="/")
     content = api_json(
@@ -308,7 +328,10 @@ def resolve(arguments: argparse.Namespace) -> dict:
         "schemaVersion": 1,
         "repository": arguments.repository,
         "declarationPath": arguments.declaration_path,
+        "pullRequest": arguments.pull_request,
+        "baseRef": base["ref"],
         "baseSha": base_sha,
+        "headSha": event_head_sha,
         "declarationBlobSha": blob_sha,
         "declarationSha256": hashlib.sha256(declaration_bytes).hexdigest(),
         "package": package,
@@ -340,7 +363,10 @@ def verify_receipt(arguments: argparse.Namespace) -> None:
         "schemaVersion",
         "repository",
         "declarationPath",
+        "pullRequest",
+        "baseRef",
         "baseSha",
+        "headSha",
         "declarationBlobSha",
         "declarationSha256",
         "package",
@@ -349,9 +375,19 @@ def verify_receipt(arguments: argparse.Namespace) -> None:
         "request",
         "artifact",
         "typeSurfaceResult",
+        "typeSurfaceProvenance",
     }
     if set(receipt) != required or receipt["schemaVersion"] != 1 or receipt["typeSurfaceResult"] != "success":
         raise ContractError("evidence receipt has an unexpected shape")
+    if (
+        not isinstance(receipt["pullRequest"], int)
+        or receipt["pullRequest"] <= 0
+        or not isinstance(receipt["baseRef"], str)
+        or not re.fullmatch(r"[A-Za-z0-9._/-]+", receipt["baseRef"])
+        or not isinstance(receipt["headSha"], str)
+        or not SHA.fullmatch(receipt["headSha"])
+    ):
+        raise ContractError("evidence receipt run identity is invalid")
     if not SHA.fullmatch(receipt["baseSha"]) or not SHA.fullmatch(receipt["declarationBlobSha"]):
         raise ContractError("evidence receipt is not bound to immutable GitHub objects")
     if not SHA256.fullmatch(receipt["declarationSha256"]):
@@ -364,6 +400,48 @@ def verify_receipt(arguments: argparse.Namespace) -> None:
         raise ContractError("evidence receipt artifact provenance was tampered with")
     if not INTEGRITY.fullmatch(artifact["integrity"]):
         raise ContractError("evidence receipt artifact integrity is invalid")
+    tarball = artifact["tarball"]
+    parsed = urlparse(tarball) if isinstance(tarball, str) else None
+    path = unquote(parsed.path) if parsed is not None else ""
+    parts = path.split("/")
+    expected_name = f"{parts[2]}/{parts[3]}" if len(parts) == 6 else ""
+    if (
+        parsed is None
+        or parsed.scheme != "https"
+        or parsed.netloc != "npm.pkg.github.com"
+        or parsed.query
+        or parsed.fragment
+        or tarball != f"https://npm.pkg.github.com{path}"
+        or len(parts) != 6
+        or parts[1] != "download"
+        or any(part in ("", ".", "..") for part in parts[1:])
+        or expected_name != receipt["package"]
+        or parts[4] != receipt["version"]
+    ):
+        raise ContractError("evidence receipt artifact URL is not bound to package and version")
+    provenance = receipt["typeSurfaceProvenance"]
+    if not isinstance(provenance, dict) or set(provenance) != {"schemaVersion", "request", "lanes"}:
+        raise ContractError("evidence receipt exercised provenance has an unexpected shape")
+    if provenance["schemaVersion"] != 1 or provenance["request"] != request:
+        raise ContractError("evidence receipt exercised provenance request was tampered with")
+    lanes = provenance["lanes"]
+    if not isinstance(lanes, list) or len(lanes) != 1 or not isinstance(lanes[0], dict):
+        raise ContractError("evidence receipt exercised provenance lane is invalid")
+    lane = lanes[0]
+    if (
+        set(lane) != {"index", "package", "range", "script", "version", "integrity", "tarball", "sha512"}
+        or lane["index"] != 0
+        or lane["package"] != receipt["package"]
+        or lane["range"] != receipt["version"]
+        or lane["script"] != receipt["script"]
+        or lane["version"] != receipt["version"]
+        or lane["integrity"] != artifact["integrity"]
+        or lane["tarball"] != artifact["tarball"]
+        or not re.fullmatch(r"[0-9a-f]{128}", lane["sha512"])
+    ):
+        raise ContractError("evidence receipt exercised artifact does not match resolver artifact")
+    if base64.b64decode(lane["integrity"].removeprefix("sha512-"), validate=True).hex() != lane["sha512"]:
+        raise ContractError("evidence receipt exercised artifact digest is invalid")
 
 
 def main() -> int:
