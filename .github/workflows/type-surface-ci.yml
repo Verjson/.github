@@ -1,0 +1,138 @@
+name: Protected consumer type surface (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      canonical-contract-sha:
+        required: true
+        type: string
+      declaration-path:
+        required: true
+        type: string
+      expected-package:
+        required: true
+        type: string
+      expected-script:
+        required: true
+        type: string
+      approved-internal-packages:
+        required: true
+        type: string
+      approved-internal-scopes:
+        required: false
+        default: '@verjson'
+        type: string
+      node-version:
+        required: false
+        default: '24'
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      request: ${{ steps.resolve.outputs.request }}
+      package: ${{ steps.resolve.outputs.package }}
+      version: ${{ steps.resolve.outputs.version }}
+      script: ${{ steps.resolve.outputs.script }}
+      receipt: ${{ steps.resolve.outputs.receipt }}
+    steps:
+      - name: Checkout the pinned canonical verifier only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: Verjson/.github
+          ref: ${{ inputs.canonical-contract-sha }}
+          sparse-checkout: scripts/type-surface-baseline.py
+          path: .verjson-canonical
+          persist-credentials: false
+      - name: Resolve the declaration from the immutable pull-request base
+        id: resolve
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PACKAGE_POLICY: ${{ vars.CI_SECRETLESS_PACKAGE_POLICY }}
+          REPOSITORY: ${{ github.repository }}
+          PULL_REQUEST: ${{ github.event.pull_request.number }}
+          DECLARATION_PATH: ${{ inputs.declaration-path }}
+          EXPECTED_PACKAGE: ${{ inputs.expected-package }}
+          EXPECTED_SCRIPT: ${{ inputs.expected-script }}
+        run: |
+          set -euo pipefail
+          [ -n "$PACKAGE_POLICY" ] || {
+            echo '::error::CI_SECRETLESS_PACKAGE_POLICY is required for a protected type-surface baseline' >&2
+            exit 1
+          }
+          python3 .verjson-canonical/scripts/type-surface-baseline.py resolve \
+            --repository "$REPOSITORY" \
+            --pull-request "$PULL_REQUEST" \
+            --declaration-path "$DECLARATION_PATH" \
+            --expected-package "$EXPECTED_PACKAGE" \
+            --expected-script "$EXPECTED_SCRIPT" \
+            --package-policy "$PACKAGE_POLICY" \
+            --github-output "$GITHUB_OUTPUT"
+
+  type-surface:
+    needs: resolve
+    permissions:
+      contents: read
+      packages: read
+      statuses: read
+    uses: Verjson/.github/.github/workflows/node-ci.yml@752e7994bb39ca83bc89bafd532bf3d8d7b50fb2
+    secrets:
+      NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    with:
+      node-version: ${{ inputs.node-version }}
+      scope: ${{ inputs.approved-internal-scopes }}
+      secretless-pr: true
+      approved-internal-packages: ${{ inputs.approved-internal-packages }}
+      secretless-compatibility-ranges: ${{ needs.resolve.outputs.request }}
+      secretless-ci-script-plan: '["build"]'
+
+  type-surface-receipt:
+    if: always()
+    needs: [resolve, type-surface]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Checkout the pinned canonical verifier only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: Verjson/.github
+          ref: ${{ inputs.canonical-contract-sha }}
+          sparse-checkout: scripts/type-surface-baseline.py
+          path: .verjson-canonical
+          persist-credentials: false
+      - name: Bind the exact successful lane to an evidence receipt
+        env:
+          RECEIPT: ${{ needs.resolve.outputs.receipt }}
+          TYPE_SURFACE_RESULT: ${{ needs.type-surface.result }}
+        run: |
+          set -euo pipefail
+          [ "$TYPE_SURFACE_RESULT" = success ] || {
+            echo "::error::type-surface verification did not succeed ($TYPE_SURFACE_RESULT)" >&2
+            exit 1
+          }
+          python3 - "$RECEIPT" "$TYPE_SURFACE_RESULT" > type-surface-receipt.json <<'PY'
+          import json
+          import sys
+
+          receipt = json.loads(sys.argv[1])
+          receipt["typeSurfaceResult"] = sys.argv[2]
+          print(json.dumps(receipt, sort_keys=True, separators=(",", ":")))
+          PY
+          python3 .verjson-canonical/scripts/type-surface-baseline.py verify-receipt type-surface-receipt.json
+      - name: Upload the canonical evidence receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: type-surface-evidence
+          path: type-surface-receipt.json
+          if-no-files-found: error
