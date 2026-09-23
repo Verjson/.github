@@ -74,7 +74,7 @@ run-name: AI review authorization ${{ inputs.authorization_check_id }} from arm 
 #   jobs:
 #     gate:
 #       uses: Verjson/.github/.github/workflows/ai-review-merge.yml@<reviewed-40-hex-commit>
-#       with: {ai_review_environment: ai-review-app}
+#       with: {ai_review_environment: ai-review-app, contract_ref: <reviewed-40-hex-commit>}
 #       secrets: inherit
 #       # The environment selector is required; add runner_labels
 #       # ONLY for an off-Verjson self-hosted fleet, or on a `v1` older than the
@@ -130,6 +130,10 @@ on:
     inputs:
       ai_review_environment:
         description: Main-only environment containing the ai-review App private key
+        required: true
+        type: string
+      contract_ref:
+        description: Immutable Verjson/.github revision; must equal the reusable workflow uses pin
         required: true
         type: string
       pr_number:
@@ -315,6 +319,7 @@ jobs:
       # 'false' → public target → hosted runner; 'true' or '' (unresolved,
       # fail closed) → self-hosted `gate`. See the gate job's `runs-on` (#170).
       target_private: ${{ steps.target_visibility.outputs.target_private }}
+      trusted_review_sha: ${{ steps.trusted-revision.outputs.sha }}
     steps:
       - name: Record preflight runner timing
         env:
@@ -357,19 +362,26 @@ jobs:
           echo "target_private=$target_private" >> "$GITHUB_OUTPUT"
           echo "::notice::phase=preflight target_repo=$TARGET_REPO target_private=${target_private:-unknown}"
 
-      - name: Resolve executing trusted workflow revision for recovery
-        id: recovery-revision
-        if: github.event_name == 'workflow_dispatch'
+      - name: Resolve immutable canonical workflow revision
+        id: trusted-revision
         env:
+          CONTRACT_REF: ${{ inputs.contract_ref }}
           EXECUTING_WORKFLOW_SHA: ${{ job.workflow_sha }}
-        run: echo "sha=$EXECUTING_WORKFLOW_SHA" >>"$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          trusted_review_sha="${CONTRACT_REF:-$EXECUTING_WORKFLOW_SHA}"
+          if [[ ! "$trusted_review_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::canonical workflow revision must be an immutable lowercase 40-hex commit SHA"
+            exit 1
+          fi
+          echo "sha=$trusted_review_sha" >>"$GITHUB_OUTPUT"
 
       - name: Check out immutable zero-provider recovery verifier
         if: github.event_name == 'workflow_dispatch'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: Verjson/.github
-          ref: ${{ steps.recovery-revision.outputs.sha }}
+          ref: ${{ steps.trusted-revision.outputs.sha }}
           path: .gate-recovery
           sparse-checkout: |
             scripts/ci-gate/verify-zero-provider-recovery.sh
@@ -578,7 +590,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: Verjson/.github
-          ref: ${{ job.workflow_sha }}
+          ref: ${{ steps.trusted-revision.outputs.sha }}
           path: .gate-policy
           sparse-checkout: |
             scripts/ci-gate/review-policy-envelope.py
@@ -830,8 +842,14 @@ jobs:
       - name: Resolve executing trusted workflow revision
         id: trusted-revision
         env:
-          EXECUTING_WORKFLOW_SHA: ${{ job.workflow_sha }}
-        run: echo "sha=$EXECUTING_WORKFLOW_SHA" >>"$GITHUB_OUTPUT"
+          TRUSTED_REVIEW_SHA: ${{ needs.preflight.outputs.trusted_review_sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TRUSTED_REVIEW_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::validated canonical workflow revision is unavailable or malformed"
+            exit 1
+          fi
+          echo "sha=$TRUSTED_REVIEW_SHA" >>"$GITHUB_OUTPUT"
 
       - name: Check out immutable arm verifier
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -2051,8 +2069,14 @@ jobs:
       - name: Resolve executing trusted workflow revision
         id: trusted-revision
         env:
-          EXECUTING_WORKFLOW_SHA: ${{ job.workflow_sha }}
-        run: echo "sha=$EXECUTING_WORKFLOW_SHA" >>"$GITHUB_OUTPUT"
+          TRUSTED_REVIEW_SHA: ${{ needs.preflight.outputs.trusted_review_sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TRUSTED_REVIEW_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::validated canonical workflow revision is unavailable or malformed"
+            exit 1
+          fi
+          echo "sha=$TRUSTED_REVIEW_SHA" >>"$GITHUB_OUTPUT"
 
       - name: Check out immutable arm verifier
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

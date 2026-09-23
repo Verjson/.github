@@ -2,8 +2,11 @@
 """Contract tests for the head-bound, event-driven AI authorization gate."""
 
 from pathlib import Path
+import os
 import re
+import subprocess
 import sys
+import tempfile
 
 import yaml
 
@@ -263,22 +266,109 @@ def main() -> int:
         raise AssertionError(f"{message} mutation escaped model admission contract")
 
     caller_sha = "1" * 40
-    callee_sha = "2" * 40
-    consumer_call_fixture = {
-        "github.workflow_sha": caller_sha,
-        "job.workflow_sha": callee_sha,
-    }
-    resolver_values = []
-    for workflow in (review, promote):
-        for job in workflow["jobs"].values():
-            for step in job.get("steps", []):
-                if step.get("name") == "Resolve executing trusted workflow revision":
-                    resolver_values.append(step["env"]["EXECUTING_WORKFLOW_SHA"])
-    require(resolver_values and all(value == "${{ job.workflow_sha }}" for value in resolver_values),
-            "canonical verifier checkout must resolve the reusable callee SHA")
-    selected = [consumer_call_fixture[value[4:-3].strip()] for value in resolver_values]
-    require(all(value == callee_sha and value != caller_sha for value in selected),
-            "consumer-call fixture selected the caller SHA instead of the canonical callee SHA")
+    canonical_sha = "2" * 40
+    workflow_call = review[True]["workflow_call"]
+    require(workflow_call["inputs"]["contract_ref"] == {
+        "description": "Immutable Verjson/.github revision; must equal the reusable workflow uses pin",
+        "required": True,
+        "type": "string",
+    }, "consumer call must supply its canonical reusable-workflow revision")
+
+    preflight = review["jobs"]["preflight"]
+    revision = next(step for step in preflight["steps"]
+                    if step.get("name") == "Resolve immutable canonical workflow revision")
+    require(revision["env"] == {
+        "CONTRACT_REF": "${{ inputs.contract_ref }}",
+        "EXECUTING_WORKFLOW_SHA": "${{ job.workflow_sha }}",
+    }, "trusted revision resolver must separate the caller head from the canonical input")
+    require(preflight["outputs"]["trusted_review_sha"] ==
+            "${{ steps.trusted-revision.outputs.sha }}",
+            "validated canonical revision must be shared with downstream verifier jobs")
+
+    with tempfile.TemporaryDirectory() as directory:
+        output = Path(directory) / "output"
+        environment = {
+            **os.environ,
+            "CONTRACT_REF": canonical_sha,
+            "EXECUTING_WORKFLOW_SHA": caller_sha,
+            "GITHUB_OUTPUT": str(output),
+        }
+        result = subprocess.run(
+            ["bash", "-c", revision["run"]],
+            env=environment,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        require(result.returncode == 0 and output.read_text().strip() == f"sha={canonical_sha}",
+                "consumer-call fixture substituted its consumer head for the canonical revision")
+
+        for invalid in ("main", "A" * 40, "3" * 39):
+            environment["CONTRACT_REF"] = invalid
+            result = subprocess.run(
+                ["bash", "-c", revision["run"]],
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            require(result.returncode != 0,
+                    f"malformed canonical revision escaped: {invalid}")
+
+    policy_checkout = next(step for step in preflight["steps"]
+                           if step.get("name") == "Check out immutable policy decoder")
+    require(policy_checkout["with"]["repository"] == "Verjson/.github" and
+            policy_checkout["with"]["ref"] == "${{ steps.trusted-revision.outputs.sha }}",
+            "consumer policy checkout must pair Verjson/.github with the validated canonical revision")
+    for job_name in ("gate", "complete-authorization"):
+        job = review["jobs"][job_name]
+        resolver = next(step for step in job["steps"]
+                        if step.get("name") == "Resolve executing trusted workflow revision")
+        require(resolver["env"] == {
+            "TRUSTED_REVIEW_SHA": "${{ needs.preflight.outputs.trusted_review_sha }}"
+        }, f"{job_name} must consume the preflight-validated canonical revision")
+        checkout = next(step for step in job["steps"]
+                        if step.get("name") in {
+                            "Check out immutable arm verifier",
+                            "Check out immutable policy decoder",
+                        })
+        require(checkout["with"]["repository"] == "Verjson/.github" and
+                checkout["with"]["ref"] == "${{ steps.trusted-revision.outputs.sha }}",
+                f"{job_name} verifier checkout is not bound to Verjson/.github at the canonical revision")
+        if job_name == "complete-authorization":
+            require("always()" in job.get("if", ""),
+                    "completion must retain its terminal always-running behavior")
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "output"
+            for trusted_ref, expected_success in (
+                (canonical_sha, True),
+                ("", False),
+                ("main", False),
+                ("A" * 40, False),
+                ("3" * 39, False),
+            ):
+                output.write_text("", encoding="utf-8")
+                result = subprocess.run(
+                    ["bash", "-c", resolver["run"]],
+                    env={
+                        **os.environ,
+                        "TRUSTED_REVIEW_SHA": trusted_ref,
+                        "GITHUB_OUTPUT": str(output),
+                    },
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                if expected_success:
+                    require(result.returncode == 0 and
+                            output.read_text(encoding="utf-8").strip() ==
+                            f"sha={canonical_sha}",
+                            f"{job_name} rejected the validated canonical revision")
+                else:
+                    require(result.returncode != 0 and
+                            not output.read_text(encoding="utf-8").strip(),
+                            f"{job_name} exposed an empty or malformed canonical revision")
 
     require("pull_request_target" not in review.get(True, {}),
             "model workflow must not run in pull_request_target context")
