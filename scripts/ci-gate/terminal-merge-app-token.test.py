@@ -32,6 +32,7 @@ def validate(document: dict, raw: str) -> list[str]:
     steps = job["steps"]
     preflight = named_step(job, "Validate terminal merge App and target repository")
     authorize = named_step(job, "Authorize terminal merge from trusted metadata")
+    receipt = named_step(job, "Revalidate independent review receipt")
     mint = named_step(job, "Mint exact-repository terminal merge App token")
     merge = named_step(job, "Merge the authorized head")
     confirm = named_step(job, "Confirm merge and consume the arm receipt")
@@ -63,10 +64,16 @@ def validate(document: dict, raw: str) -> list[str]:
     }
     if mint.get("uses") != ACTION or mint.get("with") != expected_mint:
         problems.append("mint is not pinned to exact repository and merge permissions")
-    if mint.get("if") != "steps.authorize-merge.outputs.authorized == 'true'":
+    terminal_condition = (
+        "steps.authorize-merge.outputs.authorized == 'true' && "
+        "steps.independent-review.outputs.authorized == 'true'"
+    )
+    if mint.get("if") != terminal_condition:
         problems.append("token can mint before successful authorization")
     if (authorize.get("env") or {}).get("GH_TOKEN") != "${{ github.token }}":
         problems.append("authorization does not use the read-only repository token")
+    if (receipt.get("env") or {}).get("GH_TOKEN") != "${{ github.token }}":
+        problems.append("independent-review revalidation does not use the read-only repository token")
     if (confirm.get("env") or {}).get("GH_TOKEN") != "${{ github.token }}":
         problems.append("confirmation does not return to the read-only repository token")
     if (merge.get("env") or {}) != {
@@ -95,7 +102,9 @@ def validate(document: dict, raw: str) -> list[str]:
     token_consumers = [step.get("name") for step in steps if APP_TOKEN in str(step)]
     if token_consumers != ["Merge the authorized head"]:
         problems.append("merge token escaped the terminal operation")
-    order = [steps.index(step) for step in (preflight, authorize, mint, merge, confirm)]
+    if merge.get("if") != terminal_condition or confirm.get("if") != terminal_condition:
+        problems.append("terminal operations do not share independent-review authorization")
+    order = [steps.index(step) for step in (preflight, authorize, receipt, mint, merge, confirm)]
     if order != sorted(order) or len(set(order)) != len(order):
         problems.append("preflight/authorization/mint/merge/confirmation ordering drifted")
     if "ORG_ADMIN_TOKEN" in raw:
