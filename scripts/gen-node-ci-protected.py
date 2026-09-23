@@ -47,7 +47,7 @@ PROTECTED_INPUTS = """      protected-type-surface-declaration-path:
 
 PROTECTED_BASELINE_STEP = """      - name: Resolve protected type-surface baseline from the pull-request base
         id: resolve-protected-type-surface
-        if: inputs.protected-type-surface-declaration-path != ''
+        if: needs.eligibility.outputs.should-run != 'false' && inputs.protected-type-surface-declaration-path != ''
         env:
           ALLOW_PRERELEASE: ${{ inputs.protected-type-surface-allow-prerelease }}
           DECLARATION_PATH: ${{ inputs.protected-type-surface-declaration-path }}
@@ -315,7 +315,7 @@ PROTECTED_BASELINE_TRANSFER_VALIDATION = """          protected_baseline = prove
 """
 
 PROTECTED_BASELINE_REF_STEP = """      - name: Export protected type-surface base SHA
-        if: inputs.protected-type-surface-declaration-path != ''
+        if: needs.eligibility.outputs.should-run != 'false' && inputs.protected-type-surface-declaration-path != ''
         env:
           BASE_SHA: ${{ needs.acquire-secretless-dependencies.outputs.protected-baseline-base-sha }}
         run: |

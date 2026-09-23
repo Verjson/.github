@@ -584,7 +584,7 @@ jobs:
           }
       - name: Resolve protected type-surface baseline from the pull-request base
         id: resolve-protected-type-surface
-        if: inputs.protected-type-surface-declaration-path != ''
+        if: needs.eligibility.outputs.should-run != 'false' && inputs.protected-type-surface-declaration-path != ''
         env:
           ALLOW_PRERELEASE: ${{ inputs.protected-type-surface-allow-prerelease }}
           DECLARATION_PATH: ${{ inputs.protected-type-surface-declaration-path }}
@@ -3472,7 +3472,7 @@ jobs:
           subprocess.run([*command, *requested], check=True)
           PY
       - name: Export protected type-surface base SHA
-        if: inputs.protected-type-surface-declaration-path != ''
+        if: needs.eligibility.outputs.should-run != 'false' && inputs.protected-type-surface-declaration-path != ''
         env:
           BASE_SHA: ${{ needs.acquire-secretless-dependencies.outputs.protected-baseline-base-sha }}
         run: |
