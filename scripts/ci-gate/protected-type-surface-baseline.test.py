@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import base64
 import hashlib
 import importlib.util
 import json
@@ -91,6 +92,79 @@ def run_resolver(declaration, *, allow_prerelease=False):
         return result, calls, output_text, receipt_text
 
 
+def run_acquisition(request, *, allow_prerelease):
+    acquisition = step("Resolve approved compatibility ranges without lifecycle execution")
+    version = "3.0.0-rc.1"
+    package = "@verjson/authn"
+    tarball = f"https://npm.pkg.github.com/download/{package}/{version}/archive"
+    digest = hashlib.sha512(b"prerelease artifact").digest()
+    integrity = "sha512-" + base64.b64encode(digest).decode("ascii")
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        bin_dir = root / "bin"
+        bin_dir.mkdir()
+        log = root / "npm.log"
+        fake_npm = bin_dir / "npm"
+        fake_npm.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "printf '%s\\n' \"$*\" >> \"$NPM_LOG\"\n"
+            "case \"$*\" in\n"
+            f"  'view --json {package}@{version} version') "
+            f"printf '%s\\n' '\"{version}\"' ;;\n"
+            f"  'view --json {package}@{version} name version dist.integrity dist.tarball') "
+            f"printf '%s\\n' '{{\"name\":\"{package}\",\"version\":\"{version}\","
+            f"\"dist.integrity\":\"{integrity}\",\"dist.tarball\":\"{tarball}\"}}' ;;\n"
+            "  *) exit 91 ;;\n"
+            "esac\n",
+            encoding="utf-8",
+        )
+        fake_npm.chmod(0o755)
+
+        entries = root / "private-entries"
+        entries.write_text(f"{tarball}\t{digest.hex()}\n", encoding="utf-8")
+        provenance = root / "compatibility" / "provenance.json"
+        environment = {
+            **os.environ,
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "ALLOW_PRERELEASE": "true" if allow_prerelease else "false",
+            "APPROVED_INTERNAL_SCOPES": "@verjson",
+            "COMPATIBILITY_PROVENANCE": str(provenance),
+            "COMPATIBILITY_RANGES": request,
+            "NODE_AUTH_TOKEN": "test-package-token",
+            "NPM_CONFIG_GLOBALCONFIG": str(root / "global.npmrc"),
+            "NPM_CONFIG_USERCONFIG": str(root / "user.npmrc"),
+            "NPM_LOG": str(log),
+            "PRIVATE_CACHE_ENTRIES": str(entries),
+            "PROTECTED_BASELINE_RECEIPT_PATH": "",
+        }
+        result = subprocess.run(
+            ["bash", "-c", acquisition["run"]],
+            cwd=root,
+            env=environment,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        provenance_text = (
+            provenance.read_text(encoding="utf-8") if provenance.exists() else ""
+        )
+        calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+        expected_lane = {
+            "index": 0,
+            "package": package,
+            "range": version,
+            "script": "test:type-surface-compatibility",
+            "version": version,
+            "integrity": integrity,
+            "tarball": tarball,
+            "sha512": digest.hex(),
+        }
+        return result, provenance_text, calls, expected_lane
+
+
 class ProtectedBaselineTest(unittest.TestCase):
     def test_generated_range_guard_accepts_stable_declarations(self):
         run = step("Validate approved internal dependency lock")["run"]
@@ -155,6 +229,42 @@ class ProtectedBaselineTest(unittest.TestCase):
             '"script":"test:type-surface-compatibility"}',
         )
         self.assertEqual(json.loads(receipt_text)["version"], "3.0.0-rc.1")
+
+        acquisition, provenance_text, calls, expected_lane = run_acquisition(
+            values["compatibility-ranges"], allow_prerelease=True
+        )
+
+        self.assertEqual(acquisition.returncode, 0, acquisition.stderr)
+        provenance = json.loads(provenance_text)
+        self.assertEqual(
+            provenance,
+            {
+                "schemaVersion": 1,
+                "request": json.loads(values["compatibility-ranges"]),
+                "lanes": [expected_lane],
+            },
+        )
+        self.assertEqual(
+            calls,
+            [
+                "view --json @verjson/authn@3.0.0-rc.1 version",
+                "view --json @verjson/authn@3.0.0-rc.1 name version "
+                "dist.integrity dist.tarball",
+            ],
+        )
+
+        denied, _, denied_calls, _ = run_acquisition(
+            values["compatibility-ranges"], allow_prerelease=False
+        )
+        self.assertNotEqual(denied.returncode, 0)
+        self.assertIn(
+            "registry resolved a version outside the declared bounded range",
+            denied.stderr,
+        )
+        self.assertEqual(
+            denied_calls,
+            ["view --json @verjson/authn@3.0.0-rc.1 version"],
+        )
 
     def test_malformed_duplicate_and_unauthorized_declarations_fail_closed(self):
         declarations = [
