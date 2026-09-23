@@ -70,20 +70,27 @@ mkdir -p "$tmp/bin" "$tmp/checks"
 content_root="$tmp/content"
 mkdir -p "$content_root/.github/workflows" "$content_root/scripts"
 contract_pin="$(git -C "$here/.." rev-parse HEAD)"
-generator="$here/gen-changelog-caller.sh"
+generator_source="$tmp/gen-changelog-caller.sh"
+if ! git -C "$here/.." show "$contract_pin:scripts/gen-changelog-caller.sh" >"$generator_source"; then
+  fail "the pinned changelog generator could not be loaded"
+  exit 1
+fi
+run_generator() {
+  (cd "$here" && bash -s -- "$@" <"$generator_source")
+}
 generated_pr_gate_state="$(
-  bash "$generator" pr-gate "$contract_pin" \
+  run_generator pr-gate "$contract_pin" \
     | python3 -I "$here/required-checks-workflow.py" changelog-contract
 )"
 jq -e '.changelog_contract == "valid" and .pull_request == true and .path_filter == false' \
   <<<"$generated_pr_gate_state" >/dev/null \
   && pass "the exact generated pr-gate satisfies the workflow classifier" \
   || fail "the generated pr-gate and workflow classifier contract drifted"
-bash "$generator" generated-artifacts "$contract_pin" >"$content_root/.github/workflows/changelog.yml"
-bash "$generator" renderer "$contract_pin" >"$content_root/scripts/render-next.sh"
-bash "$generator" contract-test "$contract_pin" >"$content_root/scripts/changelog-contract.test.sh"
-bash "$generator" release-node "$contract_pin" >"$content_root/.github/workflows/release.yml"
-bash "$generator" pr-gate "$contract_pin" >"$content_root/.github/workflows/changelog-contract.yml"
+run_generator generated-artifacts "$contract_pin" >"$content_root/.github/workflows/changelog.yml"
+run_generator renderer "$contract_pin" >"$content_root/scripts/render-next.sh"
+run_generator contract-test "$contract_pin" >"$content_root/scripts/changelog-contract.test.sh"
+run_generator release-node "$contract_pin" >"$content_root/.github/workflows/release.yml"
+run_generator pr-gate "$contract_pin" >"$content_root/.github/workflows/changelog-contract.yml"
 mkdir -p "$tmp/artifact-baseline/.github/workflows" "$tmp/artifact-baseline/scripts"
 cp "$content_root/.github/workflows/changelog.yml" "$tmp/artifact-baseline/.github/workflows/changelog.yml"
 cp "$content_root/.github/workflows/release.yml" "$tmp/artifact-baseline/.github/workflows/release.yml"
@@ -489,7 +496,7 @@ rc="$(RCA_WORKFLOW_INSPECTOR="$tmp/missing-workflow-inspector.py" run_audit)"
 stack node; pulls s1 s2
 head_with s1 gate "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
 head_with s2 gate "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
-"$generator" workflow "$contract_pin" >"$content_root/.github/workflows/changelog.yml"
+run_generator workflow "$contract_pin" >"$content_root/.github/workflows/changelog.yml"
 rc="$(run_audit)"
 { [ "$rc" = "rc=0" ] && grep -q 'result=conformant' "$tmp/out.txt"; } \
   && pass "the documented workflow compatibility mode remains conformant" \
@@ -1108,7 +1115,7 @@ rc="$(run_audit)"
 # The forward case: a repository that legitimately opted into
 # `--untrusted-runner` still regenerates byte-identical and is conformant.
 stack node
-bash "$generator" pr-gate "$contract_pin" --untrusted-runner self-hosted,general \
+run_generator pr-gate "$contract_pin" --untrusted-runner self-hosted,general \
   >"$content_root/.github/workflows/changelog-contract.yml"
 pulls s1 s2
 head_with s1 "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
