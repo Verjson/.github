@@ -34,9 +34,177 @@ def require(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
+HEREDOC = re.compile(
+    r"<<(?!<)(?P<strip>-?)\s*(?:"
+    r"(?P<quote>['\"])(?P<quoted>[A-Za-z_][A-Za-z0-9_]*)(?P=quote)"
+    r"|(?P<plain>[A-Za-z_][A-Za-z0-9_]*))"
+)
+SAFE_SHELL_COMMENT = re.compile(r"^[ \t]*#[ A-Za-z0-9.,:/_-]*(?:\r?\n)?$")
+
+
+def heredoc_specs(
+    line: str, initial_quote: str | None
+) -> tuple[list[tuple[str, bool, bool]], str | None]:
+    specs: list[tuple[str, bool, bool]] = []
+    quote = initial_quote
+    escaped = False
+    index = 0
+
+    while index < len(line):
+        character = line[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+        if character == "\\" and quote != "'":
+            escaped = True
+            index += 1
+            continue
+        if quote is not None:
+            if character == quote:
+                quote = None
+            index += 1
+            continue
+        if character in {"'", '"'}:
+            quote = character
+            index += 1
+            continue
+        if line.startswith("<<<", index):
+            index += 3
+            continue
+        if line.startswith("<<", index):
+            arithmetic_start = line.rfind("$((", 0, index)
+            arithmetic_end = line.rfind("))", 0, index)
+            if arithmetic_start > arithmetic_end and "))" in line[index + 2 :]:
+                index += 2
+                continue
+            match = HEREDOC.match(line, index)
+            if match is None:
+                raise AssertionError(
+                    f"workflow run block contains unsupported heredoc syntax: {line[index:].rstrip()}"
+                )
+            delimiter = match.group("quoted") or match.group("plain")
+            specs.append(
+                (delimiter, match.group("strip") == "-", match.group("quote") is not None)
+            )
+            index = match.end()
+            continue
+        index += 1
+
+    return specs, quote
+
+
+def strip_shell_line_comment(
+    line: str, initial_quote: str | None, initial_previous: str
+) -> tuple[str, str | None, str]:
+    result: list[str] = []
+    quote = initial_quote
+    escaped = False
+    comment = False
+
+    for character in line:
+        if comment:
+            if character == "\n":
+                comment = False
+                result.append(character)
+            continue
+
+        if escaped:
+            if character == "\n":
+                result.pop()
+                escaped = False
+                continue
+            result.append(character)
+            escaped = False
+            continue
+
+        if character == "\\" and quote != "'":
+            result.append(character)
+            escaped = True
+            continue
+
+        if quote is not None:
+            result.append(character)
+            if character == quote:
+                quote = None
+            continue
+
+        if character in {"'", '"'}:
+            quote = character
+            result.append(character)
+            continue
+
+        previous = result[-1] if result else initial_previous
+        if (
+            character == "#"
+            and previous in " \t\r\n;|&()"
+            and initial_previous in "\r\n"
+            and not "".join(result).strip()
+            and SAFE_SHELL_COMMENT.fullmatch(line) is not None
+        ):
+            comment = True
+            continue
+
+        result.append(character)
+
+    previous = result[-1] if result else initial_previous
+    return "".join(result), quote, previous
+
+
+def strip_shell_comments(script: str) -> str:
+    result: list[str] = []
+    heredocs: list[tuple[str, bool, bool]] = []
+    quote: str | None = None
+    previous = "\n"
+
+    for line in script.splitlines(keepends=True):
+        if heredocs:
+            delimiter, strip_tabs, _quoted = heredocs[0]
+            candidate = line.rstrip("\r\n")
+            if strip_tabs:
+                candidate = candidate.lstrip("\t")
+
+            if candidate == delimiter:
+                heredocs.pop(0)
+                result.append("\n" if line.endswith("\n") else "")
+            else:
+                result.append(line)
+            continue
+
+        initial_quote = quote
+        executable_line, quote, previous = strip_shell_line_comment(
+            line, initial_quote, previous
+        )
+        line_heredocs, parsed_quote = heredoc_specs(executable_line, initial_quote)
+        require(
+            quote == parsed_quote,
+            "shell comment and heredoc parsers must agree on quote state",
+        )
+        heredocs.extend(line_heredocs)
+        result.append(executable_line)
+
+    if heredocs:
+        raise AssertionError(
+            f"workflow run block contains an unterminated heredoc: {heredocs}"
+        )
+
+    return "".join(result)
+
+
+def executable_run_text(workflow: dict) -> str:
+    scripts: list[str] = []
+    for job in workflow.get("jobs", {}).values():
+        for step in job.get("steps", []):
+            run = step.get("run")
+            if not isinstance(run, str):
+                continue
+            scripts.append(strip_shell_comments(run))
+    return "\n".join(scripts)
+
+
 def validate_runner_free_external_ci_wait(workflow: dict, job_name: str) -> None:
     job = workflow["jobs"][job_name]
-    scripts = "\n".join(step.get("run", "") for step in job.get("steps", []))
+    scripts = executable_run_text({"jobs": {job_name: job}})
     endpoint = re.compile(
         r"commits/[^\s\"']+/(?:check-runs|status)(?:\?per_page=100)?")
     expected_queries = 1 if job_name == "privileged_merge" else 0
@@ -67,7 +235,7 @@ def validate_runner_free_external_ci_wait(workflow: dict, job_name: str) -> None
                 "privileged_merge must retain its one audited literal CI snapshot")
 
     for step in job.get("steps", []):
-        script = step.get("run", "")
+        script = strip_shell_comments(step.get("run", ""))
         require(not re.search(r"\bsleep\b|ci-wait|MERGE_PROBE", script, re.I),
                 f"{job_name} must not sleep or retain a polling-era CI wait")
         queries = list(endpoint.finditer(script))
@@ -418,14 +586,98 @@ def main() -> int:
             "generated promotion callers must accept only trusted explicit dispatches")
 
     forbidden = re.compile(r"\bsleep\b|MERGE_PROBE|ci-wait", re.I)
-    for path, text in ((REVIEW, review_text), (PROMOTE, promote_text), (RETRY, retry_text)):
-        require(not forbidden.search(text), f"{path.name} still contains runner-held waiting")
+    for path, workflow in ((REVIEW, review), (PROMOTE, promote), (RETRY, retry)):
+        require(
+            not forbidden.search(executable_run_text(workflow)),
+            f"{path.name} still contains runner-held waiting",
+        )
     require(promote_text.count("check-runs?per_page=100") == 1,
             "promotion must read required checks once rather than poll")
 
     mutated_review = yaml.safe_load(yaml.safe_dump(review))
     mutated_review["jobs"]["gate"]["steps"].append(
         {"run": "for attempt in $(seq 1 20); do gh api commits/head/check-runs?per_page=100; sleep 30; done"})
+    require(
+        forbidden.search(executable_run_text(mutated_review)) is not None,
+        "runner-held waiting detector must reject executable sleep",
+    )
+
+    mutated_comments = yaml.safe_load(yaml.safe_dump(review))
+    mutated_comments["jobs"]["gate"]["steps"].append(
+        {
+            "run": "# sleep is forbidden here\n"
+                   "# MERGE_PROBE and ci-wait were removed\n"
+                   "printf '%s\\n' ready",
+        }
+    )
+    require(
+        forbidden.search(executable_run_text(mutated_comments)) is None,
+        "runner-held waiting detector must ignore shell comments",
+    )
+    validate_runner_free_external_ci_wait(mutated_comments, "gate")
+    require(
+        "# sleep" in strip_shell_comments("printf '%s\\n' '# sleep'"),
+        "shell comment stripping must preserve hash characters inside quotes",
+    )
+    require(
+        "sleep 30" in strip_shell_comments('printf %s "text\n#"; sleep 30\n'),
+        "multiline double quotes must not hide executable waiting",
+    )
+    require(
+        "sleep 30" in strip_shell_comments("printf %s 'text\n#'; sleep 30\n"),
+        "multiline single quotes must not hide executable waiting",
+    )
+    require(
+        "sleep 30" in strip_shell_comments("printf %s foo\\\n#bar; sleep 30\n"),
+        "line continuations must preserve the shell word boundary before hash",
+    )
+    mutated_continuation = yaml.safe_load(yaml.safe_dump(review))
+    mutated_continuation["jobs"]["gate"]["steps"].append(
+        {"run": "printf %s foo\\\n#bar; sleep 30\n"}
+    )
+    require(
+        forbidden.search(executable_run_text(mutated_continuation)) is not None,
+        "runner-held waiting detector must reject waits after a continued word",
+    )
+    for script, description in (
+        ("printf %s $'foo\\' # still quoted'; sleep 30\n", "ANSI-C quotes"),
+        ('printf %s "${x:-"foo # still nested"}"; sleep 30\n', "nested expansions"),
+        ("[[ x =~ (#$(sleep 30)) ]]\n", "conditional regular expressions"),
+        (
+            "[[ x =~ (\n# $(sleep 30)\n) ]]\n",
+            "multiline conditional regular expressions",
+        ),
+        (
+            "[[ x =~ (\\\n#$(sleep 30)) ]]\n",
+            "continued conditional regular expressions",
+        ),
+    ):
+        mutated_complex_quote = yaml.safe_load(yaml.safe_dump(review))
+        mutated_complex_quote["jobs"]["gate"]["steps"].append({"run": script})
+        require(
+            forbidden.search(executable_run_text(mutated_complex_quote)) is not None,
+            f"runner-held waiting detector must fail closed for {description}",
+        )
+    require(
+        "sleep 30" in strip_shell_comments("count=${#items}; sleep 30\n"),
+        "parameter-length expansion must not hide executable waiting",
+    )
+    require(
+        "sleep 30" in strip_shell_comments("cat <<EOF\n# $(sleep 30)\nEOF\n"),
+        "unquoted heredoc expansion must remain executable to the detector",
+    )
+    require(
+        "sleep 30" in strip_shell_comments("cat <<'EOF'\n# $(sleep 30)\nEOF\n"),
+        "quoted heredoc data must remain visible to fail-closed waiting detection",
+    )
+    mutated_quoted_heredoc = yaml.safe_load(yaml.safe_dump(review))
+    mutated_quoted_heredoc["jobs"]["gate"]["steps"].append(
+        {"run": "bash <<'EOF'\nsleep 30\nEOF\n"}
+    )
+    require(
+        forbidden.search(executable_run_text(mutated_quoted_heredoc)) is not None,
+        "runner-held waiting detector must reject executable quoted heredoc bodies",
+    )
     mutated_promote = yaml.safe_load(yaml.safe_dump(promote))
     mutated_promote["jobs"]["privileged_merge"]["steps"].append(
         {"run": "until gh api commits/head/status?per_page=100; do sleep 30; done"})
