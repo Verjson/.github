@@ -12,6 +12,7 @@ Reverse-chronological index of org-level decisions.
 <!-- prettier-ignore -->
 | # | Date | Decision |
 |---|------|----------|
+| [0207](0207-withhold-issue-mutation-from-terminal-merge-app/README.md) | 2026-09-23 | Withhold issue mutation from the terminal merge App |
 | [0205](0205-protected-consumer-type-surface-baseline/README.md) | 2026-09-23 | Resolve protected consumer type-surface baselines from the PR base |
 | [0204](0204-retire-duplicate-cli-projects-repository-rule/README.md) | 2026-09-23 | Retire duplicate cli-projects repository rule |
 | [0202](0202-bind-autonomous-merge-to-independent-review-receipt/README.md) | 2026-09-23 | Bind autonomous merge to an independent-review receipt |

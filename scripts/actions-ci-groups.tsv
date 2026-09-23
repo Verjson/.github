@@ -135,6 +135,8 @@ merge-gate	bash scripts/ci-gate/privileged-merge-pin-extractor-differential.test
 merge-gate	bash scripts/ci-gate/require-secrets.test.sh
 merge-gate	bash scripts/ci-gate/dispatch-permission.test.sh
 merge-gate	python3 scripts/ci-gate/terminal-merge-app-token.test.py
+merge-gate	python3 scripts/ci-gate/post-merge-cleanup.test.py
+merge-gate	python3 scripts/ci-gate/closing-issue-visibility.test.py
 merge-gate	bash scripts/ci-gate/terminal-live-base.test.sh
 merge-gate	bash scripts/ci-gate/privileged-merge-pin.test.sh
 merge-gate	bash scripts/ci-gate/budget-exceeded.test.sh

@@ -20,13 +20,22 @@ names = [
     "Authorize terminal merge from trusted metadata",
     "Revalidate independent review receipt",
     "Merge the authorized head",
-    "Confirm merge and consume the arm receipt",
+    "Confirm terminal merge state",
+    "Export terminal merge cleanup receipt",
 ]
 for name in names:
     matches = [step for step in steps if step.get("name") == name]
     if len(matches) != 1 or not matches[0].get("run"):
         raise SystemExit(f"missing unique non-empty step: {name}")
     print(matches[0]["run"])
+cleanup_steps = document["jobs"]["cleanup_arm_receipt"]["steps"]
+cleanup = [
+    step
+    for step in cleanup_steps
+    if step.get("name") == "Delete consumed arm receipt artifact"
+]
+if len(cleanup) != 1 or not cleanup[0].get("run"):
+    raise SystemExit("missing unique non-empty cleanup deletion step")
 PY
 [ -s "$tmp/promote.sh" ] || { echo "FAIL - promotion block missing"; exit 1; }
 
@@ -34,6 +43,7 @@ mkdir -p "$tmp/bin" "$tmp/run/.gate-trust/scripts/ci-gate"
 cat >"$tmp/run/.gate-trust/scripts/ci-gate/verify-arm-receipt.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'verify-arm-receipt\n' >>"$CALLS"
+printf '8001\n' >"$ARM_RECEIPT_ARTIFACT_ID_FILE"
 exit "${VERIFY_RC:-0}"
 SH
 chmod 0644 "$tmp/run/.gate-trust/scripts/ci-gate/verify-arm-receipt.sh"
@@ -80,6 +90,10 @@ case "$*" in
   "pr merge "*)
     if [ "${MERGE_CONFIRMED:-true}" = true ]; then
       jq '.state="MERGED"' "$META_FILE" >"$META_FILE.next" && mv "$META_FILE.next" "$META_FILE"
+      if [ -n "${MERGE_CONFIRMED_HEAD:-}" ]; then
+        jq --arg head "$MERGE_CONFIRMED_HEAD" '.headRefOid = $head' "$META_FILE" \
+          >"$META_FILE.next" && mv "$META_FILE.next" "$META_FILE"
+      fi
     fi ;;
   *) echo "unexpected gh call: $*" >&2; exit 2 ;;
 esac
@@ -269,11 +283,28 @@ for self_path in ai-review-merge ai-privileged-merge ai-promotion-retry; do
   fi
 done
 write_base
+: >"$GITHUB_OUTPUT"
 if (export MERGE_CONFIRMED=false; run_promote) >"$tmp/out" 2>&1; then
   fail "unconfirmed merge postcondition did not fail closed"
 else
   pass "unconfirmed merge postcondition fails closed"
 fi
+! grep -q '^terminal_merge_succeeded=true$' "$GITHUB_OUTPUT" \
+  && pass "unconfirmed merge does not export cleanup eligibility" \
+  || fail "unconfirmed merge exported cleanup eligibility"
+
+write_base
+: >"$GITHUB_OUTPUT"
+export MERGE_CONFIRMED_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+if run_promote >"$tmp/out" 2>&1; then
+  fail "wrong-head merged postcondition did not fail closed"
+else
+  pass "wrong-head merged postcondition fails closed"
+fi
+unset MERGE_CONFIRMED_HEAD
+! grep -q '^terminal_merge_succeeded=true$' "$GITHUB_OUTPUT" \
+  && pass "wrong-head merged postcondition does not export cleanup eligibility" \
+  || fail "wrong-head merged postcondition exported cleanup eligibility"
 # A promotion that arrives after the PR left OPEN is a no-op either way, but the
 # two ways are not the same event and must not read the same in the log. MERGED is
 # the ordinary race: a duplicate dispatch for work already landed. CLOSED-unmerged

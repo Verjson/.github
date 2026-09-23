@@ -36,6 +36,11 @@ concurrency:
 jobs:
   resolve:
     runs-on: ${{ github.repository_owner == 'Verjson' && fromJSON(vars.CI_RUNNER_FASTLANE || vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') || 'ubuntu-24.04' }}
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      pull-requests: read
     outputs:
       ready: ${{ steps.resolve.outputs.ready || steps.adoption.outputs.ready }}
       pr_number: ${{ steps.resolve.outputs.pr_number }}
@@ -150,6 +155,12 @@ jobs:
   promote:
     needs: resolve
     if: needs.resolve.outputs.ready == 'true'
+    permissions:
+      actions: write
+      checks: read
+      contents: read
+      issues: read
+      pull-requests: read
     uses: ./.github/workflows/ai-privileged-merge.yml
     secrets: inherit
     with:

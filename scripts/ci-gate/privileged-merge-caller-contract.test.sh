@@ -71,18 +71,23 @@ python3 - "$canonical" <<'PY' && pass "terminal routing has no runner-produced t
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 jobs = d["jobs"]
-if list(jobs) != ["app-key-policy", "invalid_verjson_route", "validate_privileged_lane", "privileged_merge"]:
+if list(jobs) != ["app-key-policy", "invalid_verjson_route", "validate_privileged_lane", "privileged_merge", "cleanup_arm_receipt"]:
     sys.exit(1)
 guard = jobs["invalid_verjson_route"]
 validation = jobs["validate_privileged_lane"]
 merge = jobs["privileged_merge"]
+cleanup = jobs["cleanup_arm_receipt"]
 serialized = str(d)
 for forbidden in ("needs.validate_privileged_lane.outputs", "resolve_privileged_route", "steps.route.outputs"):
     if forbidden in serialized:
         sys.exit(1)
-if any("outputs" in job for job in (guard, validation, merge)):
+if any("outputs" in job for job in (guard, validation)):
     sys.exit(1)
 if merge.get("needs") != ["validate_privileged_lane", "app-key-policy"]:
+    sys.exit(1)
+if set(merge.get("outputs", {})) != {"arm_receipt_artifact_id", "terminal_merge_succeeded"}:
+    sys.exit(1)
+if cleanup.get("needs") != "privileged_merge" or "environment" in cleanup or "secrets" in cleanup:
     sys.exit(1)
 sys.exit(0)
 PY
@@ -117,9 +122,10 @@ def valid(candidate):
     jobs = candidate.get("jobs", {})
     guard = jobs.get("invalid_verjson_route", {})
     merge = jobs.get("privileged_merge", {})
+    cleanup = jobs.get("cleanup_arm_receipt", {})
     guard_steps = guard.get("steps", [])
     return (
-        list(jobs) == ["app-key-policy", "invalid_verjson_route", "validate_privileged_lane", "privileged_merge"]
+        list(jobs) == ["app-key-policy", "invalid_verjson_route", "validate_privileged_lane", "privileged_merge", "cleanup_arm_receipt"]
         and guard.get("if") == want_guard_if
         and guard.get("runs-on") == "ubuntu-24.04"
         and guard.get("timeout-minutes") == 1
@@ -136,7 +142,11 @@ def valid(candidate):
         and merge.get("runs-on") == want_runs_on
         and merge.get("needs") == ["validate_privileged_lane", "app-key-policy"]
         and "outputs" not in jobs["validate_privileged_lane"]
-        and "outputs" not in merge
+        and set(merge.get("outputs", {})) == {"arm_receipt_artifact_id", "terminal_merge_succeeded"}
+        and cleanup.get("needs") == "privileged_merge"
+        and cleanup.get("permissions") == {"actions": "write"}
+        and "environment" not in cleanup
+        and "secrets" not in cleanup
         and all(name in want_if for name in allowed)
         and "vars." not in want_runs_on
         and want_runs_on.count("inputs.privileged_lane") == 1
@@ -425,8 +435,8 @@ sys.exit(0 if got == want and
 SECRETS_PY
 
 python3 - "$tmp/caller.yml" "$tmp/retry.yml" "$canonical" <<'PERMS_PY' \
-  && pass "generated callers grant exactly the canonical terminal verification reads" \
-  || fail "generated caller permissions cannot instantiate the canonical terminal job or were widened"
+  && pass "generated callers grant cleanup write while canonical merge stays read-only" \
+  || fail "generated caller cleanup permission boundary drifted"
 import copy
 import sys
 import yaml
@@ -434,24 +444,31 @@ import yaml
 caller = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
 retry = yaml.safe_load(open(sys.argv[2], encoding="utf-8"))
 canonical = yaml.safe_load(open(sys.argv[3], encoding="utf-8"))
-expected = {
-    "actions": "read",
+caller_expected = {
+    "actions": "write",
     "checks": "read",
     "contents": "read",
+    "issues": "read",
     "pull-requests": "read",
 }
+merge_expected = {**caller_expected, "actions": "read"}
 
 def valid(candidate):
     on = candidate.get(True, candidate.get("on"))
     return (
-        candidate.get("permissions") == expected
+        candidate.get("permissions") == caller_expected
         and set(on) == {"workflow_dispatch"}
         and candidate.get("concurrency", {}).get("cancel-in-progress") is False
     )
 
-if canonical["jobs"]["privileged_merge"].get("permissions") != expected:
+if canonical["jobs"]["privileged_merge"].get("permissions") != merge_expected:
     sys.exit(1)
-if not valid(caller) or retry.get("permissions") != expected:
+cleanup = canonical["jobs"].get("cleanup_arm_receipt", {})
+if cleanup.get("permissions") != {"actions": "write"}:
+    sys.exit(1)
+if "environment" in cleanup or "secrets" in cleanup:
+    sys.exit(1)
+if not valid(caller) or retry.get("permissions") != caller_expected:
     sys.exit(1)
 
 mutations = []
@@ -462,7 +479,7 @@ widened = copy.deepcopy(caller)
 widened["permissions"]["contents"] = "write"
 mutations.append(widened)
 extra = copy.deepcopy(caller)
-extra["permissions"]["issues"] = "read"
+extra["permissions"]["statuses"] = "read"
 mutations.append(extra)
 if any(valid(candidate) for candidate in mutations):
     sys.exit(1)
@@ -559,7 +576,8 @@ d = yaml.safe_load(open(sys.argv[1]))
 on = d.get(True, d.get("on"))
 assert on["workflow_run"]["workflows"] == ["CI", 'x"] , "permissions": "write-all']
 assert d["permissions"] == {
-    "actions": "read", "checks": "read", "contents": "read", "pull-requests": "read"}
+    "actions": "write", "checks": "read", "contents": "read",
+    "issues": "read", "pull-requests": "read"}
 RETRY_QUOTED_PY
 
 # An UNSET shell variable is the common way an operator reaches the default:
