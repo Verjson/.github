@@ -196,6 +196,12 @@ write_base; printf '{"artifacts":[]}\n' >"$ARTIFACTS_FILE"; expect_fail "missing
 write_base; rm "$tmp/archive/receipt.json" "$ZIP_FILE"; printf 'bad\n' >"$tmp/archive/other"; (cd "$tmp/archive" && python3 -m zipfile -c "$ZIP_FILE" other); digest="$(sha256sum "$ZIP_FILE"|awk '{print $1}')"; size="$(wc -c <"$ZIP_FILE")"; jq -nc --argjson size "$size" --arg digest "sha256:$digest" '{artifacts:[{id:8001,name:"ai-review-arm-7001-2",expired:false,size_in_bytes:$size,digest:$digest}]}' >"$ARTIFACTS_FILE"; expect_fail "malformed artifact archive is rejected" verify
 write_base; jq '.artifacts[0].digest="sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"' "$ARTIFACTS_FILE" >"$tmp/x" && mv "$tmp/x" "$ARTIFACTS_FILE"; expect_fail "substituted artifact digest is rejected" verify
 write_base; jq '.app.id=9999' "$CHECK_FILE" >"$tmp/x" && mv "$tmp/x" "$CHECK_FILE"; expect_fail "shared or wrong check-run owner is rejected" verify
+write_base
+jq 'del(.check_app_id, .check_app_slug)' "$tmp/archive/receipt.json" >"$tmp/x" && mv "$tmp/x" "$tmp/archive/receipt.json"
+jq --argjson app "$EXPECTED_APP_ID" --arg slug "$EXPECTED_APP_SLUG" \
+  '.app.id=$app | .app.slug=$slug' "$CHECK_FILE" >"$tmp/x" && mv "$tmp/x" "$CHECK_FILE"
+repack
+expect_fail "legacy review-App-owned receipt is rejected after compatibility retirement" verify
 
 # #931/#943: this script never deletes the receipt itself -- deletion happens
 # too early here, before the calling step's own later work (completing the

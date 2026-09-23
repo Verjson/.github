@@ -158,7 +158,7 @@ case "$*" in
     jq -nc --arg head "${CURRENT_HEAD:-$EXPECTED_HEAD_SHA}" '{state:"open",head:{sha:$head}}' ;;
   "api repos/$TARGET_REPO/check-runs/$AUTHORIZATION_CHECK_ID")
     jq -nc --argjson id "${RETURNED_CHECK_ID:-$AUTHORIZATION_CHECK_ID}" --arg head "$EXPECTED_HEAD_SHA" \
-      --argjson app "${RETURNED_APP_ID:-$EXPECTED_APP_ID}" --arg slug "${RETURNED_APP_SLUG:-$EXPECTED_APP_SLUG}" \
+      --argjson app "${RETURNED_APP_ID:-15368}" --arg slug "${RETURNED_APP_SLUG:-github-actions}" \
       --argjson attempt "$REVIEW_RUN_ATTEMPT" \
       '{id:$id,name:"AI review authorization",head_sha:$head,app:{id:$app,slug:$slug}} +
        (if $attempt == 1 and env.AUTHORIZATION_STATE != "retained" then {status:"in_progress",conclusion:null}
@@ -320,6 +320,7 @@ ZERO_PROVIDER_RECOVERY=true REVIEW_RUN_ATTEMPT=1 expect_fail 'first attempt cann
 ZERO_PROVIDER_RECOVERY=true CURRENT_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa expect_fail 'gate rejects stale recovery head' 'recovery head is stale' gate_admission
 ZERO_PROVIDER_RECOVERY=true RETURNED_CHECK_ID=9002 expect_fail 'gate rejects substituted recovery check' 'check or App identity mismatch' gate_admission
 ZERO_PROVIDER_RECOVERY=true RETURNED_APP_ID=9999 expect_fail 'gate rejects substituted recovery App' 'check or App identity mismatch' gate_admission
+ZERO_PROVIDER_RECOVERY=true RETURNED_APP_ID="$EXPECTED_APP_ID" RETURNED_APP_SLUG="$EXPECTED_APP_SLUG" expect_fail 'gate rejects a legacy review-App-owned authorization check' 'check or App identity mismatch' gate_admission
 ZERO_PROVIDER_RECOVERY=true GATE_CONCLUSION=success expect_fail 'preflight flag cannot bypass prior provider boundary' 'approached the provider boundary' gate_admission
 ZERO_PROVIDER_RECOVERY=true PROVIDER_REVIEW=true expect_fail 'gate refuses existing provider reservation' 'provider reservation, submission, or review evidence' gate_admission
 REVIEW_POLICY=different-policy expect_fail 'invalid receipt cannot reach recovered gate' 'receipt identity mismatch' preflight_to_gate

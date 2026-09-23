@@ -264,9 +264,7 @@ jobs:
             .head_sha == $head and
             .status == "completed" and
             (.conclusion | ascii_upcase) == "SUCCESS" and
-            ((.app.id == 15368 and .app.slug == "github-actions") or
-             (.app.id == (env.EXPECTED_APP_ID | tonumber) and
-              .app.slug == env.EXPECTED_APP_SLUG))
+            .app.id == 15368 and .app.slug == "github-actions"
           ' <<<"$authorization" >/dev/null || {
             echo "::error::authorization is absent, stale, unsuccessful, or from the wrong integration"; exit 1;
           }

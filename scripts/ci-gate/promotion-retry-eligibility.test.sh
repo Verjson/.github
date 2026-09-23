@@ -44,7 +44,7 @@ cat >"$tmp/bin/gh" <<'SH'
 printf '%s\n' "$*" >>"$CALLS"
 case "$*" in
   *"commits/"*"/check-runs --jq "*)
-    expected='[.check_runs[] | select(.name == "AI review authorization" and .head_sha == "'$HEAD_SHA'" and .app.id == '$EXPECTED_APP_ID' and .app.slug == "'$EXPECTED_APP_SLUG'")] | sort_by(.id) | last // {}'
+    expected='[.check_runs[] | select(.name == "AI review authorization" and .head_sha == "'$HEAD_SHA'" and .app.id == 15368 and .app.slug == "github-actions")] | sort_by(.id) | last // {}'
     [ "${*: -1}" = "$expected" ] || { echo "unexpected check selector: ${*: -1}" >&2; exit 2; }
     cat "$CHECK_FILE" ;;
   *"actions/runs/7001 --jq "*) printf '2\n' ;;
@@ -69,9 +69,9 @@ policy() {
 }
 
 write_check() {
-  local summary="$1" head="${2:-$HEAD_SHA}" app_id="${3:-$EXPECTED_APP_ID}"
+  local summary="$1" head="${2:-$HEAD_SHA}" app_id="${3:-15368}" app_slug="${4:-github-actions}"
   jq -nc --arg head "$head" --arg summary "$summary" --argjson app_id "$app_id" \
-    --arg slug "$EXPECTED_APP_SLUG" \
+    --arg slug "$app_slug" \
     '{id:9001,name:"AI review authorization",head_sha:$head,status:"completed",conclusion:"success",details_url:"https://github.com/Verjson/example/actions/runs/7001",app:{id:$app_id,slug:$slug},output:{summary:$summary}}' \
     >"$CHECK_FILE"
 }
@@ -171,6 +171,9 @@ if run_case && grep -qx 'ready=true' "$GITHUB_OUTPUT" \
 else
   fail "exact-head ai-merge App authorization did not become promotion-ready"
 fi
+
+write_check $'The opted-in AI review approved this exact head.\n\n<!-- ai-review-authorized:v1:9001:0123456789abcdef0123456789abcdef01234567:ai-merge -->' "$HEAD_SHA" "$EXPECTED_APP_ID" "$EXPECTED_APP_SLUG"
+expect_noop "legacy review-App-owned authorization cannot trigger promotion retry"
 
 write_check $'The opted-in AI review approved this exact head.\n\n<!-- ai-review-authorized:v1:9001:0123456789abcdef0123456789abcdef01234567:ai-approve -->'
 expect_noop "ai-approve marker cannot satisfy an ai-merge receipt"

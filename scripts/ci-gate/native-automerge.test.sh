@@ -122,8 +122,8 @@ write_base() {
   jq -nc --arg head "$EXPECTED_HEAD_SHA" --arg base "$AUTHORIZED_BASE_SHA" \
     '{state:"open",isDraft:false,title:"change",labels:[],head:{sha:$head},base:{ref:"main",sha:$base}}' >"$BASE_META_FILE"
   cp "$BASE_META_FILE" "$TERMINAL_META_FILE"
-  jq -nc --arg head "$EXPECTED_HEAD_SHA" --argjson app "$EXPECTED_APP_ID" --arg slug "$EXPECTED_APP_SLUG" \
-    '{id:9001,name:"AI review authorization",head_sha:$head,status:"completed",conclusion:"success",app:{id:$app,slug:$slug}}' >"$CHECK_FILE"
+  jq -nc --arg head "$EXPECTED_HEAD_SHA" \
+    '{id:9001,name:"AI review authorization",head_sha:$head,status:"completed",conclusion:"success",app:{id:15368,slug:"github-actions"}}' >"$CHECK_FILE"
   jq -nc --arg head "$EXPECTED_HEAD_SHA" --arg login "${EXPECTED_APP_SLUG}[bot]" --arg check "$AUTHORIZATION_CHECK_ID" \
     --arg marker "<!-- independent-review:v1 pr:${PR_NUMBER} head:${EXPECTED_HEAD_SHA} verdict:approved -->" \
     '[

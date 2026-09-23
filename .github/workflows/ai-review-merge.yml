@@ -1098,12 +1098,11 @@ jobs:
             [ "$marker_pr" = "$PR_NUMBER" ] && [ "$marker_head" = "$review_head" ] || continue
             [ "$marker_head" = "$EXPECTED_HEAD_SHA" ] || continue
             check="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/check-runs/$marker_check")"
-            jq -e --argjson app_id "$EXPECTED_APP_ID" --arg slug "$EXPECTED_APP_SLUG" \
-              --arg head "$marker_head" --arg repo "$TARGET_REPO" --arg pr "$PR_NUMBER" '
-                .name == "AI review authorization" and .head_sha == $head and
-                .app.id == $app_id and .app.slug == $slug and
-                (.external_id | startswith("ai-review:v1:" + $repo + ":" + $pr + ":" + $head + ":"))
-              ' <<<"$check" >/dev/null || {
+          jq -e --arg head "$marker_head" --arg repo "$TARGET_REPO" --arg pr "$PR_NUMBER" '
+            .name == "AI review authorization" and .head_sha == $head and
+            .app.id == 15368 and .app.slug == "github-actions" and
+            (.external_id | startswith("ai-review:v1:" + $repo + ":" + $pr + ":" + $head + ":"))
+          ' <<<"$check" >/dev/null || {
                 echo "::error::App review reservation is not bound to a trusted exact-head authorization check"; exit 1;
               }
             if [ "$marker_kind" = explicit ] && [ "$marker_check" = "$AUTHORIZATION_CHECK_ID" ]; then
@@ -2105,7 +2104,6 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
           permission-contents: read
-          permission-checks: write
           permission-pull-requests: write
 
       - name: Complete exact head authorization
@@ -2122,32 +2120,17 @@ jobs:
           check_file="$RUNNER_TEMP/authorization-check-before-completion.json"
           GH_TOKEN="$ACTIONS_TOKEN" gh api \
             "repos/$TARGET_REPO/check-runs/$AUTHORIZATION_CHECK_ID" >"$check_file"
-          check_app_id="$(jq -r '.app.id // ""' "$check_file")"
           external_prefix="ai-review:v1:$TARGET_REPO:$PR_NUMBER:$EXPECTED_HEAD_SHA:"
           expected_details_url="$GITHUB_SERVER_URL/$TARGET_REPO/actions/runs/$ARM_RUN_ID"
           jq -e --arg head "$EXPECTED_HEAD_SHA" --arg prefix "$external_prefix" \
             --arg details_url "$expected_details_url" --argjson id "$AUTHORIZATION_CHECK_ID" \
-            --argjson legacy_app_id "$EXPECTED_APP_ID" --arg legacy_app_slug "$EXPECTED_APP_SLUG" \
             '.id == $id and .name == "AI review authorization" and .head_sha == $head and
-             ((.app.id == 15368 and .app.slug == "github-actions") or
-              (.app.id == $legacy_app_id and .app.slug == $legacy_app_slug)) and
+             .app.id == 15368 and .app.slug == "github-actions" and
              .status == "in_progress" and .conclusion == null and
              (.external_id | startswith($prefix)) and .details_url == $details_url' \
             "$check_file" >/dev/null || {
               echo "::error::authorization check is not an in-progress receipt-bound check for this exact head"; exit 1;
             }
-          case "$check_app_id" in
-            15368)
-              check_token="$ACTIONS_TOKEN"
-              ;;
-            "$EXPECTED_APP_ID")
-              check_token="$APP_TOKEN"
-              ;;
-            *)
-              echo "::error::authorization check owner is not an approved App identity"
-              exit 1
-              ;;
-          esac
           [ "$MINTED_APP_SLUG" = "$EXPECTED_APP_SLUG" ] || {
             echo "::error::minted App slug does not match the authorization App"
             exit 1
@@ -2281,7 +2264,7 @@ jobs:
               fi
             fi
           fi
-          GH_TOKEN="$check_token" gh api --method PATCH "repos/$TARGET_REPO/check-runs/$AUTHORIZATION_CHECK_ID" \
+          GH_TOKEN="$ACTIONS_TOKEN" gh api --method PATCH "repos/$TARGET_REPO/check-runs/$AUTHORIZATION_CHECK_ID" \
             -f status=completed -f conclusion="$conclusion" \
             -f "output[title]=$title" -f "output[summary]=$summary"
           echo "ai_authorized=$ai_authorized" >> "$GITHUB_OUTPUT"
@@ -2310,8 +2293,6 @@ jobs:
         if: ${{ always() && inputs.authorization_check_id != '' && steps.complete.outcome != 'success' }}
         env:
           ACTIONS_TOKEN: ${{ github.token }}
-          APP_TOKEN: ${{ steps.app-token.outputs.token }}
-          MINTED_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
           AUTHORIZATION_CHECK_ID: ${{ inputs.authorization_check_id }}
           EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
           ARM_RUN_ID: ${{ inputs.arm_run_id }}
@@ -2319,24 +2300,19 @@ jobs:
           TARGET_REPO: ${{ github.repository }}
           APP_KEY_POLICY_RESULT: ${{ needs.app-key-policy.result }}
           AI_REVIEW_ENVIRONMENT: ${{ inputs.ai_review_environment }}
-          EXPECTED_APP_ID: ${{ vars.AI_REVIEW_APP_ID }}
-          EXPECTED_APP_SLUG: ${{ vars.AI_REVIEW_APP_SLUG }}
         run: |
           set -euo pipefail
           [[ "$AUTHORIZATION_CHECK_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
           check_file="$RUNNER_TEMP/authorization-check-finalizer.json"
           GH_TOKEN="$ACTIONS_TOKEN" gh api \
             "repos/$TARGET_REPO/check-runs/$AUTHORIZATION_CHECK_ID" >"$check_file"
-          check_app_id="$(jq -r '.app.id // ""' "$check_file")"
           expected_details_url="$GITHUB_SERVER_URL/$TARGET_REPO/actions/runs/$ARM_RUN_ID"
           jq -e --arg repo "$TARGET_REPO" --arg pr "$PR_NUMBER" \
             --arg run "$ARM_RUN_ID" --arg attempt "$ARM_RUN_ATTEMPT" \
-            --argjson legacy_app_id "$EXPECTED_APP_ID" --arg legacy_app_slug "$EXPECTED_APP_SLUG" \
             --arg details_url "$expected_details_url" --argjson id "$AUTHORIZATION_CHECK_ID" '
             (.external_id | split(":")) as $parts |
             .id == $id and .name == "AI review authorization" and
-            ((.app.id == 15368 and .app.slug == "github-actions") or
-             (.app.id == $legacy_app_id and .app.slug == $legacy_app_slug)) and
+            .app.id == 15368 and .app.slug == "github-actions" and
             .details_url == $details_url and ($parts | length) == 8 and
             $parts[0] == "ai-review" and $parts[1] == "v1" and
             $parts[2] == $repo and $parts[3] == $pr and
@@ -2346,22 +2322,6 @@ jobs:
           ' "$check_file" >/dev/null || {
             echo "::error::refusing to modify a check outside this exact arm run"; exit 1;
           }
-          case "$check_app_id" in
-            15368)
-              check_token="$ACTIONS_TOKEN"
-              ;;
-            "$EXPECTED_APP_ID")
-              [ "$MINTED_APP_SLUG" = "$EXPECTED_APP_SLUG" ] || {
-                echo "::error::authorization App token is unavailable for an App-owned check"
-                exit 1
-              }
-              check_token="$APP_TOKEN"
-              ;;
-            *)
-              echo "::error::authorization check owner is not an approved App identity"
-              exit 1
-              ;;
-          esac
           if [ "$(jq -r '.status' "$check_file")" = completed ]; then
             exit 0
           fi
@@ -2370,7 +2330,7 @@ jobs:
           else
             summary="$(jq -nr --arg environment "$AI_REVIEW_ENVIRONMENT" '"AI_REVIEW_APP_PRIVATE_KEY validation or review environment admission failed for \($environment); no App token was minted."')"
           fi
-          GH_TOKEN="$check_token" gh api --method PATCH \
+          GH_TOKEN="$ACTIONS_TOKEN" gh api --method PATCH \
             "repos/$TARGET_REPO/check-runs/$AUTHORIZATION_CHECK_ID" \
             -f status=completed -f conclusion=failure \
             -f 'output[title]=AI review authorization failed before completion' \
