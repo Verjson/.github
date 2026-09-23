@@ -640,10 +640,15 @@ prepare_archive_case() {
   rm -rf "$tmp/archive-cases/runner-temps/$mutation"
   mkdir -p "$tmp/archive-cases/runner-temps/$mutation"
   if [ "$mutation" = public-cache ] || [ "$mutation" = public-cache-masked ] \
-    || [ "$mutation" = public-cache-residue ]; then
+    || [ "$mutation" = public-cache-residue ] \
+    || [ "$mutation" = public-cache-file-link ]; then
     local content_root="$tmp/archive-cases/runner-temps/$mutation/$runtime_cache_name/_cacache/content-v2"
     mkdir -p "$content_root/${public_cache_sentinel%/*}"
     printf '%s\n' verified-public-blob > "$content_root/$public_cache_sentinel"
+    if [ "$mutation" = public-cache-file-link ]; then
+      printf '%s\n' host-content-must-not-cross-boundary > "$fixture/outside-cache"
+      ln -s "$fixture/outside-cache" "$content_root/top-level-file-link"
+    fi
   fi
   printf '%s\n' '{"name":"@verjson/identity-contracts","version":"0.1.0"}' \
     > "$fixture/node_modules/@verjson/identity-contracts/package.json"
@@ -924,6 +929,20 @@ else
     "$tmp/archive-cases/public-cache/run.stderr"
 fi
 
+if run_public_cache_case public-cache-file-link \
+  "$tmp/archive-cases/runner-temps/public-cache-file-link/$runtime_cache_name"; then
+  fail "a top-level public-cache file symlink reached the compatibility sandbox"
+elif [ -e "$tmp/archive-cases/public-cache-file-link/compat-results/consumer-ran" ]; then
+  fail "a top-level public-cache file symlink ran consumer code before rejection"
+elif grep -qF 'compatibility public cache blob is not a regular file' \
+  "$tmp/archive-cases/public-cache-file-link/run.stderr" \
+  && ! grep -qF 'host-content-must-not-cross-boundary' \
+  "$tmp/archive-cases/public-cache-file-link/run.stderr"; then
+  pass "a top-level public-cache file symlink is rejected by lstat before copying"
+else
+  fail "a top-level public-cache file symlink failed without the confinement reason"
+fi
+
 if run_public_cache_case public-cache-absent \
   "$tmp/archive-cases/runner-temps/public-cache-absent/$runtime_cache_name" false; then
   absent_cache_status=0
@@ -1050,12 +1069,54 @@ fi
 # with a differently-shaped list rather than trusting the comment.
 python3 - "$tmp/run-lanes.sh" "$tmp/protected-run-lanes.sh" <<'PY'
 import ast
+import re
+import subprocess
 import sys
 from pathlib import Path
 
 MARKER = "python3 - <<'PY'\n"
 TARGET = "/dev/shm/npm-cache/_cacache/content-v2"
 STAGING = "/runner-temp/verjson-compatibility-public-cache-x/content-v2"
+EXPECTED_MOUNT_OPTIONS = {
+    "--bind": ("SRC", "DEST"),
+    "--dir": ("DEST",),
+    "--ro-bind": ("SRC", "DEST"),
+    "--ro-bind-try": ("SRC", "DEST"),
+    "--tmpfs": ("DEST",),
+}
+
+
+def bwrap_option_operands():
+    completed = subprocess.run(
+        ["/usr/bin/bwrap", "--help"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    options = {}
+    for line in (completed.stdout + completed.stderr).splitlines():
+        synopsis = re.split(r"\s{2,}", line.strip(), maxsplit=1)[0]
+        fields = synopsis.split()
+        if fields and fields[0].startswith("--"):
+            options[fields[0]] = tuple(fields[1:])
+    return options
+
+
+def assert_mount_table_matches_bwrap(table, bwrap_options):
+    assert set(table) == set(EXPECTED_MOUNT_OPTIONS), (
+        "PUBLIC_CACHE_MOUNT_ARITY changed without an explicit supported-flag decision"
+    )
+    for option, expected_operands in EXPECTED_MOUNT_OPTIONS.items():
+        assert bwrap_options.get(option) == expected_operands, (
+            f"installed bwrap synopsis for {option} changed: "
+            f"{bwrap_options.get(option)!r}"
+        )
+        arity, destination = table[option]
+        assert arity == len(expected_operands), option
+        assert destination == expected_operands.index("DEST") + 1, option
+
+
+bwrap_options = bwrap_option_operands()
 
 for lane_path in sys.argv[1:]:
     source = Path(lane_path).read_text(encoding="utf-8")
@@ -1085,6 +1146,24 @@ for lane_path in sys.argv[1:]:
     namespace = {"Path": Path}
     exec(compile(ast.Module(definitions, type_ignores=[]), "<lanes>", "exec"), namespace)
     derive = namespace["public_cache_bind_targets"]
+    mount_table = namespace["PUBLIC_CACHE_MOUNT_ARITY"]
+    assert_mount_table_matches_bwrap(mount_table, bwrap_options)
+
+    # Negative controls prove both arity drift and an unreviewed expansion of
+    # the accepted subset are rejected by the bwrap synopsis contract.
+    malformed_tables = []
+    wrong_arity = dict(mount_table)
+    wrong_arity["--tmpfs"] = (2, 1)
+    malformed_tables.append(wrong_arity)
+    expanded_subset = dict(mount_table)
+    expanded_subset["--bind-try"] = (2, 2)
+    malformed_tables.append(expanded_subset)
+    for malformed_table in malformed_tables:
+        try:
+            assert_mount_table_matches_bwrap(malformed_table, bwrap_options)
+        except AssertionError:
+            continue
+        raise AssertionError(f"{lane_path}: malformed bwrap mount table was accepted")
 
     assert derive(["--bind", STAGING, TARGET]) == [Path(TARGET)], lane_path
     assert derive([]) == [], lane_path
@@ -1300,6 +1379,40 @@ PY
     pass "removing workspace symlink confinement admits a link and exposes the absolute escape probe"
   else
     fail "workspace symlink confinement mutation did not expose its link escape probes"
+  fi
+
+  public_cache_link_mutation_root="$tmp/public-cache-file-link-mutation"
+  mkdir -p "$public_cache_link_mutation_root/.github/workflows" \
+    "$public_cache_link_mutation_root/scripts/ci-gate" "$public_cache_link_mutation_root/docs"
+  cp "$0" "$public_cache_link_mutation_root/scripts/ci-gate/node-ci-secretless-compatibility.test.sh"
+  cp "$protected_workflow" "$public_cache_link_mutation_root/.github/workflows/node-ci-protected.yml"
+  cp "$documentation" "$public_cache_link_mutation_root/docs/node-workflows.md"
+  python3 - "$workflow" "$public_cache_link_mutation_root/.github/workflows/node-ci.yml" <<'PY'
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1]).read_text(encoding="utf-8")
+needle = "blob_metadata = blob.lstat()"
+assert source.count(needle) == 1
+Path(sys.argv[2]).write_text(
+    source.replace(needle, "blob_metadata = blob.stat()"), encoding="utf-8"
+)
+PY
+  if VERJSON_DIAGNOSTIC_MUTATION_CHILD=true \
+    bash "$public_cache_link_mutation_root/scripts/ci-gate/node-ci-secretless-compatibility.test.sh" \
+    >"$public_cache_link_mutation_root/run.log" 2>&1; then
+    public_cache_link_mutation_status=0
+  else
+    public_cache_link_mutation_status=$?
+  fi
+  if [ "$public_cache_link_mutation_status" -eq 1 ] \
+    && grep -qFx 'not ok - a top-level public-cache file symlink reached the compatibility sandbox' \
+    "$public_cache_link_mutation_root/run.log" \
+    && ! grep -qFx 'ok - a top-level public-cache file symlink is rejected by lstat before copying' \
+    "$public_cache_link_mutation_root/run.log"; then
+    pass "the malicious-cache fixture fails when lstat is weakened to stat"
+  else
+    fail "the malicious-cache fixture did not detect a weakened file-type check"
   fi
 
   absent_cache_mutation_root="$tmp/absent-public-cache-mutation"

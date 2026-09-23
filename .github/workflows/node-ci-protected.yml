@@ -6336,7 +6336,10 @@ jobs:
                               "compatibility public cache content is not a directory")
                   for name in names:
                       blob = Path(directory, name)
-                      if not stat.S_ISREG(blob.lstat().st_mode):
+                      # lstat is intentional: a cache entry may be a symlink to
+                      # a regular host file, including directly under content-v2.
+                      blob_metadata = blob.lstat()
+                      if not stat.S_ISREG(blob_metadata.st_mode):
                           raise SystemExit(
                               "compatibility public cache blob is not a regular file")
                       shutil.copyfile(blob, staging / relative / name)
@@ -6385,7 +6388,12 @@ jobs:
                       )
 
 
-          # bwrap consumes each of these flags with a fixed arity, and only the
+          # This is the fail-closed subset of bwrap mount-producing flags that
+          # public_cache_arguments may contain, not an inventory of every bwrap
+          # option. The compatibility contract parses the installed `bwrap
+          # --help` synopsis and verifies each accepted flag's operand count and
+          # DEST offset. Adding a flag requires updating that contract first.
+          # bwrap consumes each accepted flag with a fixed arity, and only the
           # offset named here becomes a mountpoint inside the sandbox. Walking
           # the list by that table is what makes the ambient-mask guard below
           # actually derived from the bind arguments: a positional slice holds
