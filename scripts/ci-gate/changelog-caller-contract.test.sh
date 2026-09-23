@@ -41,7 +41,7 @@ skip() { printf 'skip - %s\n' "$1"; }
 workflow='' generated_artifacts='' generated_artifacts_with_adr=''
 adr_index_generator='' pr_gate='' release_node_workflow=''
 renovate_attribution='' default_release='' custom_release=''
-custom_contract='' adr_index_test=''
+component_release='' custom_contract='' adr_index_test=''
 mode_capture_failures=0
 capture_mode() {
   local target="$1"
@@ -79,6 +79,7 @@ capture_mode workflow workflow "$sha"
 capture_mode renderer renderer "$sha"
 capture_mode default_release release-node "$sha"
 capture_mode custom_release release-node "$sha" --scope @acme --node-version 22.23.1 --package-dir compat --release-asset contract/schema.graphql --release-asset contract/schema.sha256
+capture_mode component_release release-node "$sha" --only-package-dir packages/cli-schema --default-prefix schema-v --default-component cli-schema
 capture_mode custom_contract contract-test "$sha" --scope @acme --node-version 22.23.1 --package-dir compat --release-asset contract/schema.graphql --release-asset contract/schema.sha256
 capture_mode generated_artifacts generated-artifacts "$sha"
 capture_mode generated_artifacts_with_adr generated-artifacts-with-adr-index "$sha"
@@ -364,6 +365,69 @@ grep -qF "node-version: \${{ '24' }}" <<<"$default_release" \
   && grep -q "scope: '@verjson'" <<<"$default_release" \
   && pass "release-node keeps the Verjson and Node 24 defaults" \
   || fail "release-node changed its backward-compatible defaults"
+component_trigger="$(sed -n '/^on:$/,/^permissions:$/p' <<<"$component_release" | sed '$d')"
+expected_component_trigger="$(cat <<'YAML'
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Optional exact SemVer tag; blank derives the next version from selected fragments
+        required: false
+        type: string
+        default: ''
+      prefix:
+        description: Exact version namespace prefix; independent from component
+        required: false
+        type: string
+        default: 'schema-v'
+      expected_head:
+        description: Optional exact default-branch head derived by release-propose
+        required: false
+        type: string
+        default: ''
+      selector_digest:
+        description: Optional canonical selection digest derived by release-propose
+        required: false
+        type: string
+        default: ''
+      fragments:
+        description: Newline-separated NEXT fragment filenames; empty selects the requested component stream
+        required: false
+        type: string
+        default: ''
+      component:
+        description: Optional component stream; empty selects only unscoped fragments
+        required: false
+        type: string
+        default: 'cli-schema'
+
+YAML
+)"
+[ "$component_trigger" = "$expected_component_trigger" ] \
+  && grep -qF 'release-node '"$sha"' --default-prefix schema-v --default-component cli-schema --only-package-dir packages/cli-schema' <<<"$component_release" \
+  && pass "release-node emits byte-exact component workflow defaults (#1565)" \
+  || fail "release-node component workflow defaults or provenance differ from the canonical bytes"
+yaml_keyword_release="$(bash "$gen" release-node "$sha" --default-prefix null-v --default-component null)"
+[ "$(grep -cF "default: 'null-v'" <<<"$yaml_keyword_release")" -eq 1 ] \
+  && [ "$(grep -cF "default: 'null'" <<<"$yaml_keyword_release")" -eq 1 ] \
+  && pass "component defaults remain strings when their names are YAML keywords (#1565)" \
+  || fail "component defaults permit YAML scalar coercion"
+for component_mode in release-snapshot release-artifact; do
+  if [ "$component_mode" = release-artifact ]; then
+    component_mode_release="$(bash "$gen" "$component_mode" "$sha" --build-runner ubuntu-24.04 --default-prefix schema-v --default-component cli-schema)"
+  else
+    component_mode_release="$(bash "$gen" "$component_mode" "$sha" --default-prefix schema-v --default-component cli-schema)"
+  fi
+  component_mode_trigger="$(sed -n '/^on:$/,/^permissions:$/p' <<<"$component_mode_release" | sed '$d')"
+  [ "$component_mode_trigger" = "$expected_component_trigger" ] \
+    && pass "$component_mode emits the same byte-exact component workflow defaults (#1565)" \
+    || fail "$component_mode component workflow defaults differ from release-node"
+done
+if bash "$gen" contract-test "$sha" --default-prefix schema-v --default-component cli-schema >/dev/null 2>&1; then
+  fail "contract-test accepted release-caller-only default options"
+else
+  pass "non-release modes reject release-caller default options (#1565)"
+fi
 grep -qF '# The verification suite runs after package.json has been stamped to the' <<<"$default_release" \
   && grep -qF '# dispatched version. Its expected version must be read dynamically from' <<<"$default_release" \
   && grep -qF '# package.json; never assert a hardcoded version literal.' <<<"$default_release" \
@@ -426,6 +490,16 @@ for bad_args in \
   "--node-version 022" \
   "--node-version 22.0.0.1" \
   "--node-version 24 --node-version 22" \
+  "--default-prefix schema-v" \
+  "--default-component cli-schema" \
+  "--default-prefix v --default-component cli-schema" \
+  "--default-prefix Schema-v --default-component cli-schema" \
+  "--default-prefix schema --default-component cli-schema" \
+  "--default-prefix schema-v --default-component CLI-schema" \
+  "--default-prefix schema-v --default-component -cli-schema" \
+  "--default-prefix schema-v --default-component aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+  "--default-prefix schema-v --default-prefix other-v --default-component cli-schema" \
+  "--default-prefix schema-v --default-component cli-schema --default-component other" \
   "--package-dir ../compat" \
   "--package-dir /tmp/compat" \
   "--package-dir -compat" \
@@ -1179,16 +1253,36 @@ run_adopter "$event_selected_proposer" \
 
 nested_adopter="$tmproot/adopter-nested-only-release"
 build_adopter "$nested_adopter"
-bash "$gen" release-node "$sha" --only-package-dir packages/cli-schema >"$nested_adopter/.github/workflows/release.yml"
+bash "$gen" release-node "$sha" --only-package-dir packages/cli-schema \
+  --default-prefix schema-v --default-component cli-schema \
+  >"$nested_adopter/.github/workflows/release.yml"
 bash "$gen" contract-test "$sha" --only-package-dir packages/cli-schema >"$nested_adopter/scripts/changelog-contract.test.sh"
 run_adopter "$nested_adopter" \
-  && pass "nested-only release and contract agree without selecting root (#1286)" \
+  && pass "nested-only release and contract agree on component defaults without selecting root (#1286, #1565)" \
   || fail "nested-only generated contract failed: $(tail -2 "$tmproot/run.out")"
+sed -i "s/default: 'schema-v'/default: v/" \
+  "$nested_adopter/.github/workflows/release.yml"
+run_adopter "$nested_adopter" \
+  && fail "component release contract accepted a mutated default prefix" \
+  || pass "component release contract rejects default-prefix byte drift (#1565)"
+bash "$gen" release-node "$sha" --only-package-dir packages/cli-schema \
+  --default-prefix schema-v --default-component cli-schema \
+  >"$nested_adopter/.github/workflows/release.yml"
+sed -i "s/default: 'cli-schema'/default: ''/" \
+  "$nested_adopter/.github/workflows/release.yml"
+run_adopter "$nested_adopter" \
+  && fail "component release contract accepted a mutated default component" \
+  || pass "component release contract rejects default-component byte drift (#1565)"
+bash "$gen" release-node "$sha" --only-package-dir packages/cli-schema \
+  --default-prefix schema-v --default-component cli-schema \
+  >"$nested_adopter/.github/workflows/release.yml"
 sed -i 's/package_dirs=(packages\/cli-schema)/package_dirs=(. packages\/cli-schema)/' "$nested_adopter/.github/workflows/release.yml"
 run_adopter "$nested_adopter" \
   && fail "nested-only contract accepted an extra root verification stamp" \
   || pass "nested-only contract rejects extra root verification stamp (#1286)"
-bash "$gen" release-node "$sha" --only-package-dir packages/cli-schema >"$nested_adopter/.github/workflows/release.yml"
+bash "$gen" release-node "$sha" --only-package-dir packages/cli-schema \
+  --default-prefix schema-v --default-component cli-schema \
+  >"$nested_adopter/.github/workflows/release.yml"
 sed -i 's/\["packages\/cli-schema"\]/[".","packages\/cli-schema"]/' "$nested_adopter/.github/workflows/release.yml"
 run_adopter "$nested_adopter" \
   && fail "nested-only contract accepted root publication" \
