@@ -2065,6 +2065,108 @@ class ChangelogContractTests(unittest.TestCase):
                     finally:
                         self.root = original_root
 
+    def test_non_dependency_change_requires_a_new_fragment(self) -> None:
+        self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
+        self.init_git()
+        self.commit_all("base")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        runbook = self.root / "docs" / "runbook.md"
+        runbook.parent.mkdir(parents=True, exist_ok=True)
+        runbook.write_text("Documented behavior.\n", encoding="utf-8")
+        self.commit_all("document behavior")
+
+        with self.assertRaisesRegex(
+            changelog.ChangelogError,
+            "release-relevant changes require a new NEXT fragment",
+        ):
+            changelog.check_pr(self.root, base, "HEAD")
+
+    def test_non_dependency_change_with_a_new_valid_fragment_is_accepted(self) -> None:
+        self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
+        self.init_git()
+        self.commit_all("base")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        runbook = self.root / "docs" / "runbook.md"
+        runbook.parent.mkdir(parents=True, exist_ok=True)
+        runbook.write_text("Documented behavior.\n", encoding="utf-8")
+        fragment(
+            self.root,
+            "2026-07-30-issue-249-contract.md",
+            impact="patch",
+        )
+        self.commit_all("document behavior with fragment")
+
+        changelog.check_pr(self.root, base, "HEAD")
+
+    def test_non_dependency_change_cannot_delete_its_fragment_later(self) -> None:
+        self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
+        self.init_git()
+        self.commit_all("base")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        runbook = self.root / "docs" / "runbook.md"
+        runbook.parent.mkdir(parents=True, exist_ok=True)
+        runbook.write_text("Documented behavior.\n", encoding="utf-8")
+        added = fragment(
+            self.root,
+            "2026-07-30-issue-249-contract.md",
+            impact="patch",
+        )
+        self.commit_all("document behavior with fragment")
+        added.unlink()
+        self.commit_all("remove fragment")
+
+        with self.assertRaisesRegex(
+            changelog.ChangelogError,
+            "release-relevant changes require a new NEXT fragment",
+        ):
+            changelog.check_pr(self.root, base, "HEAD")
+
+    def test_test_only_change_does_not_require_a_fragment(self) -> None:
+        self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
+        self.init_git()
+        self.commit_all("base")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        fixture = self.root / "tests" / "fixtures" / "response.json"
+        fixture.parent.mkdir(parents=True, exist_ok=True)
+        fixture.write_text('{"ok":true}\n', encoding="utf-8")
+        self.commit_all("test fixture")
+
+        changelog.check_pr(self.root, base, "HEAD")
+
+    def test_executable_github_yaml_takes_precedence_over_test_exemptions(self) -> None:
+        paths = (
+            ".github/workflows/ci.test.yml",
+            ".github/workflows/release.spec.yaml",
+            ".github/actions/test/action.yml",
+            "tests/action.yml",
+            "packages/foo/tests/action.yaml",
+        )
+
+        for changed_path in paths:
+            with self.subTest(path=changed_path):
+                original_root = self.root
+                try:
+                    with tempfile.TemporaryDirectory() as directory:
+                        self.root = Path(directory)
+                        self.root.joinpath("README.md").write_text(
+                            "base\n", encoding="utf-8"
+                        )
+                        self.init_git()
+                        self.commit_all("base")
+                        base = run(self.root, "git", "rev-parse", "HEAD")
+                        changed = self.root / changed_path
+                        changed.parent.mkdir(parents=True, exist_ok=True)
+                        changed.write_text("name: executable\n", encoding="utf-8")
+                        self.commit_all("add executable github yaml")
+
+                        with self.assertRaisesRegex(
+                            changelog.ChangelogError,
+                            "release-relevant changes require a new NEXT fragment",
+                        ):
+                            changelog.check_pr(self.root, base, "HEAD")
+                finally:
+                    self.root = original_root
+
     def test_production_source_change_requires_a_new_fragment(self) -> None:
         """#1324: a tools-only source change landed undocumented in the running log."""
         self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
@@ -2236,8 +2338,7 @@ class ChangelogContractTests(unittest.TestCase):
         ):
             changelog.check_pr(self.root, base, "HEAD")
 
-    def test_workflow_definition_change_is_reported_not_rejected(self) -> None:
-        """Renovate auto-merges action-pin bumps under a preset this repo cannot change."""
+    def test_workflow_definition_change_requires_a_fragment(self) -> None:
         self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
         self.init_git()
         self.commit_all("base")
@@ -2247,17 +2348,13 @@ class ChangelogContractTests(unittest.TestCase):
         workflow.write_text("name: candidate\n", encoding="utf-8")
         self.commit_all("renovate action pin bump")
 
-        captured = io.StringIO()
-        with mock.patch.dict(
-            os.environ, {"GITHUB_ACTIONS": "false"}
-        ), contextlib.redirect_stderr(captured):
+        with self.assertRaisesRegex(
+            changelog.ChangelogError,
+            "release-relevant changes require a new NEXT fragment",
+        ):
             changelog.check_pr(self.root, base, "HEAD")
-        self.assertIn(
-            ".github/workflows/container-candidate.yml", captured.getvalue()
-        )
-        self.assertIn("no new valid NEXT fragment", captured.getvalue())
 
-    def test_root_action_definition_is_reported_not_ignored(self) -> None:
+    def test_root_action_definition_requires_a_fragment(self) -> None:
         """#1324 review: a published action's entrypoint lives outside `.github/`."""
         for filename in ("action.yml", "action.yaml"):
             with self.subTest(filename=filename), tempfile.TemporaryDirectory() as temporary:
@@ -2273,19 +2370,18 @@ class ChangelogContractTests(unittest.TestCase):
                     )
                     self.commit_all("change the published action entrypoint")
 
-                    captured = io.StringIO()
-                    with mock.patch.dict(
-                        os.environ, {"GITHUB_ACTIONS": "false"}
-                    ), contextlib.redirect_stderr(captured):
+                    with self.assertRaisesRegex(
+                        changelog.ChangelogError,
+                        "release-relevant changes require a new NEXT fragment",
+                    ):
                         changelog.check_pr(self.root, base, "HEAD")
-                    self.assertIn(filename, captured.getvalue())
                 finally:
                     self.root = original_root
 
-    def test_nested_action_definition_outside_github_is_not_a_workflow(self) -> None:
-        self.assertIsNone(changelog.WORKFLOW_DEFINITION.match("vendor/action.yml"))
+    def test_nested_action_definition_is_release_relevant_config(self) -> None:
+        self.assertTrue(changelog.is_release_relevant_change("vendor/action.yml"))
 
-    def test_invalid_fragment_does_not_silence_the_workflow_report(self) -> None:
+    def test_invalid_fragment_does_not_satisfy_a_config_change(self) -> None:
         """#1324 review: gating on added fragments let an unparseable one buy silence."""
         self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
         self.init_git()
@@ -2299,17 +2395,13 @@ class ChangelogContractTests(unittest.TestCase):
         invalid.write_text("no front matter\n", encoding="utf-8")
         self.commit_all("workflow change with an invalid fragment")
 
-        captured = io.StringIO()
-        with mock.patch.dict(
-            os.environ, {"GITHUB_ACTIONS": "false"}
-        ), contextlib.redirect_stderr(captured):
+        with self.assertRaisesRegex(
+            changelog.ChangelogError,
+            "release-relevant changes require a new valid NEXT fragment",
+        ):
             changelog.check_pr(self.root, base, "HEAD")
-        self.assertIn(
-            ".github/workflows/container-candidate.yml", captured.getvalue()
-        )
-        self.assertIn("no new valid NEXT fragment", captured.getvalue())
 
-    def test_workflow_report_annotates_under_actions(self) -> None:
+    def test_workflow_failure_is_not_downgraded_under_actions(self) -> None:
         """#1324 review: a bare stderr line from a step that exits 0 is invisible."""
         self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
         self.init_git()
@@ -2331,33 +2423,16 @@ class ChangelogContractTests(unittest.TestCase):
                 "GITHUB_STEP_SUMMARY": str(step_summary),
             },
         ), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            changelog.check_pr(self.root, base, "HEAD")
+            with self.assertRaisesRegex(
+                changelog.ChangelogError,
+                "release-relevant changes require a new NEXT fragment",
+            ):
+                changelog.check_pr(self.root, base, "HEAD")
 
-        self.assertIn("::warning title=undocumented workflow definitions::", out.getvalue())
-        self.assertIn(".github/workflows/container-candidate.yml", out.getvalue())
+        self.assertEqual("", out.getvalue())
         self.assertEqual("", err.getvalue())
         summary_text = step_summary.read_text(encoding="utf-8")
-        self.assertIn("[!WARNING]", summary_text)
-        self.assertIn(".github/workflows/container-candidate.yml", summary_text)
-
-    def test_workflow_report_escapes_workflow_command_delimiters(self) -> None:
-        out = io.StringIO()
-        with mock.patch.dict(
-            os.environ, {"GITHUB_ACTIONS": "true"}, clear=True
-        ), contextlib.redirect_stdout(out):
-            changelog.report_warning("title", "first 100% done\nsecond")
-        self.assertIn("first 100%25 done%0Asecond", out.getvalue())
-        self.assertEqual(1, out.getvalue().count("\n"))
-
-    def test_workflow_report_falls_back_to_stderr_outside_actions(self) -> None:
-        err = io.StringIO()
-        out = io.StringIO()
-        with mock.patch.dict(
-            os.environ, {"GITHUB_ACTIONS": "false"}
-        ), contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
-            changelog.report_warning("title", "a plain finding")
-        self.assertEqual("warning: a plain finding\n", err.getvalue())
-        self.assertEqual("", out.getvalue())
+        self.assertEqual("", summary_text)
 
     def test_workflow_definition_change_with_a_fragment_reports_nothing(self) -> None:
         self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
@@ -2400,7 +2475,7 @@ class ChangelogContractTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertTrue(changelog.is_dependency_file(path))
 
-    def test_dockerignore_only_change_needs_no_fragment(self) -> None:
+    def test_dockerignore_is_not_a_dependency_but_still_requires_release_context(self) -> None:
         self.root.joinpath("Dockerfile").write_text("FROM node:22\n", encoding="utf-8")
         self.init_git()
         self.commit_all("base")
@@ -2411,7 +2486,11 @@ class ChangelogContractTests(unittest.TestCase):
         self.root.joinpath(".dockerignore").write_text(".git\n", encoding="utf-8")
         self.commit_all("exclude build context noise")
 
-        changelog.check_pr(self.root, base, "HEAD")
+        with self.assertRaisesRegex(
+            changelog.ChangelogError,
+            "release-relevant changes require a new NEXT fragment",
+        ):
+            changelog.check_pr(self.root, base, "HEAD")
 
     def test_dependency_change_with_a_new_valid_fragment_is_accepted(self) -> None:
         self.root.joinpath("package.json").write_text('{"version":"1.0.0"}\n', encoding="utf-8")
@@ -2461,7 +2540,7 @@ class ChangelogContractTests(unittest.TestCase):
         with self.assertRaisesRegex(changelog.ChangelogError, "new NEXT fragment"):
             changelog.check_pr(self.root, base, "HEAD")
 
-    def test_similar_non_dependency_names_do_not_require_a_fragment(self) -> None:
+    def test_similar_names_are_not_dependencies_but_require_release_context(self) -> None:
         false_positives = (
             "package.json.md",
             "package-lock.yaml",
@@ -2492,7 +2571,11 @@ class ChangelogContractTests(unittest.TestCase):
             path.write_text("not a dependency boundary\n", encoding="utf-8")
         self.commit_all("documentation and similarly named files")
 
-        changelog.check_pr(self.root, base, "HEAD")
+        with self.assertRaisesRegex(
+            changelog.ChangelogError,
+            "release-relevant changes require a new NEXT fragment",
+        ):
+            changelog.check_pr(self.root, base, "HEAD")
 
     def test_check_pr_fails_closed_on_an_empty_revision(self) -> None:
         """An empty revision is refused, not silently reinterpreted as HEAD.
@@ -2561,6 +2644,13 @@ class ChangelogContractTests(unittest.TestCase):
         self.commit_all("base")
         base = run(self.root, "git", "rev-parse", "HEAD")
         self.root.joinpath("README.md").write_text("documentation only\n", encoding="utf-8")
+        fragment(
+            self.root,
+            "2026-07-31-issue-250-documentation.md",
+            date="2026-07-31",
+            issue="250",
+            impact="patch",
+        )
         self.commit_all("documentation")
 
         for argv in (
