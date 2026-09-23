@@ -1,4 +1,4 @@
-# 0203 — Resolve protected consumer type-surface baselines from the PR base
+# 0205 — Resolve protected consumer type-surface baselines from the PR base
 
 - **Date:** 2026-09-23
 - **Issue:** [Verjson/.github#1575](https://github.com/Verjson/.github/issues/1575)
