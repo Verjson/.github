@@ -67,3 +67,15 @@ extracted moved into `scripts/ci-gate/post-merge-reconcile.sh` and is driven the
 registered `scripts/ci-gate/post-merge-reconcile.test.sh`. The decision recorded above is
 unchanged — the gate still files follow-up issues rather than blocking on non-blocking
 findings — only the sentence about which file proves it was stale. See [ADR 0181](../0181-adr-coverage-claims-follow-their-tests/README.md).
+
+## Amendment (2026-09-23, #1564) — provider instructions spell out scalar follow-up fields
+
+Production responses showed that naming the allowed `followups` keys was not enough to
+keep providers from encoding severity and recommendation as an object-valued `note`.
+The closed verdict schema and fail-closed behavior remain unchanged. The provider
+instruction now states that `location` and `note` are strings, with `note` containing
+non-empty text, and incident fixtures prove both object-valued notes and extra keys are
+rejected with typed, content-free diagnostics. This aligns the original follow-up
+decision with [ADR 0107](../0107-retain-typed-ai-extraction-diagnostics/README.md) and
+[ADR 0142](../0142-reserve-deepseek-completion-for-json-verdicts/README.md) without
+relaxing the two-pass or authorization boundaries.

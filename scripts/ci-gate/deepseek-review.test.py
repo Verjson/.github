@@ -20,6 +20,30 @@ verdict_spec.loader.exec_module(review_verdict)
 
 
 class DeepSeekReviewTest(unittest.TestCase):
+    def test_issue_1564_non_json_fallback_fixture_has_typed_content_free_diagnostic(self):
+        fixture = Path(__file__).with_name("fixtures") / "ai-review-1564-fallback-non-json.txt"
+        content = fixture.read_text(encoding="utf-8")
+        response = self.response(model="deepseek-v4-flash")
+        response["choices"][0]["message"]["content"] = content
+
+        with self.assertRaises(review.ExtractionFailure) as captured:
+            review.extract(response, "deepseek-v4-flash", 100, 100, "1.00")
+
+        self.assertEqual(captured.exception.kind, "json_decode")
+        diagnostic = review.extraction_diagnostic(response, captured.exception)
+        self.assertEqual(diagnostic["kind"], "json_decode")
+        self.assertNotIn(content.strip(), json.dumps(diagnostic))
+
+    def test_issue_1564_prompt_forbids_non_json_and_extra_followup_keys(self):
+        workflow = (Path(__file__).parents[2] / ".github/workflows/ai-review-merge.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("Return no Markdown, code fences, or prose outside that JSON object.", workflow)
+        self.assertIn('note: "non-empty text"', workflow)
+        self.assertIn("Both followup fields are strings.", workflow)
+        self.assertIn("a followup\n          has exactly location and note", workflow)
+
     def verdict(self, blocking=False):
         findings = [{
             "location": "app.py:7",

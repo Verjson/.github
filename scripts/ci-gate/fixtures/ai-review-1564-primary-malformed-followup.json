@@ -1,0 +1,13 @@
+{
+  "blocking": false,
+  "summary": "No blocking defects found.",
+  "review_first": [],
+  "findings": [],
+  "followups": [
+    {
+      "location": "src/review.ts:42",
+      "note": "Preserve the actionable failure diagnostic.",
+      "category": "maintainability"
+    }
+  ]
+}

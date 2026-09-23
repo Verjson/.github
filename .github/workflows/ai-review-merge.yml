@@ -1341,9 +1341,14 @@ jobs:
           shapes: blocking: boolean; summary: string;
           review_first: [{location, why}];
           findings: [{location, reason, failure_scenario, evidence}];
-          followups: [{location, note}]. Return the verdict as soon as you can
+          followups: [{location: "path/to/file.ext:42", note: "non-empty text"}].
+          Both followup fields are strings. Return the verdict as soon as you can
           support it. Do not call GitHub or submit a review yourself. Set
           blocking=true only for real defects. Keep summary concise.
+          Return no Markdown, code fences, or prose outside that JSON object.
+          Use only the listed keys at every level. In particular, a followup
+          has exactly location and note: fold any useful title, category,
+          severity, or recommendation into note instead of adding another key.
 
           Every findings.location MUST contain exactly one repository-relative
           file and one positive line number in the form path/to/file.ext:42.
