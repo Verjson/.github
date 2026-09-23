@@ -3822,11 +3822,10 @@ echo "ok - NEXT/ is the only unreleased store"
 # silently reintroduces release-on-merge, which never consumes a fragment.
 [ ! -e "$root/.releaserc.json" ] \
   || fail ".releaserc.json reintroduces semantic-release outside the contract"
-if [ -f "$release_workflow" ]; then
-  grep -q 'workflow_dispatch' "$release_workflow" \
-    || fail "$release_workflow is not dispatched explicitly"
-fi
-echo "ok - releases are dispatched explicitly, not derived from pushes to main"
+# Every discovered release caller was parsed and restricted to workflow_dispatch
+# inside the loop above. Do not inspect the loop variable here: after the loop it
+# identifies only the last caller and silently drops coverage for every earlier one.
+echo "ok - every release caller is dispatched explicitly, not derived from pushes to main"
 
 new_fixture() {
   rm -rf "$fixture_root/case"
