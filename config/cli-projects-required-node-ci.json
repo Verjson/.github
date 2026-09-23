@@ -15,6 +15,6 @@
     "test:npm-config",
     "test:package-surface",
     "test:public-docs",
-    "test:release-v1"
+    "test:release"
   ]
 }

@@ -206,7 +206,7 @@ def validate_workflow(path=WORKFLOW):
                 f"{name} may execute only protected reusable workflow code")
     require(document["jobs"]["ci"]["with"].get("secretless-ci-script-plan") ==
             '["build","lint","test","test:contract","test:npm-config",'
-            '"test:package-surface","test:public-docs","test:release-v1"]',
+            '"test:package-surface","test:public-docs","test:release"]',
             "current Node lane script plan drifted")
     require("secretless-ci-script-plan" not in document["jobs"]["ci-node-floor"]["with"],
             "Node floor lane must exercise the canonical default suite")

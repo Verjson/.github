@@ -136,3 +136,12 @@ runs and rejects schema-directory execution that would bypass the installed-pack
 boundary. Both required Node lanes are repinned to immutable organization contract commit
 `e4d911fd4197e0a4a0d500cd43c49a2170234b7a`; the admission and fail-closed identity
 contract otherwise remains unchanged.
+
+### 2026-09-23 — Follow the consumer's supported release-contract command
+
+Issue [#1423](https://github.com/Verjson/.github/issues/1423) found during the activation
+rehearsal that the required workflow still planned `test:release-v1`, an obsolete alias
+the consumer deliberately removed. The protected current-Node lane now invokes the
+supported `test:release` command. Restoring the retired alias would hide canonical-plan
+drift in the consumer instead of correcting the organization-owned contract. Activation
+still requires a fresh exact-head canary after this corrected workflow is merged.
