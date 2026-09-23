@@ -35,7 +35,7 @@ def step(name):
     raise AssertionError(f"workflow step not found: {name}")
 
 
-def run_resolver(declaration):
+def run_resolver(declaration, *, allow_prerelease=False):
     resolver = step("Resolve protected type-surface baseline from the pull-request base")
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
@@ -61,7 +61,7 @@ def run_resolver(declaration):
         environment = {
             **os.environ,
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "ALLOW_PRERELEASE": "false",
+            "ALLOW_PRERELEASE": "true" if allow_prerelease else "false",
             "BASE_SHA": BASE_SHA,
             "DECLARATION_FILE": str(declaration_file),
             "DECLARATION_PATH": ".github/ci/type-surface-baseline.json",
@@ -136,6 +136,25 @@ class ProtectedBaselineTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(1, sum("/pulls/" in call for call in calls))
+
+    def test_explicitly_allowed_prerelease_reaches_compatibility_resolution(self):
+        declaration = (
+            '{"package":"@verjson/authn","version":"3.0.0-rc.1",'
+            '"script":"test:type-surface-compatibility"}'
+        )
+
+        result, _, output_text, receipt_text = run_resolver(
+            declaration, allow_prerelease=True
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        values = dict(line.split("=", 1) for line in output_text.splitlines())
+        self.assertEqual(
+            values["compatibility-ranges"],
+            '{"package":"@verjson/authn","ranges":["3.0.0-rc.1"],'
+            '"script":"test:type-surface-compatibility"}',
+        )
+        self.assertEqual(json.loads(receipt_text)["version"], "3.0.0-rc.1")
 
     def test_malformed_duplicate_and_unauthorized_declarations_fail_closed(self):
         declarations = [
