@@ -5,4 +5,4 @@ title: Test prerelease protected baseline resolution
 impact: patch
 ---
 
-The protected baseline regression harness now exercises the explicit prerelease opt-in through compatibility request generation. This prevents a malformed prerelease authorization branch from passing on indentation checks alone.
+The protected baseline regression harness now exercises the explicit prerelease opt-in through compatibility request generation, registry resolution, exact range satisfaction, and provenance binding. This prevents a malformed prerelease authorization branch from passing on indentation checks alone.
