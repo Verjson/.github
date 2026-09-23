@@ -14,8 +14,9 @@ cat >"$tmp/bin/gh" <<'SH'
 set -euo pipefail
 printf '%s\n' "$*" >>"$CALLS"
 if [ "$1" = api ] && [[ "$2" == */pulls/* ]]; then
-  printf '{"state":"%s","head":{"sha":"%s"},"base":{"ref":"%s","sha":"%s"}}\n' \
-    "${PR_STATE:-open}" "${ACTUAL_HEAD:-$EXPECTED_HEAD_SHA}" \
+  printf '{"state":"%s","isDraft":%s,"title":%s,"labels":%s,"head":{"sha":"%s"},"base":{"ref":"%s","sha":"%s"}}\n' \
+    "${PR_STATE:-open}" "${PR_DRAFT:-false}" "${PR_TITLE:-\"change\"}" \
+    "${PR_LABELS:-[]}" "${ACTUAL_HEAD:-$EXPECTED_HEAD_SHA}" \
     "${ACTUAL_BRANCH:-$DEFAULT_BRANCH}" "${ACTUAL_PR_BASE:-$AUTHORIZED_BASE_SHA}"
 elif [ "$1" = api ] && [[ "$2" == */git/ref/heads/* ]]; then
   printf '%s\n' "${ACTUAL_REF_BASE:-$AUTHORIZED_BASE_SHA}"
@@ -46,6 +47,10 @@ for mutation in \
   'ACTUAL_REF_BASE=3333333333333333333333333333333333333333' \
   'ACTUAL_REF_BASE=malformed' \
   'ACTUAL_BRANCH=release' \
+  'PR_DRAFT=true' \
+  'PR_LABELS=[{"name":"hold"}]' \
+  'PR_LABELS=[{"name":"Do__Not--Merge"}]' \
+  'PR_TITLE="chore: DO NOT MERGE until QA"' \
   'PR_STATE=closed'; do
   : >"$tmp/calls"
   if env "$mutation" PATH="$tmp/bin:$PATH" CALLS="$tmp/calls" GH_TOKEN=app-token \

@@ -18,6 +18,7 @@ document = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
 steps = document["jobs"]["privileged_merge"]["steps"]
 names = [
     "Authorize terminal merge from trusted metadata",
+    "Revalidate independent review receipt",
     "Merge the authorized head",
     "Confirm merge and consume the arm receipt",
 ]
@@ -55,8 +56,26 @@ case "$*" in
   *"contents/.github/workflows/actions-ci.yml?ref=main"*) printf '%s\n' "$WORKFLOW_BLOB_TRUSTED" ;;
   *"repos/Verjson/.github/commits/main"*) printf '%s\n' "$EXECUTING_WORKFLOW_SHA" ;;
   *"check-runs/$AUTHORIZATION_CHECK_ID"*) cat "$CHECK_FILE" ;;
-  *"pulls/$PR_NUMBER/reviews?per_page=100"*) cat "$REVIEWS_FILE" ;;
-  *"repos/$TARGET_REPO/pulls/$PR_NUMBER"*) cat "$BASE_META_FILE" ;;
+  *"pulls/$PR_NUMBER/reviews/"*) cat "$REVIEW_REFETCH_FILE" ;;
+  *"pulls/$PR_NUMBER/reviews?per_page=100"*)
+    review_calls="$(cat "$REVIEW_CALLS_FILE")"
+    review_calls=$((review_calls + 1))
+    printf '%s\n' "$review_calls" >"$REVIEW_CALLS_FILE"
+    if [ "$review_calls" -le 2 ]; then cat "$REVIEWS_FILE"; else cat "$LATEST_REVIEWS_FILE"; fi ;;
+  *"collaborators/independent-reviewer/permission"*)
+    permission_calls="$(cat "$PERMISSION_CALLS_FILE")"
+    permission_calls=$((permission_calls + 1))
+    printf '%s\n' "$permission_calls" >"$PERMISSION_CALLS_FILE"
+    if [ "$permission_calls" -eq 1 ]; then
+      printf '%s\n' "${INDEPENDENT_REVIEWER_ROLE:-maintain}"
+    else
+      printf '%s\n' "${TERMINAL_REVIEWER_ROLE:-${INDEPENDENT_REVIEWER_ROLE:-maintain}}"
+    fi ;;
+  *"repos/$TARGET_REPO/pulls/$PR_NUMBER"*)
+    pull_calls="$(cat "$PULL_CALLS_FILE")"
+    pull_calls=$((pull_calls + 1))
+    printf '%s\n' "$pull_calls" >"$PULL_CALLS_FILE"
+    if [ "$pull_calls" -eq 1 ]; then cat "$BASE_META_FILE"; else cat "$TERMINAL_META_FILE"; fi ;;
   *"repos/$TARGET_REPO/git/ref/heads/$DEFAULT_BRANCH"*) printf '%s\n' "$AUTHORIZED_BASE_SHA" ;;
   "pr merge "*)
     if [ "${MERGE_CONFIRMED:-true}" = true ]; then
@@ -67,8 +86,9 @@ esac
 GH
 chmod +x "$tmp/bin/gh"
 
-export PATH="$tmp/bin:$PATH" CALLS="$tmp/calls" META_FILE="$tmp/meta.json" CHECK_FILE="$tmp/check.json" REVIEWS_FILE="$tmp/reviews.json" CI_CHECKS_FILE="$tmp/ci-checks.json" CI_RUN_FILE="$tmp/ci-run.json" CI_JOBS_FILE="$tmp/ci-jobs.json"
+export PATH="$tmp/bin:$PATH" CALLS="$tmp/calls" META_FILE="$tmp/meta.json" CHECK_FILE="$tmp/check.json" REVIEWS_FILE="$tmp/reviews.json" REVIEW_REFETCH_FILE="$tmp/review-refetch.json" LATEST_REVIEWS_FILE="$tmp/latest-reviews.json" REVIEW_CALLS_FILE="$tmp/review-calls" PERMISSION_CALLS_FILE="$tmp/permission-calls" CI_CHECKS_FILE="$tmp/ci-checks.json" CI_RUN_FILE="$tmp/ci-run.json" CI_JOBS_FILE="$tmp/ci-jobs.json"
 export BASE_META_FILE="$tmp/base-meta.json"
+export TERMINAL_META_FILE="$tmp/terminal-meta.json" PULL_CALLS_FILE="$tmp/pull-calls"
 export WORKFLOW_METADATA_FILE="$tmp/workflow-metadata.json" WORKFLOW_RUNS_FILE="$tmp/workflow-runs.json"
 export TARGET_REPO=Verjson/example PR_NUMBER=7 AUTHORIZATION_CHECK_ID=9001
 export EXPECTED_HEAD_SHA=0123456789abcdef0123456789abcdef01234567
@@ -92,14 +112,26 @@ write_base() {
   unset VERIFY_RC
   unset MERGE_CONFIRMED
   unset WORKFLOW_METADATA_RC
+  unset INDEPENDENT_REVIEWER_ROLE
+  unset TERMINAL_REVIEWER_ROLE
+  printf '0\n' >"$REVIEW_CALLS_FILE"
+  printf '0\n' >"$PERMISSION_CALLS_FILE"
+  printf '0\n' >"$PULL_CALLS_FILE"
   export WORKFLOW_BLOB_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa WORKFLOW_BLOB_TRUSTED=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   jq -nc --arg head "$EXPECTED_HEAD_SHA" '{state:"OPEN",isDraft:false,title:"change",labels:[],headRefOid:$head,headRepositoryOwner:{login:"Verjson"}}' >"$META_FILE"
   jq -nc --arg head "$EXPECTED_HEAD_SHA" --arg base "$AUTHORIZED_BASE_SHA" \
-    '{state:"open",head:{sha:$head},base:{ref:"main",sha:$base}}' >"$BASE_META_FILE"
+    '{state:"open",isDraft:false,title:"change",labels:[],head:{sha:$head},base:{ref:"main",sha:$base}}' >"$BASE_META_FILE"
+  cp "$BASE_META_FILE" "$TERMINAL_META_FILE"
   jq -nc --arg head "$EXPECTED_HEAD_SHA" --argjson app "$EXPECTED_APP_ID" --arg slug "$EXPECTED_APP_SLUG" \
     '{id:9001,name:"AI review authorization",head_sha:$head,status:"completed",conclusion:"success",app:{id:$app,slug:$slug}}' >"$CHECK_FILE"
   jq -nc --arg head "$EXPECTED_HEAD_SHA" --arg login "${EXPECTED_APP_SLUG}[bot]" --arg check "$AUTHORIZATION_CHECK_ID" \
-    '[{id:81,state:"APPROVED",commit_id:$head,user:{login:$login},body:("<!-- ai-review-authorization:"+$check+" -->")}]' >"$REVIEWS_FILE"
+    --arg marker "<!-- independent-review:v1 pr:${PR_NUMBER} head:${EXPECTED_HEAD_SHA} verdict:approved -->" \
+    '[
+      {id:81,state:"APPROVED",commit_id:$head,user:{login:$login,type:"Bot"},body:("<!-- ai-review-authorization:"+$check+" -->")},
+      {id:82,state:"COMMENTED",commit_id:$head,user:{login:"independent-reviewer",type:"User"},author_association:"MEMBER",body:$marker}
+    ]' >"$REVIEWS_FILE"
+  jq '.[1]' "$REVIEWS_FILE" >"$REVIEW_REFETCH_FILE"
+  cp "$REVIEWS_FILE" "$LATEST_REVIEWS_FILE"
   jq -nc --arg head "$EXPECTED_HEAD_SHA" '{check_runs:[{id:101,name:"shell-tests",head_sha:$head,status:"completed",conclusion:"success",details_url:"https://github.com/Verjson/example/actions/runs/7002/job/8002",app:{id:15368,slug:"github-actions"},check_suite:{id:6002}}]}' >"$CI_CHECKS_FILE"
   jq -nc --arg head "$EXPECTED_HEAD_SHA" '{id:7002,check_suite_id:6002,workflow_id:315894159,path:".github/workflows/actions-ci.yml",event:"pull_request",head_sha:$head,head_repository:{full_name:"Verjson/example"},status:"completed",conclusion:"success"}' >"$CI_RUN_FILE"
   jq -nc '{jobs:[{id:8002,name:"shell-tests",check_run_url:"https://api.github.com/repos/Verjson/example/check-runs/101"}]}' >"$CI_JOBS_FILE"
@@ -125,6 +157,30 @@ write_base; jq '.conclusion=null' "$CHECK_FILE" >"$tmp/x" && mv "$tmp/x" "$CHECK
 write_base; printf '[]\n' >"$REVIEWS_FILE"; expect_fail "missing exact App approval never promotes" run_promote
 write_base; jq '.[0].user.login="attacker[bot]"' "$REVIEWS_FILE" >"$tmp/x" && mv "$tmp/x" "$REVIEWS_FILE"; expect_fail "wrong approval identity never promotes" run_promote
 write_base; jq '.[0].commit_id="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' "$REVIEWS_FILE" >"$tmp/x" && mv "$tmp/x" "$REVIEWS_FILE"; expect_fail "stale App approval never promotes" run_promote
+write_base; jq 'del(.[1])' "$REVIEWS_FILE" >"$tmp/x" && mv "$tmp/x" "$REVIEWS_FILE"; expect_fail "missing independent-review receipt never promotes" run_promote
+write_base; jq '.[1].commit_id="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' "$REVIEWS_FILE" >"$tmp/x" && mv "$tmp/x" "$REVIEWS_FILE"; expect_fail "stale-head independent-review receipt never promotes" run_promote
+write_base; jq '.body="prefix <!-- independent-review:v1 pr:7 head:0123456789abcdef0123456789abcdef01234567 verdict:approved --> suffix"' "$REVIEW_REFETCH_FILE" >"$tmp/x" && mv "$tmp/x" "$REVIEW_REFETCH_FILE"; expect_fail "surrounding context cannot impersonate independent-review receipt" run_promote
+write_base; jq '.body="```\n<!-- independent-review:v1 pr:7 head:0123456789abcdef0123456789abcdef01234567 verdict:approved -->\n```"' "$REVIEW_REFETCH_FILE" >"$tmp/x" && mv "$tmp/x" "$REVIEW_REFETCH_FILE"; expect_fail "fenced marker cannot impersonate independent-review receipt" run_promote
+write_base; jq '.body |= sub("pr:7"; "pr:8")' "$REVIEW_REFETCH_FILE" >"$tmp/x" && mv "$tmp/x" "$REVIEW_REFETCH_FILE"; expect_fail "foreign-PR independent-review receipt never promotes" run_promote
+write_base; jq '.state="APPROVED"' "$REVIEW_REFETCH_FILE" >"$tmp/x" && mv "$tmp/x" "$REVIEW_REFETCH_FILE"; expect_fail "ordinary approval cannot impersonate independent-review receipt" run_promote
+write_base; jq '.body="edited after selection"' "$REVIEW_REFETCH_FILE" >"$tmp/x" && mv "$tmp/x" "$REVIEW_REFETCH_FILE"; expect_fail "edited receipt body fails terminal revalidation" run_promote
+write_base; jq '.state="DISMISSED"' "$REVIEW_REFETCH_FILE" >"$tmp/x" && mv "$tmp/x" "$REVIEW_REFETCH_FILE"; expect_fail "dismissed receipt fails terminal revalidation" run_promote
+write_base; jq '.body |= sub("verdict:approved"; "verdict:withdrawn")' "$REVIEW_REFETCH_FILE" >"$tmp/x" && mv "$tmp/x" "$REVIEW_REFETCH_FILE"; expect_fail "withdrawn receipt fails terminal revalidation" run_promote
+write_base; jq '.[1] as $base | . + [($base | .id=83 | .state="CHANGES_REQUESTED" | .body="changes requested")]' "$REVIEWS_FILE" >"$tmp/x" && mv "$tmp/x" "$REVIEWS_FILE"; jq '.[2]' "$REVIEWS_FILE" >"$REVIEW_REFETCH_FILE"; cp "$REVIEWS_FILE" "$LATEST_REVIEWS_FILE"; expect_fail "later changes-requested verdict supersedes approval" run_promote
+write_base; jq '.[1] as $base | . + [($base | .id=83 | .body="later verdict")]' "$LATEST_REVIEWS_FILE" >"$tmp/x" && mv "$tmp/x" "$LATEST_REVIEWS_FILE"; expect_fail "later review appearing during authorization supersedes receipt" run_promote
+write_base; jq '.[1].user.type="Bot"' "$REVIEWS_FILE" >"$tmp/x" && mv "$tmp/x" "$REVIEWS_FILE"; expect_fail "bot-authored independent-review receipt never promotes" run_promote
+write_base; export INDEPENDENT_REVIEWER_ROLE=write; expect_fail "write-only receipt author never promotes" run_promote
+write_base; export TERMINAL_REVIEWER_ROLE=write; expect_fail "permission downgrade before token mint never promotes" run_promote
+write_base
+jq '.labels=[{"name":"hold"}]' "$TERMINAL_META_FILE" >"$tmp/x" && mv "$tmp/x" "$TERMINAL_META_FILE"
+if run_promote >"$tmp/out" 2>&1; then
+  fail "hold added after authorization reached terminal merge"
+elif [ "$(cat "$PULL_CALLS_FILE")" = 2 ] &&
+    grep -q 'terminal merge rejected' "$tmp/out" && ! grep -q 'pr merge' "$CALLS"; then
+  pass "hold added after authorization blocks at terminal merge boundary"
+else
+  fail "late hold did not fail at the terminal merge boundary"
+fi
 write_base; jq '.headRepositoryOwner.login="outsider"' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"; expect_fail "fork PR fails closed" run_promote
 write_base; jq '.isDraft=true' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"; expect_pass "draft PR is a terminal no-op" run_promote; ! grep -q 'pr merge' "$CALLS" || fail "draft merged"
 write_base; jq '.labels=[{"name":"hold"}]' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"; expect_pass "held PR is a terminal no-op" run_promote; ! grep -q 'pr merge' "$CALLS" || fail "hold merged"
