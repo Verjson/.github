@@ -54,6 +54,7 @@ jobs:
     secrets: inherit
     with:
       ai_review_environment: ai-review-app
+      contract_ref: $contract_sha
       pr_number: \${{ inputs.pr_number }}
       expected_head_sha: \${{ inputs.expected_head_sha }}
       authorization_check_id: \${{ inputs.authorization_check_id }}
