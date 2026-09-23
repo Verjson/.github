@@ -270,7 +270,7 @@ def resolve(arguments: argparse.Namespace) -> dict:
     encoded_path = quote(arguments.declaration_path, safe="/")
     content = api_json(
         github_token,
-        f"repos/{arguments.repository}/contents/{encoded_path}?ref={base_sha}",
+        f"repos/{arguments.repository}/contents/{encoded_path}?ref={quote(base_sha, safe='/')}",
     )
     if content.get("type") != "file" or content.get("encoding") != "base64" or content.get("sha") is None:
         raise ContractError("baseline declaration is not a regular API file")
