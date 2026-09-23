@@ -823,10 +823,10 @@ def main() -> int:
     completion_steps = review["jobs"]["complete-authorization"]["steps"]
     app_token = next(step for step in completion_steps
                      if step.get("name") == "Mint dedicated authorization App token")
-    require(app_token["with"].get("permission-checks") == "write" and
+    require("permission-checks" not in app_token["with"] and
             app_token["with"].get("permission-contents") == "read" and
             app_token["with"].get("permission-pull-requests") == "write",
-            "dedicated App token must have only the required check, content, and pull-request permissions")
+            "dedicated App token must have only the required content and pull-request permissions")
     require('check-runs/$AUTHORIZATION_CHECK_ID' in review_text,
             "review must complete the exact check-run supplied by the trusted arm")
     require('head_sha:$sha' in rearm_text and '--arg sha "$head_sha"' in rearm_text,
@@ -834,7 +834,9 @@ def main() -> int:
     require("APP_ID: ${{ vars.AI_REVIEW_APP_ID }}" in rearm_text and
             "EXPECTED_APP_ID: ${{ vars.AI_REVIEW_APP_ID }}" in review_text and
             "check_app_id" in rearm_text and "check_app_id" in verifier_text and
-            ".app.id == 15368" in rearm_text and ".app.id == $check_app_id" in verifier_text,
+            ".app.id == 15368" in rearm_text and ".app.id == $check_app_id" in verifier_text and
+            ".check_app_id == 15368" in verifier_text and
+            ".check_app_id // .app_id" not in verifier_text,
             "the receipt must bind the Actions-owned check and AI App approval identities separately")
     require("AI review authorization" in rearm_text and "AI review authorization" in promote_text,
             "arm and promotion must agree on the unambiguous required-check name")

@@ -110,14 +110,16 @@ jobs:
           [[ "$pr_number" =~ ^[1-9][0-9]*$ ]] || exit 1
           [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
           check="$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs" \
-            --jq "[.check_runs[] | select(.name == \"AI review authorization\" and .head_sha == \"$HEAD_SHA\" and .app.id == $EXPECTED_APP_ID and .app.slug == \"$EXPECTED_APP_SLUG\")] | sort_by(.id) | last // {}")"
+            --jq "[.check_runs[] | select(.name == \"AI review authorization\" and .head_sha == \"$HEAD_SHA\" and .app.id == 15368 and .app.slug == \"github-actions\")] | sort_by(.id) | last // {}")"
           check_id="$(jq -r '.id // ""' <<<"$check")"
           details_url="$(jq -r '.details_url // ""' <<<"$check")"
           if ! [[ "$check_id" =~ ^[1-9][0-9]*$ ]] || ! [[ "$details_url" =~ /actions/runs/([1-9][0-9]*)$ ]]; then
             echo 'ready=false' >>"$GITHUB_OUTPUT"
             exit 0
           fi
-          if [ "$(jq -r '.status // ""' <<<"$check")" != completed ] ||
+          if [ "$(jq -r '.app.id // ""' <<<"$check")" != 15368 ] ||
+             [ "$(jq -r '.app.slug // ""' <<<"$check")" != github-actions ] ||
+             [ "$(jq -r '.status // ""' <<<"$check")" != completed ] ||
              [ "$(jq -r '.conclusion // ""' <<<"$check")" != success ]; then
             echo 'ready=false' >>"$GITHUB_OUTPUT"
             exit 0

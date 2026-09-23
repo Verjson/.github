@@ -127,8 +127,8 @@ workflow_api authorization-check "$tmp/authorization-check.json" \
 check="$(<"$tmp/authorization-check.json")"
 details_url="$GITHUB_SERVER_URL/$TARGET_REPO/actions/runs/$ARM_RUN_ID"
 receipt_schema="$(jq -r '.schema // ""' "$tmp/receipt.json")"
-receipt_check_app_id="$(jq -r '.check_app_id // .app_id' "$tmp/receipt.json")"
-receipt_check_app_slug="$(jq -r '.check_app_slug // .app_slug' "$tmp/receipt.json")"
+receipt_check_app_id="$(jq -r '.check_app_id // ""' "$tmp/receipt.json")"
+receipt_check_app_slug="$(jq -r '.check_app_slug // ""' "$tmp/receipt.json")"
 if [ "$receipt_schema" = 1 ]; then
   [ "$arm_run_path" = .github/workflows/gate-rearm.yml ] || {
     echo "::error::label bridge requires a source-bound schema-2 receipt"; exit 1;
@@ -164,10 +164,9 @@ jq -e \
   --arg details_url "$details_url" --argjson app_id "$EXPECTED_APP_ID" --arg app_slug "$EXPECTED_APP_SLUG" \
   --argjson check_app_id "$receipt_check_app_id" --arg check_app_slug "$receipt_check_app_slug" \
   --arg review_policy "$REVIEW_POLICY" '
-  ((.schema == 1 and ([keys[] | select(. != "check_app_id" and . != "check_app_slug")] | sort) == (["app_id","app_slug","arm_run_attempt","arm_run_id","check_run_id","details_url","external_id","head_sha","nonce","pr_number","repository","review_policy","schema"] | sort)) or
-   (.schema == 2 and ([keys[] | select(. != "check_app_id" and . != "check_app_slug")] | sort) == (["app_id","app_slug","arm_run_attempt","arm_run_id","check_run_id","delivery_actor","delivery_event","details_url","external_id","head_sha","nonce","pr_number","repository","review_policy","schema","workflow_ref","workflow_sha"] | sort))) and
-  (has("check_app_id") == has("check_app_slug")) and
-    (if has("check_app_id") then .check_app_id == 15368 and .check_app_slug == "github-actions" else true end) and
+  ((.schema == 1 and (keys | sort) == (["app_id","app_slug","arm_run_attempt","arm_run_id","check_app_id","check_app_slug","check_run_id","details_url","external_id","head_sha","nonce","pr_number","repository","review_policy","schema"] | sort)) or
+   (.schema == 2 and (keys | sort) == (["app_id","app_slug","arm_run_attempt","arm_run_id","check_app_id","check_app_slug","check_run_id","delivery_actor","delivery_event","details_url","external_id","head_sha","nonce","pr_number","repository","review_policy","schema","workflow_ref","workflow_sha"] | sort))) and
+  .check_app_id == 15368 and .check_app_slug == "github-actions" and
     .repository == $repository and .pr_number == $pr_number and .head_sha == $head and
   .check_run_id == $check_id and .arm_run_id == $run_id and .arm_run_attempt == $attempt and
   .details_url == $details_url and .app_id == $app_id and .app_slug == $app_slug and

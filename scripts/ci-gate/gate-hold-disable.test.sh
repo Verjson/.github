@@ -709,14 +709,14 @@ grep -q 'administrator must recover' "$CALLS" \
   || fail "pending recovery dispatched a paid review"
 
 write_repromotion
-jq '.status="in_progress" | .conclusion=null | .app={id:4242,slug:"verjson-ai-review"}' "$LATEST_FILE" >"$tmp/x" && mv "$tmp/x" "$LATEST_FILE"
+printf '{}\n' >"$LATEST_FILE"
 export RECEIPT_COUNT=0
 run_arm >"$tmp/out" 2>&1 || true
-if ! grep -q -- '--method POST repos/Verjson/example/check-runs' "$CALLS" \
-  && ! grep -q 'workflow run ai-review-merge.yml' "$CALLS"; then
-  pass "legacy App-owned pending authorization prevents duplicate review dispatch"
+if ! grep -q -- '--method PATCH repos/Verjson/example/check-runs/9001' "$CALLS" \
+  && ! grep -q 'check-runs/9001' "$CALLS"; then
+  pass "legacy review-App-owned check is not read or recovered by the canonical lifecycle"
 else
-  fail "legacy App-owned pending authorization allowed a second paid review"
+  fail "legacy review-App-owned check remained in the canonical recovery path"
 fi
 
 : >"$CALLS"
