@@ -45,6 +45,59 @@ class RenderRefusesAnUnlocatableHeader(unittest.TestCase):
             encoding="utf-8").split(self.generator.BODY_START, 1)[0]))
         self.assertIn(self.generator.BODY_START, rendered)
 
+    def test_only_the_top_level_deferred_job_is_removed(self):
+        # Arrange: same-named decoys make a broad search or wrong-field mutation
+        # look successful unless the exact jobs.deferred-ci path is proved.
+        document = {
+            "deferred-ci": {"decoy": "root"},
+            "jobs": {
+                "build-test": {"deferred-ci": {"decoy": "nested"}},
+                "deferred-ci": {"if": "expected-condition"},
+            },
+        }
+
+        # Act
+        counter_example = self.generator.without_deferred_ci(document)
+
+        # Assert: source is not mutated, the intended member alone is absent,
+        # and both wrong-field decoys survive byte-for-byte as values.
+        self.assertIn("deferred-ci", document["jobs"])
+        self.assertNotIn("deferred-ci", counter_example["jobs"])
+        self.assertEqual({"decoy": "root"}, counter_example["deferred-ci"])
+        self.assertEqual(
+            {"decoy": "nested"},
+            counter_example["jobs"]["build-test"]["deferred-ci"],
+        )
+
+    def test_wrong_field_decoys_do_not_hide_a_missing_deferred_job(self):
+        # Arrange: the intended path is absent while plausible wrong locations
+        # still contain a same-named mapping.
+        document = {
+            "deferred-ci": {"decoy": "root"},
+            "jobs": {"build-test": {"deferred-ci": {"decoy": "nested"}}},
+        }
+
+        # Act / Assert
+        with self.assertRaises(SystemExit) as refusal:
+            self.generator.without_deferred_ci(document)
+        self.assertEqual(
+            "the contract no longer declares jobs.deferred-ci",
+            str(refusal.exception),
+        )
+
+    def test_contract_shape_errors_name_the_exact_failed_boundary(self):
+        cases = (
+            ([], "the contract root must be a mapping"),
+            ({}, "the contract jobs field must be a mapping"),
+            ({"jobs": []}, "the contract jobs field must be a mapping"),
+            ({"jobs": {"deferred-ci": None}}, "jobs.deferred-ci must be a mapping"),
+        )
+        for document, expected in cases:
+            with self.subTest(document=document):
+                with self.assertRaises(SystemExit) as refusal:
+                    self.generator.without_deferred_ci(document)
+                self.assertIn(expected, str(refusal.exception))
+
 
 if __name__ == "__main__":
     sys.exit(0 if unittest.main(exit=False).result.wasSuccessful() else 1)
