@@ -57,7 +57,34 @@ assert job["secrets"] == "inherit"
 assert set(job["with"]) == {
     "pr_number", "expected_head_sha", "authorization_check_id", "arm_run_id",
     "arm_run_attempt", "explicit_rereview", "review_policy", "ai_review_environment",
+    "contract_ref",
 }
+assert job["with"]["contract_ref"] == sha
+
+def validate_contract_binding(candidate):
+    review = candidate["jobs"]["review"]
+    prefix = "Verjson/.github/.github/workflows/ai-review-merge.yml@"
+    assert review["uses"].startswith(prefix)
+    uses_sha = review["uses"][len(prefix):]
+    contract_ref = review["with"]["contract_ref"]
+    assert len(contract_ref) == 40
+    assert all(character in "0123456789abcdef" for character in contract_ref)
+    assert contract_ref == uses_sha
+
+validate_contract_binding(workflow)
+for label, invalid in (
+    ("consumer head substitution", "1" * 40),
+    ("stale contract substitution", "2" * 40),
+    ("malformed contract input", "main"),
+):
+    mutation = yaml.load(yaml.dump(workflow), Loader=yaml.BaseLoader)
+    mutation["jobs"]["review"]["with"]["contract_ref"] = invalid
+    try:
+        validate_contract_binding(mutation)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError(f"{label} escaped the generated caller contract")
 PY
 
 grep -qF "scripts/gen-ai-review-caller.sh $sha" "$tmp/caller.yml"

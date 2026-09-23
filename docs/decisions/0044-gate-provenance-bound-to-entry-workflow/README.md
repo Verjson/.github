@@ -169,3 +169,25 @@ mutation evidence recorded above stands as the historical record of the matcher 
 tested, not as a claim about a live suite. Entry provenance is today asserted by the
 registered `arm-receipt` and `event-driven-authorization` suites, per ADR 0079's
 contract-test migration table. See ADR 0079's 2026-09-12 clarification.
+
+## Amendment (2026-09-23, #1554) — reusable callers bind verifier source explicitly
+
+A consumer invocation demonstrated that `job.workflow_sha` identifies the consumer
+workflow revision, not the `Verjson/.github` revision named by its reusable `uses:`
+edge. Pairing that consumer SHA with a `Verjson/.github` checkout therefore failed
+before review admission and, more importantly, did not establish the intended
+canonical-source boundary.
+
+Generated AI-review callers now pass their immutable `uses:` pin as `contract_ref`.
+The reusable workflow validates that input before any canonical checkout and carries
+the resulting revision from preflight into every verifier job. Direct hub dispatches
+retain their same-repository `job.workflow_sha` fallback. Caller conformance requires
+the input and `uses:` pin to remain identical, rejecting consumer-head, stale-pin,
+and malformed substitutions. GitHub does not expose the reusable `uses:` pin to the
+called workflow for an independent runtime comparison, so that equality guarantee is
+the generated-caller contract boundary; a handwritten caller must preserve the same
+equality explicitly. The reusable workflow still validates lowercase 40-hex shape at
+preflight and again before each downstream checkout, including the always-running
+completion job, so a failed preflight cannot degrade an empty ref into checkout's
+mutable default. This changes only canonical verifier provenance; the receipt-bound
+expected PR head and every exact-head authorization check remain unchanged.

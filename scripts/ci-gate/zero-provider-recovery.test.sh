@@ -27,7 +27,7 @@ def valid(document):
         and preflight["outputs"].get("head_sha") == "${{ steps.classify.outputs.head_sha || inputs.expected_head_sha }}"
         and preflight["outputs"].get("zero_provider_recovery") == "${{ steps.zero-provider-recovery.outputs.eligible || 'false' }}"
         and checkout["if"] == "github.event_name == 'workflow_dispatch'"
-        and checkout["with"].get("ref") == "${{ steps.recovery-revision.outputs.sha }}"
+        and checkout["with"].get("ref") == "${{ steps.trusted-revision.outputs.sha }}"
         and checkout["with"].get("persist-credentials") is False
         and "verify-zero-provider-recovery.sh" in checkout["with"].get("sparse-checkout", "")
         and recovery["if"] == checkout["if"]
