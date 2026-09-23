@@ -71,7 +71,11 @@ case "$*" in
     else
       printf '%s\n' "${TERMINAL_REVIEWER_ROLE:-${INDEPENDENT_REVIEWER_ROLE:-maintain}}"
     fi ;;
-  *"repos/$TARGET_REPO/pulls/$PR_NUMBER"*) cat "$BASE_META_FILE" ;;
+  *"repos/$TARGET_REPO/pulls/$PR_NUMBER"*)
+    pull_calls="$(cat "$PULL_CALLS_FILE")"
+    pull_calls=$((pull_calls + 1))
+    printf '%s\n' "$pull_calls" >"$PULL_CALLS_FILE"
+    if [ "$pull_calls" -eq 1 ]; then cat "$BASE_META_FILE"; else cat "$TERMINAL_META_FILE"; fi ;;
   *"repos/$TARGET_REPO/git/ref/heads/$DEFAULT_BRANCH"*) printf '%s\n' "$AUTHORIZED_BASE_SHA" ;;
   "pr merge "*)
     if [ "${MERGE_CONFIRMED:-true}" = true ]; then
@@ -84,6 +88,7 @@ chmod +x "$tmp/bin/gh"
 
 export PATH="$tmp/bin:$PATH" CALLS="$tmp/calls" META_FILE="$tmp/meta.json" CHECK_FILE="$tmp/check.json" REVIEWS_FILE="$tmp/reviews.json" REVIEW_REFETCH_FILE="$tmp/review-refetch.json" LATEST_REVIEWS_FILE="$tmp/latest-reviews.json" REVIEW_CALLS_FILE="$tmp/review-calls" PERMISSION_CALLS_FILE="$tmp/permission-calls" CI_CHECKS_FILE="$tmp/ci-checks.json" CI_RUN_FILE="$tmp/ci-run.json" CI_JOBS_FILE="$tmp/ci-jobs.json"
 export BASE_META_FILE="$tmp/base-meta.json"
+export TERMINAL_META_FILE="$tmp/terminal-meta.json" PULL_CALLS_FILE="$tmp/pull-calls"
 export WORKFLOW_METADATA_FILE="$tmp/workflow-metadata.json" WORKFLOW_RUNS_FILE="$tmp/workflow-runs.json"
 export TARGET_REPO=Verjson/example PR_NUMBER=7 AUTHORIZATION_CHECK_ID=9001
 export EXPECTED_HEAD_SHA=0123456789abcdef0123456789abcdef01234567
@@ -111,10 +116,12 @@ write_base() {
   unset TERMINAL_REVIEWER_ROLE
   printf '0\n' >"$REVIEW_CALLS_FILE"
   printf '0\n' >"$PERMISSION_CALLS_FILE"
+  printf '0\n' >"$PULL_CALLS_FILE"
   export WORKFLOW_BLOB_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa WORKFLOW_BLOB_TRUSTED=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   jq -nc --arg head "$EXPECTED_HEAD_SHA" '{state:"OPEN",isDraft:false,title:"change",labels:[],headRefOid:$head,headRepositoryOwner:{login:"Verjson"}}' >"$META_FILE"
   jq -nc --arg head "$EXPECTED_HEAD_SHA" --arg base "$AUTHORIZED_BASE_SHA" \
-    '{state:"open",head:{sha:$head},base:{ref:"main",sha:$base}}' >"$BASE_META_FILE"
+    '{state:"open",isDraft:false,title:"change",labels:[],head:{sha:$head},base:{ref:"main",sha:$base}}' >"$BASE_META_FILE"
+  cp "$BASE_META_FILE" "$TERMINAL_META_FILE"
   jq -nc --arg head "$EXPECTED_HEAD_SHA" --argjson app "$EXPECTED_APP_ID" --arg slug "$EXPECTED_APP_SLUG" \
     '{id:9001,name:"AI review authorization",head_sha:$head,status:"completed",conclusion:"success",app:{id:$app,slug:$slug}}' >"$CHECK_FILE"
   jq -nc --arg head "$EXPECTED_HEAD_SHA" --arg login "${EXPECTED_APP_SLUG}[bot]" --arg check "$AUTHORIZATION_CHECK_ID" \
@@ -164,6 +171,16 @@ write_base; jq '.[1] as $base | . + [($base | .id=83 | .body="later verdict")]' 
 write_base; jq '.[1].user.type="Bot"' "$REVIEWS_FILE" >"$tmp/x" && mv "$tmp/x" "$REVIEWS_FILE"; expect_fail "bot-authored independent-review receipt never promotes" run_promote
 write_base; export INDEPENDENT_REVIEWER_ROLE=write; expect_fail "write-only receipt author never promotes" run_promote
 write_base; export TERMINAL_REVIEWER_ROLE=write; expect_fail "permission downgrade before token mint never promotes" run_promote
+write_base
+jq '.labels=[{"name":"hold"}]' "$TERMINAL_META_FILE" >"$tmp/x" && mv "$tmp/x" "$TERMINAL_META_FILE"
+if run_promote >"$tmp/out" 2>&1; then
+  fail "hold added after authorization reached terminal merge"
+elif [ "$(cat "$PULL_CALLS_FILE")" = 2 ] &&
+    grep -q 'terminal merge rejected' "$tmp/out" && ! grep -q 'pr merge' "$CALLS"; then
+  pass "hold added after authorization blocks at terminal merge boundary"
+else
+  fail "late hold did not fail at the terminal merge boundary"
+fi
 write_base; jq '.headRepositoryOwner.login="outsider"' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"; expect_fail "fork PR fails closed" run_promote
 write_base; jq '.isDraft=true' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"; expect_pass "draft PR is a terminal no-op" run_promote; ! grep -q 'pr merge' "$CALLS" || fail "draft merged"
 write_base; jq '.labels=[{"name":"hold"}]' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"; expect_pass "held PR is a terminal no-op" run_promote; ! grep -q 'pr merge' "$CALLS" || fail "hold merged"

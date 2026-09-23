@@ -10,15 +10,23 @@ done
 [[ "$AUTHORIZED_BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
 [[ "$DEFAULT_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || exit 1
 
-# This is the final trusted read before the head-CAS merge. The merge App token is
-# repository-scoped, and no event, PR-head, or caller input selects these identities.
+# This is the final trusted read before the head-CAS merge. Re-evaluate every mutable
+# authorization-state field here so a late draft or hold cannot cross the App-token interval.
+# The merge App token is repository-scoped, and no event, PR-head, or caller input selects
+# these identities.
 current="$(gh api "repos/$TARGET_REPO/pulls/$PR_NUMBER")"
 jq -e --arg head "$EXPECTED_HEAD_SHA" --arg base "$AUTHORIZED_BASE_SHA" \
   --arg branch "$DEFAULT_BRANCH" '
-    .state == "open" and .head.sha == $head and
-    .base.ref == $branch and .base.sha == $base
+    ([.labels[].name | ascii_upcase | gsub("[ _-]+";" ")]) as $labels
+    | .state == "open" and .head.sha == $head and
+      .base.ref == $branch and .base.sha == $base and
+      .isDraft == false and
+      ($labels | index("HOLD") | not) and
+      ($labels | index("DO NOT MERGE") | not) and
+      ((.title | ascii_upcase |
+        test("(^|[^ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_])DO NOT MERGE([^ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]|$)")) | not)
   ' <<<"$current" >/dev/null || {
-  echo "::error::terminal merge rejected a moved head, stale base, malformed ref, or closed pull request"
+  echo "::error::terminal merge rejected a moved head, stale base, draft, hold, malformed metadata, or closed pull request"
   exit 1
 }
 

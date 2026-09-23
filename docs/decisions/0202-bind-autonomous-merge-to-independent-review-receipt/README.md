@@ -52,10 +52,12 @@ Apps; it is not a proof of human presence. No App permission, private key, rules
 live identity mutation is added. Changing the PR head invalidates the receipt by construction
 and requires a new independent review and receipt.
 
-GitHub does not offer an atomic transaction spanning review reads, permission reads, App-token
-minting, and merge. Terminal revalidation narrows that race to the calls immediately before
-token minting; a hold remains the operator-controlled emergency revocation mechanism during
-that residual interval, and the merge path independently rechecks the live head and base.
+After App-token minting and immediately before `gh pr merge --admin`, the terminal helper
+re-fetches the pull request and re-evaluates the same draft, normalized hold-label, and
+`DO NOT MERGE` title predicate together with the open state, exact head, authorized base, and
+live default-branch ref. A hold added during receipt revalidation or token minting therefore
+blocks the merge. GitHub does not offer an atomic transaction spanning those reads and the
+merge mutation, so a residual race remains only after that final terminal read.
 
 ## Consequences
 
@@ -72,3 +74,5 @@ that residual interval, and the merge path independently rechecks the live head 
 `scripts/ci-gate/native-automerge.test.sh` exercises the valid receipt and rejects absent,
 stale-head, foreign-PR, fenced, surrounding-context, edited, dismissed, withdrawn,
 later-negative, later-created, App-authored, and permission-downgrade variants.
+It also injects a hold only after authorization and proves the terminal merge boundary
+rejects that late mutation.
