@@ -114,6 +114,21 @@ across component boundaries. Validation and pull-request consumption checks
 still cover every stream. See
 [ADR 0070](../decisions/0070-component-scoped-changelog-streams/README.md).
 
+A generated component-specific release caller should make that stream its safe
+manual-dispatch default instead of inheriting the root `v`/unscoped selection:
+
+```bash
+scripts/gen-changelog-caller.sh release-node "$CONTRACT_REF" \
+  --only-package-dir packages/python \
+  --default-prefix python-v \
+  --default-component python >.github/workflows/release-python.yml
+```
+
+The two default options are an atomic pair. The generator rejects missing,
+repeated, or malformed values and records the pair in generated provenance so
+the contract test can detect later workflow-default drift. Omitting both keeps
+the existing root-stream defaults: prefix `v` and no component.
+
 ### Release impact
 
 Every new fragment declares `impact: major`, `impact: minor`, or `impact: patch`.
@@ -358,15 +373,19 @@ with `--package-dir`. Empty, duplicate, non-normalized and escaping paths are re
 Use the same ordered selection for the caller and contract test:
 
 ```bash
-scripts/gen-changelog-caller.sh release-node "$PIN" --only-package-dir packages/cli-schema > .github/workflows/release.yml
+scripts/gen-changelog-caller.sh release-node "$PIN" \
+  --only-package-dir packages/cli-schema \
+  --default-prefix schema-v \
+  --default-component cli-schema > .github/workflows/release-cli-schema.yml
 scripts/gen-changelog-caller.sh contract-test "$PIN" --only-package-dir packages/cli-schema > scripts/changelog-contract.test.sh
 ```
 
 Only selected manifests are stamped and passed to Node publication. Verification
 still runs the repository suite; an adopter-owned preparation hook remains
-responsible for its own changes. Dispatch `component: schema` and, for example,
-`prefix: schema-v` to select the independent changelog/version stream: those inputs
-do not select publication directories. Exact selection also applies to the package
+responsible for its own changes. Those release-caller defaults open manual
+dispatches on the independent `cli-schema`/`schema-v` changelog and version
+stream; they do not select publication directories. Exact selection also
+applies to the package
 stamping performed by `release-artifact` and `release-snapshot`.
 
 Before stamping and packing the configured directories, the caller runs an

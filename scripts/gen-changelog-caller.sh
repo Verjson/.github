@@ -17,9 +17,9 @@
 #   scripts/gen-changelog-caller.sh contract-test <sha> [--scope <scope>] [--node-version <version>] > scripts/changelog-contract.test.sh
 #   scripts/gen-changelog-caller.sh codeowners <sha> > .github/CODEOWNERS
 #   scripts/gen-changelog-caller.sh pr-gate <sha> [--untrusted-runner <label>[,<label>...]] > .github/workflows/changelog-contract.yml
-#   scripts/gen-changelog-caller.sh release-node <sha> [--scope <scope>] [--node-version <version>] [--release-asset <path>]... > .github/workflows/release.yml
-#   scripts/gen-changelog-caller.sh release-artifact <sha> --build-runner <selector>... [--approved-internal-package <@verjson/name>]... [--scope <scope>] [--node-version <version>] > .github/workflows/release.yml
-#   scripts/gen-changelog-caller.sh release-snapshot <sha> [--scope <scope>] [--node-version <version>] [--package-dir <relative-dir>]... [--only-package-dir <relative-dir>]... > .github/workflows/release.yml
+#   scripts/gen-changelog-caller.sh release-node <sha> [--scope <scope>] [--node-version <version>] [--default-prefix <prefix> --default-component <component>] [--release-asset <path>]... > .github/workflows/release.yml
+#   scripts/gen-changelog-caller.sh release-artifact <sha> --build-runner <selector>... [--approved-internal-package <@verjson/name>]... [--scope <scope>] [--node-version <version>] [--default-prefix <prefix> --default-component <component>] > .github/workflows/release.yml
+#   scripts/gen-changelog-caller.sh release-snapshot <sha> [--scope <scope>] [--node-version <version>] [--default-prefix <prefix> --default-component <component>] [--package-dir <relative-dir>]... [--only-package-dir <relative-dir>]... > .github/workflows/release.yml
 #   scripts/gen-changelog-caller.sh release-propose <sha> --autonomy {propose|dispatch} > .github/workflows/release-propose.yml
 #
 # Every changelog-enabled workflow mode publishes the organization ruleset's
@@ -73,7 +73,7 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $(basename "$0") {workflow|generated-artifacts|generated-artifacts-with-adr-index|renovate-attribution|adr-index-generator|adr-index-test|codeowners|renderer|contract-test|pr-gate|release-node|release-artifact|release-snapshot|release-propose} <40-hex-commit> [--scope <npm-scope>] [--node-version <version>] [--package-dir <relative-dir>]... [--only-package-dir <relative-dir>]... [--release-asset <path>]... [--build-runner <selector>]... [--approved-internal-package <@verjson/name>]... [--autonomy {propose|dispatch}] [--untrusted-runner <label>[,<label>...]]" >&2
+  echo "usage: $(basename "$0") {workflow|generated-artifacts|generated-artifacts-with-adr-index|renovate-attribution|adr-index-generator|adr-index-test|codeowners|renderer|contract-test|pr-gate|release-node|release-artifact|release-snapshot|release-propose} <40-hex-commit> [--scope <npm-scope>] [--node-version <version>] [--default-prefix <prefix> --default-component <component>] [--package-dir <relative-dir>]... [--only-package-dir <relative-dir>]... [--release-asset <path>]... [--build-runner <selector>]... [--approved-internal-package <@verjson/name>]... [--autonomy {propose|dispatch}] [--untrusted-runner <label>[,<label>...]]" >&2
   echo "required check: changelog / validate" >&2
   exit 2
 }
@@ -87,6 +87,10 @@ release_scope="@verjson"
 release_node_version="24"
 release_scope_set=false
 release_node_version_set=false
+release_default_prefix="v"
+release_default_component=""
+release_default_prefix_set=false
+release_default_component_set=false
 release_package_dirs=(".")
 release_package_dirs_set=false
 release_package_dirs_exact=false
@@ -108,6 +112,18 @@ while [ "$#" -gt 0 ]; do
       [ "$#" -ge 2 ] && [ "$release_node_version_set" = false ] || usage
       release_node_version="$2"
       release_node_version_set=true
+      shift 2
+      ;;
+    --default-prefix)
+      [ "$#" -ge 2 ] && [ "$release_default_prefix_set" = false ] || usage
+      release_default_prefix="$2"
+      release_default_prefix_set=true
+      shift 2
+      ;;
+    --default-component)
+      [ "$#" -ge 2 ] && [ "$release_default_component_set" = false ] || usage
+      release_default_component="$2"
+      release_default_component_set=true
       shift 2
       ;;
     --package-dir)
@@ -164,6 +180,12 @@ if { [ "$release_scope_set" = true ] || [ "$release_node_version_set" = true ] \
   && [ "$mode" != release-node ] && [ "$mode" != release-artifact ] \
   && [ "$mode" != release-snapshot ] && [ "$mode" != contract-test ]; then
   echo "$(basename "$0"): release parameters are accepted only by release-node, release-artifact, release-snapshot and contract-test" >&2
+  exit 2
+fi
+if { [ "$release_default_prefix_set" = true ] || [ "$release_default_component_set" = true ]; } \
+  && [ "$mode" != release-node ] && [ "$mode" != release-artifact ] \
+  && [ "$mode" != release-snapshot ]; then
+  echo "$(basename "$0"): release defaults are accepted only by release-node, release-artifact and release-snapshot" >&2
   exit 2
 fi
 if [ "${#release_build_runners[@]}" -gt 0 ] \
@@ -273,6 +295,26 @@ fi
   echo "$(basename "$0"): node version must be a numeric major, major.minor, or major.minor.patch" >&2
   exit 2
 }
+if [ "$release_default_prefix_set" != "$release_default_component_set" ]; then
+  echo "$(basename "$0"): --default-prefix and --default-component must be provided together" >&2
+  exit 2
+fi
+if [ "$release_default_prefix_set" = true ]; then
+  [[ "$release_default_prefix" =~ ^[a-z0-9][a-z0-9._-]*-v$ ]] || {
+    echo "$(basename "$0"): --default-prefix must be a lowercase stream name followed by -v" >&2
+    exit 2
+  }
+  [[ "$release_default_component" =~ ^[a-z0-9]$|^[a-z0-9][a-z0-9._-]{0,62}[a-z0-9]$ ]] || {
+    echo "$(basename "$0"): --default-component must be a 1-64 character lowercase component identifier" >&2
+    exit 2
+  }
+fi
+release_default_prefix_yaml="$release_default_prefix"
+release_default_component_yaml="''"
+if [ "$release_default_prefix_set" = true ]; then
+  release_default_prefix_yaml="'$release_default_prefix'"
+  release_default_component_yaml="'$release_default_component'"
+fi
 seen_package_dirs=()
 for package_dir in "${release_package_dirs[@]}"; do
   for seen_package_dir in "${seen_package_dirs[@]}"; do
@@ -724,6 +766,8 @@ emit_release_node() {
     || generation_command="$generation_command --scope $release_scope"
   [ "$release_node_version" = "24" ] \
     || generation_command="$generation_command --node-version $release_node_version"
+  [ "$release_default_prefix_set" = false ] \
+    || generation_command="$generation_command --default-prefix $release_default_prefix --default-component $release_default_component"
   generation_command="$generation_command$selected_package_dir_args"
   for release_asset in "${release_assets[@]}"; do
     generation_command="$generation_command --release-asset $release_asset"
@@ -807,7 +851,7 @@ on:
         description: Exact version namespace prefix; independent from component
         required: false
         type: string
-        default: v
+        default: ${release_default_prefix_yaml}
       expected_head:
         description: Optional exact default-branch head derived by release-propose
         required: false
@@ -827,7 +871,7 @@ on:
         description: Optional component stream; empty selects only unscoped fragments
         required: false
         type: string
-        default: ''
+        default: ${release_default_component_yaml}
 
 permissions:
   contents: read
@@ -1077,6 +1121,8 @@ emit_release_artifact() {
     || generation_command="$generation_command --scope $release_scope"
   [ "$release_node_version" = "24" ] \
     || generation_command="$generation_command --node-version $release_node_version"
+  [ "$release_default_prefix_set" = false ] \
+    || generation_command="$generation_command --default-prefix $release_default_prefix --default-component $release_default_component"
   generation_command="$generation_command$selected_package_dir_args"
   for build_runner in "${release_build_runners[@]}"; do
     printf -v quoted_build_runner '%q' "$build_runner"
@@ -1291,7 +1337,7 @@ on:
         description: Exact version namespace prefix; independent from component
         required: false
         type: string
-        default: v
+        default: ${release_default_prefix_yaml}
       expected_head:
         description: Optional exact default-branch head derived by release-propose
         required: false
@@ -1311,7 +1357,7 @@ on:
         description: Optional component stream; empty selects only unscoped fragments
         required: false
         type: string
-        default: ''
+        default: ${release_default_component_yaml}
 
 permissions:
   contents: read
@@ -1650,6 +1696,8 @@ emit_release_snapshot() {
     || generation_command="$generation_command --scope $release_scope"
   [ "$release_node_version" = "24" ] \
     || generation_command="$generation_command --node-version $release_node_version"
+  [ "$release_default_prefix_set" = false ] \
+    || generation_command="$generation_command --default-prefix $release_default_prefix --default-component $release_default_component"
   generation_command="$generation_command$selected_package_dir_args"
   printf -v package_dirs_shell '%q ' "${release_package_dirs[@]}"
   package_dirs_shell="${package_dirs_shell% }"
@@ -1720,7 +1768,7 @@ on:
         description: Exact version namespace prefix; independent from component
         required: false
         type: string
-        default: v
+        default: ${release_default_prefix_yaml}
       expected_head:
         description: Optional exact default-branch head derived by release-propose
         required: false
@@ -1740,7 +1788,7 @@ on:
         description: Optional component stream; empty selects only unscoped fragments
         required: false
         type: string
-        default: ''
+        default: ${release_default_component_yaml}
 
 permissions:
   contents: read
@@ -2672,6 +2720,7 @@ ways that report green:
 Anything this parser cannot read confidently is an error, never a pass.
 """
 import re
+import shlex
 import sys
 
 path = sys.argv[1]
@@ -2743,6 +2792,58 @@ def trigger_identity(key, quoted):
     return "on" if key.casefold() in {"y", "yes", "true", "on"} else None
 
 
+def release_defaults():
+    provenance_prefix = (
+        "# Generated by Verjson/.github scripts/gen-changelog-caller.sh "
+    )
+    provenance = [line for line in raw_lines if line.startswith(provenance_prefix)]
+    if len(provenance) != 1:
+        problems.append("requires exactly one canonical generator provenance line")
+        return "v", ""
+    try:
+        tokens = shlex.split(provenance[0][len(provenance_prefix):])
+    except ValueError as error:
+        problems.append(f"has malformed generator provenance: {error}")
+        return "v", ""
+
+    def values(name):
+        found = []
+        for index, token in enumerate(tokens):
+            if token != name:
+                continue
+            if index + 1 >= len(tokens):
+                problems.append(f"has {name} without a value in generator provenance")
+                continue
+            found.append(tokens[index + 1])
+        return found
+
+    prefixes = values("--default-prefix")
+    components = values("--default-component")
+    if not prefixes and not components:
+        return "v", ""
+    if len(prefixes) != 1 or len(components) != 1:
+        problems.append(
+            "must declare --default-prefix and --default-component exactly once together"
+        )
+        return "v", ""
+    prefix = prefixes[0]
+    component = components[0]
+    if re.fullmatch(r"[a-z0-9][a-z0-9._-]*-v", prefix) is None:
+        problems.append("has an invalid component release default prefix")
+    if re.fullmatch(r"[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?", component) is None:
+        problems.append("has an invalid component release default component")
+    return prefix, component
+
+
+release_default_prefix, release_default_component = release_defaults()
+release_default_prefix_yaml = (
+    "v" if release_default_prefix == "v" else f"'{release_default_prefix}'"
+)
+release_default_component_yaml = (
+    "''" if not release_default_component else f"'{release_default_component}'"
+)
+
+
 EXPECTED_TRIGGER_BLOCK = (
     (2, "workflow_dispatch:"),
     (4, "inputs:"),
@@ -2755,7 +2856,7 @@ EXPECTED_TRIGGER_BLOCK = (
     (8, "description: Exact version namespace prefix; independent from component"),
     (8, "required: false"),
     (8, "type: string"),
-    (8, "default: v"),
+    (8, f"default: {release_default_prefix_yaml}"),
     (6, "expected_head:"),
     (8, "description: Optional exact default-branch head derived by release-propose"),
     (8, "required: false"),
@@ -2775,7 +2876,7 @@ EXPECTED_TRIGGER_BLOCK = (
     (8, "description: Optional component stream; empty selects only unscoped fragments"),
     (8, "required: false"),
     (8, "type: string"),
-    (8, "default: ''"),
+    (8, f"default: {release_default_component_yaml}"),
 )
 
 
