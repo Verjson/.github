@@ -229,7 +229,7 @@ class AuthnTypeSurfaceRulesetTest(unittest.TestCase):
         MODULE.validate_retired_ruleset(live, expected)
         mutations = []
         for key, value in (
-            ("enforcement", "disabled"),
+            ("enforcement", "active"),
             ("bypass_actors", [{
                 "actor_id": None,
                 "actor_type": "OrganizationAdmin",

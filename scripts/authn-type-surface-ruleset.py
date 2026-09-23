@@ -62,7 +62,7 @@ def read_contract(path=CONTRACT):
             "id": 21522093,
             "name": "authn-type-surface-required",
             "target": "branch",
-            "enforcement": "active",
+            "enforcement": "disabled",
             "bypass_actors": RELEASE_BYPASS,
             "conditions": {
                 "ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []},

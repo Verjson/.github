@@ -244,93 +244,38 @@ class CliProjectsPackageSurfaceRulesetTest(unittest.TestCase):
                 datetime(2026, 8, 29, 12, tzinfo=timezone.utc),
             )
 
-    def test_repository_activation_changes_only_enforcement_after_fresh_preimage(self):
+    def test_obsolete_repository_ruleset_must_remain_exactly_disabled(self):
         before = self.contract["consumer"]["repository_ruleset"] | {
             "source_type": "Repository", "source": "Verjson/verjson-cli-projects",
         }
-        after = copy.deepcopy(before)
-        after["enforcement"] = "active"
-        with (
-            mock.patch.object(MODULE, "gh_json", side_effect=[before, after]),
-            mock.patch.object(MODULE, "gh_json_input", return_value={}) as put,
+        MODULE.validate_repository_ruleset(
+            before, MODULE.expected_repository_ruleset(self.contract)
+        )
+        mutations = []
+        for path, value in (
+            (("enforcement",), "active"),
+            (("bypass_actors",), [{"actor_type": "OrganizationAdmin"}]),
+            (("conditions", "ref_name", "include"), ["~ALL"]),
+            (("rules", 0, "parameters", "required_status_checks", 0, "context"), "spoof"),
         ):
-            MODULE.activate_repository_rule(self.contract)
-        payload = put.call_args.args[2]
-        expected = {key: after[key] for key in MODULE.MUTABLE_FIELDS}
-        self.assertEqual(expected, payload)
-        changed = {key for key in payload if payload[key] != before[key]}
-        self.assertEqual({"enforcement"}, changed)
+            candidate = copy.deepcopy(before)
+            target = candidate
+            for key in path[:-1]:
+                target = target[key]
+            target[path[-1]] = value
+            mutations.append(candidate)
 
-    def test_repository_activation_fails_closed_on_preimage_drift(self):
-        before = self.contract["consumer"]["repository_ruleset"] | {
-            "source_type": "Repository", "source": "Verjson/verjson-cli-projects",
-        }
-        before["rules"] = copy.deepcopy(before["rules"])
-        before["rules"][0]["parameters"]["required_status_checks"][0]["context"] = "spoof"
-        with (
-            mock.patch.object(MODULE, "gh_json", return_value=before),
-            mock.patch.object(MODULE, "gh_json_input") as put,
-            self.assertRaisesRegex(MODULE.ContractError, "preimage drifted"),
-        ):
-            MODULE.activate_repository_rule(self.contract)
-        put.assert_not_called()
-
-    def test_partial_repository_activation_fails_closed(self):
-        before = self.contract["consumer"]["repository_ruleset"] | {
-            "source_type": "Repository", "source": "Verjson/verjson-cli-projects",
-        }
-        mismatch = copy.deepcopy(before)
-        mismatch["enforcement"] = "active"
-        mismatch["bypass_actors"] = [{"actor_type": "OrganizationAdmin"}]
-        with (
-            mock.patch.object(
-                MODULE, "gh_json", side_effect=[before, mismatch, mismatch, before]
-            ),
-            mock.patch.object(MODULE, "gh_json_input", return_value={}) as put,
-            self.assertRaisesRegex(MODULE.ContractError, "restored and verified evaluate"),
-        ):
-            MODULE.activate_repository_rule(self.contract)
-        self.assertEqual("active", put.call_args_list[0].args[2]["enforcement"])
-        self.assertEqual("evaluate", put.call_args_list[1].args[2]["enforcement"])
-
-    def test_applied_repository_put_with_client_failure_rolls_back_evaluate(self):
-        before = self.contract["consumer"]["repository_ruleset"] | {
-            "source_type": "Repository", "source": "Verjson/verjson-cli-projects",
-        }
-        active = copy.deepcopy(before)
-        active["enforcement"] = "active"
-        with (
-            mock.patch.object(MODULE, "gh_json", side_effect=[before, active, before]),
-            mock.patch.object(
-                MODULE, "gh_json_input",
-                side_effect=[MODULE.ContractError("client lost response"), {}],
-            ) as put,
-            self.assertRaisesRegex(MODULE.ContractError, "restored and verified evaluate"),
-        ):
-            MODULE.activate_repository_rule(self.contract)
-        self.assertEqual("active", put.call_args_list[0].args[2]["enforcement"])
-        self.assertEqual("evaluate", put.call_args_list[1].args[2]["enforcement"])
-
-    def test_repository_activation_branch_drift_restores_evaluate_after_ambiguous_put(self):
-        before = self.contract["consumer"]["repository_ruleset"] | {
-            "source_type": "Repository", "source": "Verjson/verjson-cli-projects",
-        }
-        active = copy.deepcopy(before)
-        active["enforcement"] = "active"
-        for response in ({}, MODULE.ContractError("client lost response")):
-            with (
-                mock.patch.object(
-                    MODULE, "assert_consumer_branch_sha",
-                    side_effect=[None, MODULE.ContractError("branch moved")],
-                ),
-                mock.patch.object(MODULE, "gh_json", side_effect=[before, active, before]),
-                mock.patch.object(
-                    MODULE, "gh_json_input", side_effect=[response, {}],
-                ) as put,
-                self.assertRaisesRegex(MODULE.ContractError, "restored and verified evaluate"),
+        for candidate in mutations:
+            with self.subTest(candidate=candidate), self.assertRaisesRegex(
+                MODULE.ContractError, "preimage drifted"
             ):
-                MODULE.activate_repository_rule(self.contract, HEAD)
-            self.assertEqual("evaluate", put.call_args_list[1].args[2]["enforcement"])
+                MODULE.validate_repository_ruleset(
+                    candidate, MODULE.expected_repository_ruleset(self.contract)
+                )
+
+    def test_obsolete_repository_activation_mode_is_removed(self):
+        with mock.patch("sys.stderr"), self.assertRaises(SystemExit):
+            MODULE.main(["activate-repository", "--workflow-sha", SHA])
 
     def test_apply_requires_acknowledgement_before_mutation(self):
         with (
@@ -388,6 +333,72 @@ class CliProjectsPackageSurfaceRulesetTest(unittest.TestCase):
             ])
         self.assertEqual(expected, mutate.call_args.args[2])
 
+    def test_dry_run_accepts_the_exact_reviewed_prior_disabled_workflow(self):
+        previous_disabled = MODULE.render_payload(
+            self.contract, self.contract["rollout"]["previous_disabled_workflow_sha"]
+        )
+        previous_disabled["enforcement"] = "disabled"
+        live_previous_disabled = previous_disabled | {
+            "id": 9, "source_type": "Organization", "source": "Verjson",
+        }
+        with (
+            mock.patch.object(MODULE, "discover_state", return_value=([{"id": 9}], HEAD)),
+            mock.patch.object(MODULE, "gh_json", return_value=live_previous_disabled),
+        ):
+            self.assertEqual(0, MODULE.main(["dry-run", "--workflow-sha", SHA]))
+
+    def test_dry_run_rejects_an_unreviewed_live_organization_image(self):
+        previous_disabled = MODULE.render_payload(
+            self.contract, self.contract["rollout"]["previous_disabled_workflow_sha"]
+        )
+        previous_disabled["enforcement"] = "disabled"
+        live_unreviewed = previous_disabled | {
+            "id": 9, "source_type": "Organization", "source": "Verjson",
+        }
+        live_unreviewed = copy.deepcopy(live_unreviewed)
+        live_unreviewed["bypass_actors"] = [{"actor_type": "OrganizationAdmin"}]
+        with (
+            mock.patch.object(MODULE, "discover_state", return_value=([{"id": 9}], HEAD)),
+            mock.patch.object(MODULE, "gh_json", return_value=live_unreviewed),
+            self.assertRaisesRegex(MODULE.ContractError, "reviewed active and disabled images"),
+        ):
+            MODULE.main(["dry-run", "--workflow-sha", SHA])
+
+    def test_dry_run_rejects_a_non_object_live_organization_image(self):
+        with (
+            mock.patch.object(MODULE, "discover_state", return_value=([{"id": 9}], HEAD)),
+            mock.patch.object(MODULE, "gh_json", return_value=[]),
+            self.assertRaisesRegex(MODULE.ContractError, "reviewed active and disabled images"),
+        ):
+            MODULE.main(["dry-run", "--workflow-sha", SHA])
+
+    def test_apply_rotates_the_exact_reviewed_prior_disabled_workflow(self):
+        expected = MODULE.render_payload(self.contract, SHA)
+        previous_disabled = MODULE.render_payload(
+            self.contract, self.contract["rollout"]["previous_disabled_workflow_sha"]
+        )
+        previous_disabled["enforcement"] = "disabled"
+        live_previous_disabled = previous_disabled | {
+            "id": 9, "source_type": "Organization", "source": "Verjson",
+        }
+        live_expected = expected | {
+            "id": 9, "source_type": "Organization", "source": "Verjson",
+        }
+        with (
+            mock.patch.object(MODULE, "discover_state", return_value=([{"id": 9}], HEAD)),
+            mock.patch.object(MODULE, "assert_consumer_branch_sha"),
+            mock.patch.object(
+                MODULE, "gh_json",
+                side_effect=[live_previous_disabled, live_previous_disabled, live_expected],
+            ),
+            mock.patch.object(MODULE, "gh_json_input", return_value={}) as mutate,
+        ):
+            MODULE.main([
+                "apply", "--workflow-sha", SHA,
+                "--ack", "ROTATE-CLI-PROJECTS-REQUIRED-WORKFLOW-1187",
+            ])
+        self.assertEqual(expected, mutate.call_args.args[2])
+
     def test_apply_rotates_reviewed_prior_workflow_that_appears_during_discovery(self):
         expected = MODULE.render_payload(self.contract, SHA)
         previous = MODULE.render_payload(
@@ -414,6 +425,68 @@ class CliProjectsPackageSurfaceRulesetTest(unittest.TestCase):
             ])
         self.assertEqual(expected, mutate.call_args.args[2])
 
+    def test_apply_rotates_prior_disabled_workflow_that_appears_during_discovery(self):
+        expected = MODULE.render_payload(self.contract, SHA)
+        previous_disabled = MODULE.render_payload(
+            self.contract, self.contract["rollout"]["previous_disabled_workflow_sha"]
+        )
+        previous_disabled["enforcement"] = "disabled"
+        live_previous_disabled = previous_disabled | {
+            "id": 9, "source_type": "Organization", "source": "Verjson",
+        }
+        live_expected = expected | {
+            "id": 9, "source_type": "Organization", "source": "Verjson",
+        }
+        with (
+            mock.patch.object(
+                MODULE, "discover_state",
+                side_effect=[([], HEAD), ([{"id": 9}], HEAD)],
+            ),
+            mock.patch.object(MODULE, "assert_consumer_branch_sha"),
+            mock.patch.object(
+                MODULE, "gh_json",
+                side_effect=[live_previous_disabled, live_previous_disabled, live_expected],
+            ),
+            mock.patch.object(MODULE, "gh_json_input", return_value={}) as mutate,
+        ):
+            MODULE.main([
+                "apply", "--workflow-sha", SHA,
+                "--ack", "ROTATE-CLI-PROJECTS-REQUIRED-WORKFLOW-1187",
+            ])
+        self.assertEqual(expected, mutate.call_args.args[2])
+
+    def test_apply_rotates_prior_disabled_workflow_recovered_after_create_race(self):
+        expected = MODULE.render_payload(self.contract, SHA)
+        previous_disabled = MODULE.render_payload(
+            self.contract, self.contract["rollout"]["previous_disabled_workflow_sha"]
+        )
+        previous_disabled["enforcement"] = "disabled"
+        live_previous_disabled = previous_disabled | {
+            "id": 9, "source_type": "Organization", "source": "Verjson",
+        }
+        live_expected = expected | {
+            "id": 9, "source_type": "Organization", "source": "Verjson",
+        }
+        with (
+            mock.patch.object(MODULE, "discover_state", side_effect=[([], HEAD), ([], HEAD)]),
+            mock.patch.object(MODULE, "list_named_rulesets", return_value=[{"id": 9}]),
+            mock.patch.object(MODULE, "assert_consumer_branch_sha"),
+            mock.patch.object(
+                MODULE, "gh_json",
+                side_effect=[live_previous_disabled, live_previous_disabled, live_expected],
+            ),
+            mock.patch.object(
+                MODULE, "gh_json_input",
+                side_effect=[MODULE.ContractError("create raced"), {}],
+            ) as mutate,
+        ):
+            MODULE.main([
+                "apply", "--workflow-sha", SHA,
+                "--ack", "ROTATE-CLI-PROJECTS-REQUIRED-WORKFLOW-1187",
+            ])
+        self.assertEqual("POST", mutate.call_args_list[0].args[0])
+        self.assertEqual(expected, mutate.call_args_list[1].args[2])
+
     def test_partial_rotation_restores_and_verifies_the_prior_active_workflow(self):
         expected = MODULE.render_payload(self.contract, SHA)
         previous = MODULE.render_payload(
@@ -429,7 +502,7 @@ class CliProjectsPackageSurfaceRulesetTest(unittest.TestCase):
         with (
             mock.patch.object(MODULE, "gh_json", side_effect=[live_previous, partial, partial, live_previous]),
             mock.patch.object(MODULE, "gh_json_input", return_value={}) as mutate,
-            self.assertRaisesRegex(MODULE.ContractError, "prior active workflow restored"),
+            self.assertRaisesRegex(MODULE.ContractError, "prior reviewed workflow restored"),
         ):
             MODULE.rotate_existing_org_rule(9, previous, expected)
         self.assertEqual(expected, mutate.call_args_list[0].args[2])
@@ -457,10 +530,35 @@ class CliProjectsPackageSurfaceRulesetTest(unittest.TestCase):
                 mock.patch.object(
                     MODULE, "gh_json_input", side_effect=[response, {}],
                 ) as mutate,
-                self.assertRaisesRegex(MODULE.ContractError, "prior active workflow restored"),
+                self.assertRaisesRegex(MODULE.ContractError, "prior reviewed workflow restored"),
             ):
                 MODULE.rotate_existing_org_rule(9, previous, expected, HEAD)
             self.assertEqual(previous, mutate.call_args_list[1].args[2])
+
+    def test_partial_rotation_restores_the_exact_prior_disabled_workflow(self):
+        expected = MODULE.render_payload(self.contract, SHA)
+        previous_disabled = MODULE.render_payload(
+            self.contract, self.contract["rollout"]["previous_disabled_workflow_sha"]
+        )
+        previous_disabled["enforcement"] = "disabled"
+        live_previous_disabled = previous_disabled | {
+            "id": 9, "source_type": "Organization", "source": "Verjson",
+        }
+        partial = copy.deepcopy(expected) | {
+            "id": 9, "source_type": "Organization", "source": "Verjson",
+        }
+        partial["conditions"]["repository_id"]["repository_ids"] = [1]
+        with (
+            mock.patch.object(
+                MODULE, "gh_json",
+                side_effect=[live_previous_disabled, partial, partial, live_previous_disabled],
+            ),
+            mock.patch.object(MODULE, "gh_json_input", return_value={}) as mutate,
+            self.assertRaisesRegex(MODULE.ContractError, "prior reviewed workflow restored"),
+        ):
+            MODULE.rotate_existing_org_rule(9, previous_disabled, expected)
+        self.assertEqual(expected, mutate.call_args_list[0].args[2])
+        self.assertEqual(previous_disabled, mutate.call_args_list[1].args[2])
 
     def test_applied_organization_put_with_client_failure_rolls_back_disabled(self):
         expected = MODULE.render_payload(self.contract, SHA)

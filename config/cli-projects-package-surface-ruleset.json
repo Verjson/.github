@@ -12,7 +12,7 @@
       "id": 21567958,
       "name": "cli-projects-v1-required",
       "target": "branch",
-      "enforcement": "evaluate",
+      "enforcement": "disabled",
       "bypass_actors": [],
       "conditions": {
         "ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}
@@ -51,6 +51,7 @@
     "human_gate_required": true,
     "apply_acknowledgement": "ROTATE-CLI-PROJECTS-REQUIRED-WORKFLOW-1187",
     "previous_workflow_sha": "483afa0995f0df51cb9dfa001ded1b48c73ae8f5",
+    "previous_disabled_workflow_sha": "4525c152a77bd04c006fa2b790f4b64833b1bbbe",
     "required_run": {
       "event": "pull_request",
       "conclusion": "success",

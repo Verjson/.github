@@ -8,7 +8,7 @@
       "id": 21522093,
       "name": "authn-type-surface-required",
       "target": "branch",
-      "enforcement": "active",
+      "enforcement": "disabled",
       "bypass_actors": [{
         "actor_id": 4583107,
         "actor_type": "Integration",
