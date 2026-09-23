@@ -62,10 +62,10 @@ class AuthnTypeSurfaceRulesetTest(unittest.TestCase):
         current = MODULE.read_pinned_node_ci_workflow(MODULE.NODE_CI_SHA)
         self.assertIsInstance(current["jobs"]["deferred-ci"], dict)
 
-        previous = MODULE.read_pinned_node_ci_workflow(
-            "c973a841694a41bf0b9bcd70432f64850cba0850"
-        )
-        self.assertNotIn("deferred-ci", previous["jobs"])
+        with self.assertRaisesRegex(MODULE.ContractError, "canonical workflow"):
+            MODULE.read_pinned_node_ci_workflow(
+                "c973a841694a41bf0b9bcd70432f64850cba0850"
+            )
 
     def test_required_workflow_rejects_pre_deferred_pin(self):
         workflow = yaml.safe_load(MODULE.WORKFLOW.read_text(encoding="utf-8"))
@@ -76,7 +76,7 @@ class AuthnTypeSurfaceRulesetTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "required.yml"
             path.write_text(yaml.safe_dump(workflow), encoding="utf-8")
-            with self.assertRaisesRegex(MODULE.ContractError, "deferred-ci"):
+            with self.assertRaisesRegex(MODULE.ContractError, "canonical workflow"):
                 MODULE.validate_workflow(path)
 
     def test_required_workflow_rejects_missing_status_permission(self):
