@@ -3,6 +3,7 @@ import copy
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -30,14 +31,62 @@ class AuthnTypeSurfaceRulesetTest(unittest.TestCase):
         job = workflow["jobs"]["type-surface"]
         self.assertEqual(
             "Verjson/.github/.github/workflows/node-ci.yml@"
-            "c973a841694a41bf0b9bcd70432f64850cba0850",
+            "c419bd632400e9d8c06e33b468921d6e3e10ec81",
             job["uses"],
         )
+        self.assertEqual("read", workflow["permissions"]["statuses"])
         self.assertTrue(job["with"]["secretless-pr"])
         self.assertEqual(
             {"NODE_AUTH_TOKEN": "${{ secrets.GITHUB_TOKEN }}"},
             job["secrets"],
         )
+
+    def test_required_workflow_is_exact_generator_output(self):
+        generated = subprocess.run(
+            [
+                "python3",
+                str(ROOT / "scripts/gen-authn-type-surface-required-workflow.py"),
+                MODULE.NODE_CI_SHA,
+            ],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        ).stdout
+
+        self.assertEqual(
+            generated,
+            MODULE.WORKFLOW.read_text(encoding="utf-8"),
+        )
+
+    def test_required_workflow_pin_resolves_to_deferred_ci_contract(self):
+        current = MODULE.read_pinned_node_ci_workflow(MODULE.NODE_CI_SHA)
+        self.assertIsInstance(current["jobs"]["deferred-ci"], dict)
+
+        previous = MODULE.read_pinned_node_ci_workflow(
+            "c973a841694a41bf0b9bcd70432f64850cba0850"
+        )
+        self.assertNotIn("deferred-ci", previous["jobs"])
+
+    def test_required_workflow_rejects_pre_deferred_pin(self):
+        workflow = yaml.safe_load(MODULE.WORKFLOW.read_text(encoding="utf-8"))
+        workflow["jobs"]["type-surface"]["uses"] = (
+            "Verjson/.github/.github/workflows/node-ci.yml@"
+            "c973a841694a41bf0b9bcd70432f64850cba0850"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "required.yml"
+            path.write_text(yaml.safe_dump(workflow), encoding="utf-8")
+            with self.assertRaisesRegex(MODULE.ContractError, "deferred-ci"):
+                MODULE.validate_workflow(path)
+
+    def test_required_workflow_rejects_missing_status_permission(self):
+        workflow = yaml.safe_load(MODULE.WORKFLOW.read_text(encoding="utf-8"))
+        del workflow["permissions"]["statuses"]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "required.yml"
+            path.write_text(yaml.safe_dump(workflow), encoding="utf-8")
+            with self.assertRaisesRegex(MODULE.ContractError, "permissions drifted"):
+                MODULE.validate_workflow(path)
 
     def test_required_baseline_is_allowed_by_the_current_consumer_package_policy(self):
         policy = json.loads((ROOT / "scripts/fixtures/authn-type-surface/package-policy.json").read_text())

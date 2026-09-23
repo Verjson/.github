@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 CONTRACT = ROOT / "config/authn-type-surface-ruleset.json"
 WORKFLOW = ROOT / ".github/workflows/authn-type-surface-required.yml"
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
+NODE_CI_SHA = "c419bd632400e9d8c06e33b468921d6e3e10ec81"
+NODE_CI_WORKFLOW = ".github/workflows/node-ci.yml"
 RELEASE_BYPASS = [{
     "actor_id": 4583107, "actor_type": "Integration", "bypass_mode": "always",
 }]
@@ -115,6 +117,46 @@ def read_contract(path=CONTRACT):
     return contract
 
 
+def read_pinned_node_ci_workflow(pin, repo_root=ROOT):
+    require(SHA_PATTERN.fullmatch(pin) is not None,
+            "node-ci pin must be an immutable commit SHA")
+    present = subprocess.run(
+        ["git", "cat-file", "-e", f"{pin}^{{commit}}"],
+        cwd=repo_root,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if present.returncode != 0:
+        fetched = subprocess.run(
+            ["git", "fetch", "--quiet", "--no-tags", "--depth", "1", "origin", pin],
+            cwd=repo_root,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        require(fetched.returncode == 0,
+                "node-ci pin does not resolve from the canonical repository")
+    resolved = subprocess.run(
+        ["git", "show", f"{pin}:{NODE_CI_WORKFLOW}"],
+        cwd=repo_root,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        check=False,
+    )
+    require(resolved.returncode == 0,
+            "node-ci pin does not contain the canonical workflow")
+    try:
+        document = yaml.safe_load(resolved.stdout)
+    except yaml.YAMLError as error:
+        raise ContractError(f"pinned node-ci workflow is invalid YAML: {error}") from None
+    require(isinstance(document, dict), "pinned node-ci workflow must be a mapping")
+    require(isinstance(document.get("jobs"), dict),
+            "pinned node-ci workflow must declare jobs")
+    return document
+
+
 def validate_workflow(path=WORKFLOW):
     document = yaml.safe_load(path.read_text(encoding="utf-8"))
     require(document.get(True) == {"pull_request": None},
@@ -127,10 +169,16 @@ def validate_workflow(path=WORKFLOW):
     job = document["jobs"]["type-surface"]
     require(job.get("if") == "github.repository == 'Verjson/verjson-authn'",
             "required workflow repository guard drifted")
-    require(job.get("uses") == (
-        "Verjson/.github/.github/workflows/node-ci.yml@"
-        "c973a841694a41bf0b9bcd70432f64850cba0850"
-    ), "required workflow must call immutable protected canonical node-ci")
+    use_prefix = "Verjson/.github/.github/workflows/node-ci.yml@"
+    uses = job.get("uses", "")
+    require(isinstance(uses, str) and uses.startswith(use_prefix),
+            "required workflow must call canonical node-ci")
+    pin = uses.removeprefix(use_prefix)
+    callee = read_pinned_node_ci_workflow(pin)
+    require(isinstance(callee["jobs"].get("deferred-ci"), dict),
+            "required workflow node-ci pin lacks ADR 0178 deferred-ci")
+    require(pin == NODE_CI_SHA,
+            "required workflow node-ci pin drifted from generated canonical caller")
     require(job.get("permissions") == document["permissions"],
             "required workflow job permissions drifted")
     require(job.get("secrets") == {"NODE_AUTH_TOKEN": "${{ secrets.GITHUB_TOKEN }}"},
