@@ -3642,15 +3642,20 @@ jobs:
           ):
               sys.exit("RUNNER_TEMP is not a canonical directory")
           runner_temp = runner_temp_input
-          baseline = Path(os.path.abspath(os.environ["npm_config_cache"]))
-          if not baseline.is_absolute() or baseline.is_symlink() or not baseline.is_dir():
-              sys.exit("verified runtime cache is not an absolute regular directory")
-          if baseline.resolve() != baseline:
-              sys.exit("verified runtime cache path contains a symlink")
-          try:
-              baseline.resolve().relative_to(runner_temp)
-          except ValueError:
-              sys.exit("verified runtime cache escapes RUNNER_TEMP")
+          baseline_value = os.environ.get("npm_config_cache", "").strip()
+          baseline = None
+          if baseline_value:
+              candidate_baseline = Path(os.path.abspath(baseline_value))
+              if candidate_baseline.exists() or candidate_baseline.is_symlink():
+                baseline = candidate_baseline
+                if not baseline.is_absolute() or baseline.is_symlink() or not baseline.is_dir():
+                  sys.exit("verified runtime cache is not an absolute regular directory")
+                if baseline.resolve() != baseline:
+                  sys.exit("verified runtime cache path contains a symlink")
+                try:
+                  baseline.resolve().relative_to(runner_temp)
+                except ValueError:
+                  sys.exit("verified runtime cache escapes RUNNER_TEMP")
 
           bubblewrap = Path("/usr/bin/bwrap")
           try:
@@ -3712,7 +3717,7 @@ jobs:
                       files.append((relative, size, digest.hexdigest()))
               return tuple(sorted(files))
 
-          baseline_inventory = inventory(baseline)
+          baseline_inventory = inventory(baseline) if baseline is not None else ()
           cache_root = Path(os.environ["CANDIDATE_CACHE_ROOT"])
           if (
               not cache_root.is_absolute()
@@ -3734,9 +3739,9 @@ jobs:
             sys.exit("candidate workspace is not a canonical directory")
           if workspace == runner_temp or workspace in runner_temp.parents or runner_temp in workspace.parents:
               sys.exit("candidate workspace and RUNNER_TEMP overlap")
-          if baseline.parent != runner_temp or cache_root.parent != runner_temp:
+          if (baseline is not None and baseline.parent != runner_temp) or cache_root.parent != runner_temp:
               sys.exit("candidate cache roots are not exact RUNNER_TEMP children")
-          if baseline == cache_root or baseline in cache_root.parents or cache_root in baseline.parents:
+          if baseline is not None and (baseline == cache_root or baseline in cache_root.parents or cache_root in baseline.parents):
               sys.exit("candidate cache baseline and isolation root overlap")
           if any(os.environ.get(name) for name in ("DB_HOST", "DB_PORT", "CACHE_PORT")):
               sys.exit("protected candidate scripts do not permit shared service networking")
@@ -3781,7 +3786,9 @@ jobs:
               ):
                 sys.exit(f"{label} ancestry has unsafe ownership mode")
 
-          candidate_controlled_roots = (workspace, runner_temp, baseline, cache_root)
+          candidate_controlled_roots = tuple(
+              root for root in (workspace, runner_temp, baseline, cache_root) if root is not None
+          )
           if any(paths_overlap(trusted_tool_root, path) for path in candidate_controlled_roots):
               sys.exit("trusted setup-node tool root overlaps candidate-controlled paths")
           trusted_root_metadata = trusted_tool_root.stat(follow_symlinks=False)
@@ -4041,7 +4048,7 @@ jobs:
               signal.signal(caught_signal, handle_signal)
           try:
               for index, (script_directory, name, unset_env) in enumerate(normalized):
-                  if inventory(baseline) != baseline_inventory:
+                  if baseline is not None and inventory(baseline) != baseline_inventory:
                       sys.exit("verified runtime cache changed before candidate script")
                   script_cache = cache_root / str(index)
                   script_cache.mkdir(mode=0o700)
@@ -4049,23 +4056,26 @@ jobs:
                   script_home = cache_root / f"home-{index}"
                   script_tmp.mkdir(mode=0o700)
                   script_home.mkdir(mode=0o700)
-                  for relative, _size, _digest in baseline_inventory:
-                      source = baseline / relative
-                      target = script_cache / relative
-                      target.parent.mkdir(parents=True, exist_ok=True)
-                      try:
-                          source_descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
-                      except OSError:
-                          sys.exit("verified runtime cache changed during isolated copy")
-                      if not stat.S_ISREG(os.fstat(source_descriptor).st_mode):
-                          os.close(source_descriptor)
-                          sys.exit("verified runtime cache copy source is not a regular file")
-                      with (
-                          os.fdopen(source_descriptor, "rb") as source_stream,
-                          target.open("xb") as target_stream,
-                      ):
-                          shutil.copyfileobj(source_stream, target_stream, length=1024 * 1024)
-                  if inventory(baseline) != baseline_inventory or inventory(script_cache) != baseline_inventory:
+                  if baseline is not None:
+                      for relative, _size, _digest in baseline_inventory:
+                          source = baseline / relative
+                          target = script_cache / relative
+                          target.parent.mkdir(parents=True, exist_ok=True)
+                          try:
+                              source_descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
+                          except OSError:
+                              sys.exit("verified runtime cache changed during isolated copy")
+                          if not stat.S_ISREG(os.fstat(source_descriptor).st_mode):
+                              os.close(source_descriptor)
+                              sys.exit("verified runtime cache copy source is not a regular file")
+                          with (
+                              os.fdopen(source_descriptor, "rb") as source_stream,
+                              target.open("xb") as target_stream,
+                          ):
+                              shutil.copyfileobj(source_stream, target_stream, length=1024 * 1024)
+                  if (baseline is not None and inventory(baseline) != baseline_inventory) or (
+                      inventory(script_cache) != baseline_inventory
+                  ):
                       sys.exit("isolated candidate cache copy failed integrity verification")
                   script_env = os.environ.copy()
                   for env_name in unset_env:
@@ -4198,14 +4208,14 @@ jobs:
                   script_cache.exists()
                   or script_tmp.exists()
                   or script_home.exists()
-                  or inventory(baseline) != baseline_inventory
+                  or (baseline is not None and inventory(baseline) != baseline_inventory)
                 ):
                   sys.exit("candidate script cache cleanup or baseline integrity check failed")
           finally:
               cleanup_cache_root()
               for caught_signal, previous_handler in previous_handlers.items():
                   signal.signal(caught_signal, previous_handler)
-          if cache_root.exists() or inventory(baseline) != baseline_inventory:
+          if cache_root.exists() or (baseline is not None and inventory(baseline) != baseline_inventory):
               sys.exit("candidate cache root cleanup or final baseline integrity check failed")
           PY
           candidate_cache_supervisor_pid=$!
