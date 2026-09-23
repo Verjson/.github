@@ -4,6 +4,7 @@
 - **Status:** Accepted
 - **Related:** [ADR 0178](../0178-publish-deferred-ci-as-its-own-check/README.md), [ADR 0184](../0184-merge-gates-assert-execution-not-absence-of-red/README.md), [ADR 0185](../0185-org-contract-distribution/README.md)
 - **Issues:** [Verjson/verjson-ci#186](https://github.com/Verjson/verjson-ci/issues/186), [Verjson/verjson-compliance#23](https://github.com/Verjson/verjson-compliance/issues/23), [Verjson/verjson-compliance-schema#12](https://github.com/Verjson/verjson-compliance-schema/issues/12)
+- **Superseded in part by:** [ADR 0206](../0206-ai-authorization-property-is-independent/README.md)
 
 ## Context
 
