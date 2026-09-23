@@ -93,7 +93,7 @@ class AuthnTypeSurfaceRulesetTest(unittest.TestCase):
         workflow = yaml.safe_load(MODULE.WORKFLOW.read_text(encoding="utf-8"))
         request = json.loads(workflow["jobs"]["type-surface"]["with"]["secretless-compatibility-ranges"])
 
-        self.assertEqual(["2.0.0"], request["ranges"])
+        self.assertEqual(["3.0.0"], request["ranges"])
         self.assertTrue(set(request["ranges"]).issubset(policy["compatibility"][request["package"]]))
         self.assertNotIn("1.0.3", policy["compatibility"]["@verjson/authn"])
 
