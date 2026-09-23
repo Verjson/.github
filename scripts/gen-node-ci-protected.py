@@ -23,6 +23,310 @@ CREDENTIAL_ENV_KEYS = (
 CANDIDATE_CACHE_MAX_FILES = 4096
 CANDIDATE_CACHE_MAX_BYTES = 268435456
 
+PROTECTED_INPUTS = """      protected-type-surface-declaration-path:
+        description: Repository-relative declaration fetched from the authenticated pull-request base SHA.
+        required: false
+        type: string
+        default: ''
+      protected-type-surface-expected-package:
+        description: Protected package identity the base declaration must select.
+        required: false
+        type: string
+        default: ''
+      protected-type-surface-expected-script:
+        description: Protected compatibility script the base declaration must select.
+        required: false
+        type: string
+        default: ''
+      protected-type-surface-allow-prerelease:
+        description: Explicitly authorize a prerelease baseline; stable released versions are the default.
+        required: false
+        type: boolean
+        default: false
+"""
+
+PROTECTED_BASELINE_STEP = """      - name: Resolve protected type-surface baseline from the pull-request base
+        id: resolve-protected-type-surface
+        if: needs.eligibility.outputs.should-run != 'false' && inputs.protected-type-surface-declaration-path != ''
+        env:
+          ALLOW_PRERELEASE: ${{ inputs.protected-type-surface-allow-prerelease }}
+          DECLARATION_PATH: ${{ inputs.protected-type-surface-declaration-path }}
+          EXPECTED_PACKAGE: ${{ inputs.protected-type-surface-expected-package }}
+          EXPECTED_SCRIPT: ${{ inputs.protected-type-surface-expected-script }}
+          GH_TOKEN: ${{ github.token }}
+          PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_ID: ${{ github.run_id }}
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          repository = os.environ["REPOSITORY"]
+          declaration_path = os.environ["DECLARATION_PATH"]
+          expected_package = os.environ["EXPECTED_PACKAGE"]
+          expected_script = os.environ["EXPECTED_SCRIPT"]
+          pull_request_number = os.environ["PULL_REQUEST_NUMBER"]
+          if (
+              not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository)
+              or not re.fullmatch(r"[1-9][0-9]*", pull_request_number)
+              or not declaration_path
+              or declaration_path.startswith("/")
+              or "//" in declaration_path
+              or any(segment in ("", ".", "..") for segment in declaration_path.split("/"))
+              or not re.fullmatch(r"[A-Za-z0-9._/-]+", declaration_path)
+              or not expected_package
+              or not expected_script
+          ):
+              raise SystemExit("protected type-surface declaration inputs are malformed")
+
+          def github_api(arguments):
+              result = subprocess.run(
+                  ["gh", "api", *arguments],
+                  check=False,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.DEVNULL,
+              )
+              if result.returncode != 0:
+                  raise SystemExit("authenticated GitHub declaration lookup failed")
+              return result.stdout
+
+          # This is the sole pull-request lookup. The immutable base SHA it
+          # returns is the only ref used for the declaration request below.
+          base_sha = github_api(
+              [f"repos/{repository}/pulls/{pull_request_number}", "--jq", ".base.sha"]
+          ).decode("utf-8", errors="strict").strip()
+          if re.fullmatch(r"[0-9a-f]{40}", base_sha) is None:
+              raise SystemExit("pull-request base SHA is not an immutable commit")
+          declaration_bytes = github_api(
+              [
+                  "-H",
+                  "Accept: application/vnd.github.raw+json",
+                  f"repos/{repository}/contents/{declaration_path}?ref={base_sha}",
+              ]
+          )
+
+          class DuplicateObjectKeyError(ValueError):
+              pass
+
+          def reject_duplicate_object_keys(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise DuplicateObjectKeyError
+                  result[key] = value
+              return result
+
+          try:
+              declaration = json.loads(
+                  declaration_bytes.decode("utf-8"),
+                  object_pairs_hook=reject_duplicate_object_keys,
+              )
+          except (UnicodeDecodeError, json.JSONDecodeError, DuplicateObjectKeyError) as error:
+              raise SystemExit(f"protected type-surface declaration is invalid: {error}")
+          if not isinstance(declaration, dict) or set(declaration) != {"package", "version", "script"}:
+              raise SystemExit("protected type-surface declaration requires exactly package, version, and script")
+
+          package = declaration["package"]
+          version = declaration["version"]
+          script = declaration["script"]
+          package_pattern = r"@[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*"
+          version_core = r"(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)"
+          stable_version = re.compile(version_core)
+          prerelease_version = re.compile(
+              version_core + r"-(?:[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)"
+          )
+          if (
+              not isinstance(package, str)
+              or re.fullmatch(package_pattern, package) is None
+              or package != expected_package
+              or not isinstance(version, str)
+              or (stable_version.fullmatch(version) is None
+                  and not (os.environ["ALLOW_PRERELEASE"] == "true"
+                           and prerelease_version.fullmatch(version)))
+              or version == "latest"
+              or not isinstance(script, str)
+              or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9:._-]{0,127}", script) is None
+              or script != expected_script
+          ):
+              raise SystemExit("protected type-surface declaration is unauthorized")
+
+          receipt = {
+              "schemaVersion": 1,
+              "repository": repository,
+              "declarationPath": declaration_path,
+              "baseSha": base_sha,
+              "declarationSha256": hashlib.sha256(declaration_bytes).hexdigest(),
+              "package": package,
+              "version": version,
+              "script": script,
+          }
+          run_root = Path(os.environ["RUNNER_TEMP"]) / (
+              f"protected-type-surface-{os.environ['RUN_ID']}-{os.environ['RUN_ATTEMPT']}"
+          )
+          run_root.mkdir(mode=0o700, parents=True, exist_ok=False)
+          receipt_path = run_root / "receipt.json"
+          receipt_path.write_text(
+              json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\\n",
+              encoding="utf-8",
+          )
+          request = json.dumps(
+              {"package": package, "ranges": [version], "script": script},
+              separators=(",", ":"),
+          )
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+              output.write(f"compatibility-ranges={request}\\n")
+              output.write(f"receipt-path={receipt_path}\\n")
+              output.write(f"base-sha={base_sha}\\n")
+              output.write(f"declaration-sha256={receipt['declarationSha256']}\\n")
+              output.write(f"package={package}\\n")
+              output.write(f"version={version}\\n")
+              output.write(f"script={script}\\n")
+          PY
+"""
+
+PROTECTED_BASELINE_BIND_STEP = """      - name: Bind protected baseline receipt to verified artifact provenance
+        if: inputs.protected-type-surface-declaration-path != ''
+        env:
+          COMPATIBILITY_PROVENANCE: ${{ runner.temp }}/secretless-compatibility-${{ github.run_id }}-${{ github.run_attempt }}/_compatibility/provenance.json
+          PROTECTED_BASELINE_RECEIPT: ${{ steps.resolve-protected-type-surface.outputs.receipt-path }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          class DuplicateObjectKeyError(ValueError):
+              pass
+
+          def reject_duplicate_object_keys(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise DuplicateObjectKeyError
+                  result[key] = value
+              return result
+
+          def read_json(path):
+              try:
+                  return json.loads(
+                      Path(path).read_text(encoding="utf-8"),
+                      object_pairs_hook=reject_duplicate_object_keys,
+                  )
+              except (OSError, UnicodeDecodeError, json.JSONDecodeError, DuplicateObjectKeyError) as error:
+                  raise SystemExit(f"protected baseline receipt is invalid: {error}")
+
+          receipt = read_json(os.environ["PROTECTED_BASELINE_RECEIPT"])
+          receipt_fields = {
+              "schemaVersion", "repository", "declarationPath", "baseSha",
+              "declarationSha256", "package", "version", "script",
+          }
+          if not isinstance(receipt, dict) or set(receipt) != receipt_fields or receipt["schemaVersion"] != 1:
+              raise SystemExit("protected baseline receipt has an invalid shape")
+          provenance_path = Path(os.environ["COMPATIBILITY_PROVENANCE"])
+          provenance = read_json(provenance_path)
+          if (
+              not isinstance(provenance, dict)
+              or set(provenance) != {"schemaVersion", "request", "lanes"}
+              or provenance["schemaVersion"] != 1
+              or not isinstance(provenance["request"], dict)
+              or not isinstance(provenance["lanes"], list)
+              or len(provenance["lanes"]) != 1
+          ):
+              raise SystemExit("protected baseline compatibility provenance has an invalid shape")
+          request = provenance["request"]
+          if (
+              set(request) != {"package", "ranges", "script"}
+              or request["package"] != receipt["package"]
+              or request["ranges"] != [receipt["version"]]
+              or request["script"] != receipt["script"]
+          ):
+              raise SystemExit("protected baseline receipt does not match the compatibility request")
+          lane = provenance["lanes"][0]
+          if (
+              not isinstance(lane, dict)
+              or lane.get("package") != receipt["package"]
+              or lane.get("range") != receipt["version"]
+              or lane.get("version") != receipt["version"]
+              or lane.get("script") != receipt["script"]
+              or not all(isinstance(lane.get(key), str) and lane[key] for key in ("integrity", "tarball", "sha512"))
+          ):
+              raise SystemExit("protected baseline artifact provenance does not match the declaration")
+          protected_baseline = dict(receipt)
+          protected_baseline["artifact"] = {
+              "integrity": lane["integrity"],
+              "tarball": lane["tarball"],
+              "sha512": lane["sha512"],
+          }
+          provenance["protectedBaseline"] = protected_baseline
+          provenance_path.write_text(
+              json.dumps(provenance, sort_keys=True, separators=(",", ":")) + "\\n",
+              encoding="utf-8",
+          )
+          PY
+"""
+
+PROTECTED_BASELINE_TRANSFER_VALIDATION = """          protected_baseline = provenance.get("protectedBaseline")
+          expected_path = os.environ.get("PROTECTED_BASELINE_DECLARATION_PATH", "")
+          if expected_path:
+              receipt_fields = {
+                  "schemaVersion", "repository", "declarationPath", "baseSha",
+                  "declarationSha256", "package", "version", "script", "artifact",
+              }
+              if not isinstance(protected_baseline, dict) or set(protected_baseline) != receipt_fields:
+                  raise SystemExit("protected baseline receipt is missing or malformed")
+              if (
+                  protected_baseline["schemaVersion"] != 1
+                  or protected_baseline["repository"] != os.environ["PROTECTED_BASELINE_REPOSITORY"]
+                  or protected_baseline["declarationPath"] != expected_path
+                  or protected_baseline["baseSha"] != os.environ["EXPECTED_PROTECTED_BASELINE_BASE_SHA"]
+                  or protected_baseline["declarationSha256"] != os.environ["EXPECTED_PROTECTED_BASELINE_DECLARATION_SHA256"]
+                  or protected_baseline["package"] != os.environ["PROTECTED_BASELINE_EXPECTED_PACKAGE"]
+                  or protected_baseline["script"] != os.environ["PROTECTED_BASELINE_EXPECTED_SCRIPT"]
+                  or not isinstance(protected_baseline["version"], str)
+                  or request != {
+                      "package": protected_baseline["package"],
+                      "ranges": [protected_baseline["version"]],
+                      "script": protected_baseline["script"],
+                  }
+                  or not isinstance(protected_baseline["artifact"], dict)
+                  or set(protected_baseline["artifact"]) != {"integrity", "tarball", "sha512"}
+                  or len(provenance.get("lanes", [])) != 1
+                  or not isinstance(provenance["lanes"][0], dict)
+                  or any(
+                      protected_baseline["artifact"][key] != provenance["lanes"][0].get(key)
+                      for key in ("integrity", "tarball", "sha512")
+                  )
+                  or provenance["lanes"][0].get("package") != protected_baseline["package"]
+                  or provenance["lanes"][0].get("version") != protected_baseline["version"]
+                  or provenance["lanes"][0].get("script") != protected_baseline["script"]
+              ):
+                  raise SystemExit("protected baseline receipt does not bind declaration, base, and artifact")
+          elif protected_baseline is not None:
+              raise SystemExit("unexpected protected baseline receipt")
+"""
+
+PROTECTED_BASELINE_REF_STEP = """      - name: Export protected type-surface base SHA
+        if: needs.eligibility.outputs.should-run != 'false' && inputs.protected-type-surface-declaration-path != ''
+        env:
+          BASE_SHA: ${{ needs.acquire-secretless-dependencies.outputs.protected-baseline-base-sha }}
+        run: |
+          set -euo pipefail
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::protected type-surface base SHA is unavailable"
+            exit 1
+          }
+          echo "VERJSON_TYPE_SURFACE_BASE_SHA=$BASE_SHA" >> "$GITHUB_ENV"
+"""
+
 INPUTS = """      event-name:\n        description: Authenticated pull-request event identity.\n        required: true\n        type: string\n+      head-repository:\n        description: Authenticated pull-request head repository.\n        required: true\n        type: string\n+      head-sha:\n        description: Authenticated immutable pull-request head SHA.\n        required: true\n        type: string\n+"""
 
 VERIFY_STEP = """      - name: Revalidate protected pull-request identity\n        env:\n          ADMITTED_EVENT: ${{ inputs.event-name }}\n          ADMITTED_HEAD_REPOSITORY: ${{ inputs.head-repository }}\n          ADMITTED_HEAD_SHA: ${{ inputs.head-sha }}\n          GH_TOKEN: ${{ github.token }}\n          REPOSITORY: ${{ github.repository }}\n          RUN_ID: ${{ github.run_id }}\n        run: |\n          set -euo pipefail\n          [ "$ADMITTED_EVENT" = pull_request ]\n          [ -n "$ADMITTED_HEAD_REPOSITORY" ]\n          [[ "$ADMITTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]\n          [[ "$RUN_ID" =~ ^[1-9][0-9]*$ ]]\n          run_record="$(gh api "repos/$REPOSITORY/actions/runs/$RUN_ID" --jq '[.event,.head_sha,(.pull_requests|length),(.pull_requests[0].number//"")]|@tsv')"\n          IFS=$'\\t' read -r run_event run_head binding_count pr_number <<<"$run_record"\n          [ "$run_event" = "$ADMITTED_EVENT" ]\n          [ "$run_head" = "$ADMITTED_HEAD_SHA" ]\n          [ "$binding_count" = 1 ]\n          [[ "$pr_number" =~ ^[1-9][0-9]*$ ]]\n          pr_record="$(gh api "repos/$REPOSITORY/pulls/$pr_number" --jq '[.state,.head.repo.full_name,.head.sha]|@tsv')"\n          IFS=$'\\t' read -r pr_state pr_head_repository pr_head_sha <<<"$pr_record"\n          [ "$pr_state" = open ]\n          [ "$pr_head_repository" = "$ADMITTED_HEAD_REPOSITORY" ]\n          [ "$pr_head_sha" = "$ADMITTED_HEAD_SHA" ]\n+"""
@@ -767,10 +1071,183 @@ def remove_step(document: str, step_name: str) -> str:
     return document[:step_start] + document[step_end + 1:]
 
 
+def insert_protected_baseline_step(document: str) -> str:
+    acquisition_start = document.index("  acquire-secretless-dependencies:\n")
+    checkout_marker = "      - uses: actions/checkout@"
+    checkout_start = document.index(checkout_marker, acquisition_start)
+    return document[:checkout_start] + PROTECTED_BASELINE_STEP + document[checkout_start:]
+
+
+def configure_protected_baseline(document: str) -> str:
+    def insert_after_signature(source: str, signature: str, body: str) -> str:
+        lines = source.splitlines(keepends=True)
+        matches = [index for index, line in enumerate(lines) if line.strip() == signature]
+        if len(matches) != 1:
+            raise SystemExit(f"protected node-ci expected one {signature!r} boundary")
+        index = matches[0]
+        indentation = lines[index][: len(lines[index]) - len(lines[index].lstrip())]
+        body_lines = [
+            f"{indentation}  {line}\n" for line in body.splitlines()
+        ]
+        lines[index + 1 : index + 1] = body_lines
+        return "".join(lines)
+
+    document = insert_after_signature(
+        document,
+        "def is_bounded_range(value):",
+        'if os.environ.get("ALLOW_PRERELEASE") == "true" and re.fullmatch('
+        'rf"{core_pattern}-(?:[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)", value):\n'
+        "  return True",
+    )
+    document = insert_after_signature(
+        document,
+        "def satisfies_bounded_range(version, range_value):",
+        'if (\n'
+        'os.environ.get("ALLOW_PRERELEASE") == "true"\n'
+        "and \"-\" in range_value\n"
+        "and version == range_value\n"
+        "and version_pattern.fullmatch(version)\n"
+        "):\n"
+        "  return True",
+    )
+    acquisition_end = document.index("  build-test:\n")
+    acquisition = document[:acquisition_end]
+    remainder = document[acquisition_end:]
+    dynamic_request = (
+        "COMPATIBILITY_RANGES: ${{ steps.resolve-protected-type-surface.outputs.compatibility-ranges "
+        "|| inputs.secretless-compatibility-ranges }}"
+    )
+    if "COMPATIBILITY_RANGES: ${{ inputs.secretless-compatibility-ranges }}" not in acquisition:
+        raise SystemExit("protected node-ci compatibility input boundary drifted")
+    acquisition = acquisition.replace(
+        "COMPATIBILITY_RANGES: ${{ inputs.secretless-compatibility-ranges }}",
+        dynamic_request,
+    )
+
+    acquisition_gate = "if: inputs.secretless-compatibility-ranges != ''"
+    if acquisition.count(acquisition_gate) != 1:
+        raise SystemExit("protected node-ci compatibility acquisition gate drifted")
+    acquisition = acquisition.replace(
+        acquisition_gate,
+        "if: inputs.protected-type-surface-declaration-path != '' || "
+        "inputs.secretless-compatibility-ranges != ''",
+        1,
+    )
+
+    compatibility_marker = dynamic_request
+    if acquisition.count(compatibility_marker) < 1:
+        raise SystemExit("protected node-ci compatibility environment drifted")
+    environment_lines = []
+    for line in acquisition.splitlines(keepends=True):
+        environment_lines.append(line)
+        if line.lstrip().startswith(compatibility_marker):
+            indentation = line[: len(line) - len(line.lstrip())]
+            environment_lines.append(
+                indentation
+                + "ALLOW_PRERELEASE: ${{ inputs.protected-type-surface-allow-prerelease }}\n"
+            )
+    acquisition = "".join(environment_lines)
+    provenance_env = (
+        "          COMPATIBILITY_PROVENANCE: ${{ runner.temp }}/secretless-compatibility-"
+        "${{ github.run_id }}-${{ github.run_attempt }}/_compatibility/provenance.json\n"
+    )
+    if acquisition.count(provenance_env) != 1:
+        raise SystemExit("protected node-ci compatibility provenance environment drifted")
+    acquisition = acquisition.replace(
+        provenance_env,
+        provenance_env
+        + "          PROTECTED_BASELINE_RECEIPT_PATH: ${{ steps.resolve-protected-type-surface.outputs.receipt-path }}\n",
+        1,
+    )
+    auxiliary_marker = "      - name: Resolve immutable auxiliary source\n"
+    if acquisition.count(auxiliary_marker) != 1:
+        raise SystemExit("protected node-ci auxiliary boundary drifted")
+    acquisition = acquisition.replace(
+        auxiliary_marker,
+        PROTECTED_BASELINE_BIND_STEP + auxiliary_marker,
+        1,
+    )
+    outputs_marker = (
+        "      compatibility-provenance-sha256: ${{ steps.package-secretless-transfer.outputs.compatibility-provenance-sha256 }}\n"
+    )
+    if acquisition.count(outputs_marker) != 1:
+        raise SystemExit("protected node-ci acquisition outputs drifted")
+    acquisition = acquisition.replace(
+        outputs_marker,
+        outputs_marker
+        + "      protected-baseline-request: ${{ steps.resolve-protected-type-surface.outputs.compatibility-ranges }}\n"
+        + "      protected-baseline-base-sha: ${{ steps.resolve-protected-type-surface.outputs.base-sha }}\n"
+        + "      protected-baseline-declaration-sha256: ${{ steps.resolve-protected-type-surface.outputs.declaration-sha256 }}\n",
+        1,
+    )
+
+    build = remainder
+    build_request = (
+        "COMPATIBILITY_RANGES: ${{ needs.acquire-secretless-dependencies.outputs.protected-baseline-request "
+        "|| inputs.secretless-compatibility-ranges }}"
+    )
+    if "COMPATIBILITY_RANGES: ${{ inputs.secretless-compatibility-ranges }}" not in build:
+        raise SystemExit("protected node-ci build compatibility input boundary drifted")
+    build = build.replace(
+        "COMPATIBILITY_RANGES: ${{ inputs.secretless-compatibility-ranges }}",
+        build_request,
+    )
+    expected_provenance = (
+        "          EXPECTED_COMPATIBILITY_PROVENANCE_SHA256: ${{ needs.acquire-secretless-dependencies.outputs.compatibility-provenance-sha256 }}\n"
+    )
+    if build.count(expected_provenance) < 1:
+        raise SystemExit("protected node-ci expected provenance environment drifted")
+    build = build.replace(
+        expected_provenance,
+        expected_provenance
+        + "          EXPECTED_PROTECTED_BASELINE_BASE_SHA: ${{ needs.acquire-secretless-dependencies.outputs.protected-baseline-base-sha }}\n"
+        + "          EXPECTED_PROTECTED_BASELINE_DECLARATION_SHA256: ${{ needs.acquire-secretless-dependencies.outputs.protected-baseline-declaration-sha256 }}\n"
+        + "          PROTECTED_BASELINE_DECLARATION_PATH: ${{ inputs.protected-type-surface-declaration-path }}\n"
+        + "          PROTECTED_BASELINE_EXPECTED_PACKAGE: ${{ inputs.protected-type-surface-expected-package }}\n"
+        + "          PROTECTED_BASELINE_EXPECTED_SCRIPT: ${{ inputs.protected-type-surface-expected-script }}\n"
+        + "          PROTECTED_BASELINE_REPOSITORY: ${{ github.repository }}\n",
+        1,
+    )
+    baseline_shape = (
+        '                      or set(provenance) != {"schemaVersion", "request", "lanes"}\n'
+    )
+    if build.count(baseline_shape) < 1:
+        raise SystemExit("protected node-ci provenance shape guard drifted")
+    build = build.replace(
+        baseline_shape,
+        '                      or set(provenance) not in ({"schemaVersion", "request", "lanes"}, {"schemaVersion", "request", "lanes", "protectedBaseline"})\n',
+        1,
+    )
+    baseline_parse = "              provenance = json.loads(provenance_bytes)\n"
+    if build.count(baseline_parse) < 1:
+        raise SystemExit("protected node-ci provenance parser drifted")
+    build = build.replace(
+        baseline_parse,
+        baseline_parse
+        + "".join(
+            f"    {line}"
+            for line in PROTECTED_BASELINE_TRANSFER_VALIDATION.splitlines(keepends=True)
+        ),
+        1,
+    )
+    return acquisition + build
+
+
 def render() -> str:
     document = SOURCE.read_text(encoding="utf-8")
-    document = replace_once(document, "# Reusable CI for the verJSON Node libraries:", "# Generated by scripts/gen-node-ci-protected.py; do not edit.\n# Protected required-workflow Node.js CI variant:")
-    document = replace_once(document, "      db-image:\n", INPUTS + "      db-image:\n")
+    document = replace_once(
+        document,
+        "# Reusable CI for the verJSON Node libraries:",
+        "# Generated by scripts/gen-node-ci-protected.py; do not edit.\n"
+        "# Protected required-workflow Node.js CI variant:",
+    )
+    document = replace_once(
+        document,
+        "      db-image:\n",
+        INPUTS + PROTECTED_INPUTS + "      db-image:\n",
+    )
+    document = insert_protected_baseline_step(document)
+    document = configure_protected_baseline(document)
     document = replace_once(document, "          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}", "          HEAD_SHA: ${{ inputs.head-sha }}")
     document = replace_once(document, "    permissions:\n      contents: read\n      packages: read\n", "    permissions:\n      actions: read\n      contents: read\n      packages: read\n      pull-requests: read\n")
     document = replace_once(document, "          EVENT_NAME: ${{ github.event_name }}\n          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}", "          EVENT_NAME: ${{ inputs.event-name }}\n          HEAD_REPOSITORY: ${{ inputs.head-repository }}")
@@ -793,7 +1270,13 @@ def render() -> str:
     plan_if = "needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && (inputs.secretless-ci-script-plan != '' || inputs.secretless-nested-manifests != '')"
     default_if = "needs.eligibility.outputs.should-run != 'false' && (!(inputs.secretless-pr || inputs.secretless-trusted-ref) || inputs.secretless-ci-script-plan == '')"
     document = replace_once(document, "      - name: Rebuild exact approved lifecycle packages without credentials\n", verifier_step(rebuild_if) + "      - name: Rebuild exact approved lifecycle packages without credentials\n")
-    document = replace_once(document, "      - name: Run exact credentialless consumer script plan\n", verifier_step(plan_if) + "      - name: Run exact credentialless consumer script plan\n")
+    document = replace_once(
+        document,
+        "      - name: Run exact credentialless consumer script plan\n",
+        PROTECTED_BASELINE_REF_STEP
+        + verifier_step(plan_if)
+        + "      - name: Run exact credentialless consumer script plan\n",
+    )
     default_commands = """      - run: npm run build
         if: needs.eligibility.outputs.should-run != 'false' && (!(inputs.secretless-pr || inputs.secretless-trusted-ref) || inputs.secretless-ci-script-plan == '')
       - run: npm run typecheck --if-present
@@ -812,9 +1295,32 @@ def render() -> str:
           npm run lint --if-present
 """
     document = replace_once(document, default_commands, verifier_step(default_if) + grouped_default)
-    compatibility_if = "needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.secretless-compatibility-ranges != ''"
+    compatibility_if = (
+        "needs.eligibility.outputs.should-run != 'false' && "
+        "(inputs.secretless-pr || inputs.secretless-trusted-ref) && "
+        "(inputs.protected-type-surface-declaration-path != '' || "
+        "inputs.secretless-compatibility-ranges != '')"
+    )
+    legacy_compatibility_if = (
+        "needs.eligibility.outputs.should-run != 'false' && "
+        "(inputs.secretless-pr || inputs.secretless-trusted-ref) && "
+        "inputs.secretless-compatibility-ranges != ''"
+    )
+    if document.count(legacy_compatibility_if) != 2:
+        raise SystemExit("protected node-ci compatibility runtime gate drifted")
+    document = document.replace(legacy_compatibility_if, compatibility_if)
     document = replace_once(document, "      - name: Run runtime-resolved compatibility lanes without credentials\n", verifier_step(compatibility_if) + "      - name: Run runtime-resolved compatibility lanes without credentials\n")
     document = remove_step(document, "Install schema submodule deps")
+    document = document.replace(
+        "          ref: ${{ inputs.head-sha }}\n          persist-credentials: false\n",
+        "          ref: ${{ inputs.head-sha }}\n          fetch-depth: 0\n          persist-credentials: false\n",
+        1,
+    )
+    document = document.replace(
+        "          ref: ${{ inputs.head-sha }}\n          submodules: ${{ (inputs.secretless-pr || inputs.secretless-trusted-ref) && 'false' || 'recursive' }}\n",
+        "          ref: ${{ inputs.head-sha }}\n          fetch-depth: 0\n          submodules: ${{ (inputs.secretless-pr || inputs.secretless-trusted-ref) && 'false' || 'recursive' }}\n",
+        1,
+    )
     for step_name in (
         "Rebuild exact approved lifecycle packages without credentials",
         "Run exact credentialless consumer script plan",

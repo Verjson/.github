@@ -179,7 +179,8 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
         compatibility_condition = (
             "needs.eligibility.outputs.should-run != 'false' && "
             "(inputs.secretless-pr || inputs.secretless-trusted-ref) && "
-            "inputs.secretless-compatibility-ranges != ''"
+            "(inputs.protected-type-surface-declaration-path != '' || "
+            "inputs.secretless-compatibility-ranges != '')"
         )
         self.assertEqual(compatibility_condition, build[verifier_indexes[3]]["if"])
         self.assertEqual(guarded_routes[0], build[verifier_indexes[0] + 1]["name"])

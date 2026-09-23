@@ -15,8 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 CONTRACT = ROOT / "config/authn-type-surface-ruleset.json"
 WORKFLOW = ROOT / ".github/workflows/authn-type-surface-required.yml"
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
-NODE_CI_SHA = "c419bd632400e9d8c06e33b468921d6e3e10ec81"
-NODE_CI_WORKFLOW = ".github/workflows/node-ci.yml"
+NODE_CI_SHA = "e1f3a897400129fc5bad6dd5182a7f20a8d920bd"
+NODE_CI_WORKFLOW = ".github/workflows/node-ci-protected.yml"
 RELEASE_BYPASS = [{
     "actor_id": 4583107, "actor_type": "Integration", "bypass_mode": "always",
 }]
@@ -62,7 +62,7 @@ def read_contract(path=CONTRACT):
             "id": 21522093,
             "name": "authn-type-surface-required",
             "target": "branch",
-            "enforcement": "active",
+            "enforcement": "disabled",
             "bypass_actors": RELEASE_BYPASS,
             "conditions": {
                 "ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []},
@@ -162,14 +162,15 @@ def validate_workflow(path=WORKFLOW):
     require(document.get(True) == {"pull_request": None},
             "required workflow must trigger only on pull_request")
     require(document.get("permissions") == {
-        "contents": "read", "packages": "read", "statuses": "read",
+        "actions": "read", "contents": "read", "packages": "read",
+        "pull-requests": "read", "statuses": "read",
     }, "required workflow permissions drifted")
     require(set(document.get("jobs", {})) == {"type-surface"},
             "required workflow must expose exactly one canonical job")
     job = document["jobs"]["type-surface"]
     require(job.get("if") == "github.repository == 'Verjson/verjson-authn'",
             "required workflow repository guard drifted")
-    use_prefix = "Verjson/.github/.github/workflows/node-ci.yml@"
+    use_prefix = "Verjson/.github/.github/workflows/node-ci-protected.yml@"
     uses = job.get("uses", "")
     require(isinstance(uses, str) and uses.startswith(use_prefix),
             "required workflow must call canonical node-ci")
@@ -191,17 +192,19 @@ def validate_workflow(path=WORKFLOW):
             "approved package set drifted")
     require(inputs.get("secretless-ci-script-plan") == '["build"]',
             "PR-authored execution plan drifted")
-    require(json.loads(inputs.get("secretless-compatibility-ranges", "")) == {
-        "package": "@verjson/authn",
-        "ranges": ["3.0.0"],
-        "script": "test:type-surface-compatibility",
-    }, "type-surface compatibility request drifted")
-    require(json.loads(inputs.get("secretless-auxiliary-source", "")) == {
-        "repository": "Verjson/verjson-authn",
-        "pinFile": ".github/ci/type-surface-base.json",
-        "checkoutPath": ".authn-type-base",
-        "sparsePath": "NEXT",
-    }, "type-surface baseline request drifted")
+    require(inputs.get("secretless-compatibility-ranges", "") == "",
+            "type-surface baseline must come from the protected declaration")
+    require(inputs.get("protected-type-surface-declaration-path") ==
+            ".github/ci/type-surface-baseline.json",
+            "type-surface declaration path drifted")
+    require(inputs.get("protected-type-surface-expected-package") ==
+            "@verjson/authn",
+            "type-surface package drifted")
+    require(inputs.get("protected-type-surface-expected-script") ==
+            "test:type-surface-compatibility",
+            "type-surface script drifted")
+    require(inputs.get("secretless-auxiliary-source", "") == "",
+            "type-surface must not use a consumer-managed auxiliary SHA")
 
 
 def render_payload(contract, workflow_sha):

@@ -224,6 +224,26 @@ on:
         description: Authenticated immutable pull-request head SHA.
         required: true
         type: string
+      protected-type-surface-declaration-path:
+        description: Repository-relative declaration fetched from the authenticated pull-request base SHA.
+        required: false
+        type: string
+        default: ''
+      protected-type-surface-expected-package:
+        description: Protected package identity the base declaration must select.
+        required: false
+        type: string
+        default: ''
+      protected-type-surface-expected-script:
+        description: Protected compatibility script the base declaration must select.
+        required: false
+        type: string
+        default: ''
+      protected-type-surface-allow-prerelease:
+        description: Explicitly authorize a prerelease baseline; stable released versions are the default.
+        required: false
+        type: boolean
+        default: false
       db-image:
         description: >-
           Optional database image (e.g. pgvector/pgvector:pg16) to run as a
@@ -511,6 +531,9 @@ jobs:
       auxiliary-repository: ${{ steps.resolve-auxiliary-source.outputs.repository }}
       transfer-cache-key: ${{ steps.create-secretless-cache-key.outputs.cache-key }}
       compatibility-provenance-sha256: ${{ steps.package-secretless-transfer.outputs.compatibility-provenance-sha256 }}
+      protected-baseline-request: ${{ steps.resolve-protected-type-surface.outputs.compatibility-ranges }}
+      protected-baseline-base-sha: ${{ steps.resolve-protected-type-surface.outputs.base-sha }}
+      protected-baseline-declaration-sha256: ${{ steps.resolve-protected-type-surface.outputs.declaration-sha256 }}
       transfer-payload-bytes: ${{ steps.package-secretless-transfer.outputs.payload-bytes }}
       transfer-payload-sha256: ${{ steps.package-secretless-transfer.outputs.payload-sha256 }}
     steps:
@@ -559,9 +582,155 @@ jobs:
             echo "::error::secretless mode requires NODE_AUTH_TOKEN for the acquisition job"
             exit 1
           }
+      - name: Resolve protected type-surface baseline from the pull-request base
+        id: resolve-protected-type-surface
+        if: needs.eligibility.outputs.should-run != 'false' && inputs.protected-type-surface-declaration-path != ''
+        env:
+          ALLOW_PRERELEASE: ${{ inputs.protected-type-surface-allow-prerelease }}
+          DECLARATION_PATH: ${{ inputs.protected-type-surface-declaration-path }}
+          EXPECTED_PACKAGE: ${{ inputs.protected-type-surface-expected-package }}
+          EXPECTED_SCRIPT: ${{ inputs.protected-type-surface-expected-script }}
+          GH_TOKEN: ${{ github.token }}
+          PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_ID: ${{ github.run_id }}
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          repository = os.environ["REPOSITORY"]
+          declaration_path = os.environ["DECLARATION_PATH"]
+          expected_package = os.environ["EXPECTED_PACKAGE"]
+          expected_script = os.environ["EXPECTED_SCRIPT"]
+          pull_request_number = os.environ["PULL_REQUEST_NUMBER"]
+          if (
+              not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository)
+              or not re.fullmatch(r"[1-9][0-9]*", pull_request_number)
+              or not declaration_path
+              or declaration_path.startswith("/")
+              or "//" in declaration_path
+              or any(segment in ("", ".", "..") for segment in declaration_path.split("/"))
+              or not re.fullmatch(r"[A-Za-z0-9._/-]+", declaration_path)
+              or not expected_package
+              or not expected_script
+          ):
+              raise SystemExit("protected type-surface declaration inputs are malformed")
+
+          def github_api(arguments):
+              result = subprocess.run(
+                  ["gh", "api", *arguments],
+                  check=False,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.DEVNULL,
+              )
+              if result.returncode != 0:
+                  raise SystemExit("authenticated GitHub declaration lookup failed")
+              return result.stdout
+
+          # This is the sole pull-request lookup. The immutable base SHA it
+          # returns is the only ref used for the declaration request below.
+          base_sha = github_api(
+              [f"repos/{repository}/pulls/{pull_request_number}", "--jq", ".base.sha"]
+          ).decode("utf-8", errors="strict").strip()
+          if re.fullmatch(r"[0-9a-f]{40}", base_sha) is None:
+              raise SystemExit("pull-request base SHA is not an immutable commit")
+          declaration_bytes = github_api(
+              [
+                  "-H",
+                  "Accept: application/vnd.github.raw+json",
+                  f"repos/{repository}/contents/{declaration_path}?ref={base_sha}",
+              ]
+          )
+
+          class DuplicateObjectKeyError(ValueError):
+              pass
+
+          def reject_duplicate_object_keys(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise DuplicateObjectKeyError
+                  result[key] = value
+              return result
+
+          try:
+              declaration = json.loads(
+                  declaration_bytes.decode("utf-8"),
+                  object_pairs_hook=reject_duplicate_object_keys,
+              )
+          except (UnicodeDecodeError, json.JSONDecodeError, DuplicateObjectKeyError) as error:
+              raise SystemExit(f"protected type-surface declaration is invalid: {error}")
+          if not isinstance(declaration, dict) or set(declaration) != {"package", "version", "script"}:
+              raise SystemExit("protected type-surface declaration requires exactly package, version, and script")
+
+          package = declaration["package"]
+          version = declaration["version"]
+          script = declaration["script"]
+          package_pattern = r"@[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*"
+          version_core = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+          stable_version = re.compile(version_core)
+          prerelease_version = re.compile(
+              version_core + r"-(?:[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)"
+          )
+          if (
+              not isinstance(package, str)
+              or re.fullmatch(package_pattern, package) is None
+              or package != expected_package
+              or not isinstance(version, str)
+              or (stable_version.fullmatch(version) is None
+                  and not (os.environ["ALLOW_PRERELEASE"] == "true"
+                           and prerelease_version.fullmatch(version)))
+              or version == "latest"
+              or not isinstance(script, str)
+              or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9:._-]{0,127}", script) is None
+              or script != expected_script
+          ):
+              raise SystemExit("protected type-surface declaration is unauthorized")
+
+          receipt = {
+              "schemaVersion": 1,
+              "repository": repository,
+              "declarationPath": declaration_path,
+              "baseSha": base_sha,
+              "declarationSha256": hashlib.sha256(declaration_bytes).hexdigest(),
+              "package": package,
+              "version": version,
+              "script": script,
+          }
+          run_root = Path(os.environ["RUNNER_TEMP"]) / (
+              f"protected-type-surface-{os.environ['RUN_ID']}-{os.environ['RUN_ATTEMPT']}"
+          )
+          run_root.mkdir(mode=0o700, parents=True, exist_ok=False)
+          receipt_path = run_root / "receipt.json"
+          receipt_path.write_text(
+              json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n",
+              encoding="utf-8",
+          )
+          request = json.dumps(
+              {"package": package, "ranges": [version], "script": script},
+              separators=(",", ":"),
+          )
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+              output.write(f"compatibility-ranges={request}\n")
+              output.write(f"receipt-path={receipt_path}\n")
+              output.write(f"base-sha={base_sha}\n")
+              output.write(f"declaration-sha256={receipt['declarationSha256']}\n")
+              output.write(f"package={package}\n")
+              output.write(f"version={version}\n")
+              output.write(f"script={script}\n")
+          PY
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.head-sha }}
+          fetch-depth: 0
           persist-credentials: false
       - name: Revalidate protected pull-request identity
         env:
@@ -603,7 +772,8 @@ jobs:
         env:
           APPROVED_INTERNAL_PACKAGES: ${{ inputs.approved-internal-packages }}
           APPROVED_INTERNAL_SCOPES: ${{ inputs.approved-internal-scopes }}
-          COMPATIBILITY_RANGES: ${{ inputs.secretless-compatibility-ranges }}
+          COMPATIBILITY_RANGES: ${{ steps.resolve-protected-type-surface.outputs.compatibility-ranges || inputs.secretless-compatibility-ranges }}
+          ALLOW_PRERELEASE: ${{ inputs.protected-type-surface-allow-prerelease }}
           NESTED_MANIFESTS: ${{ inputs.secretless-nested-manifests }}
           PRIVATE_CACHE_ENTRIES: ${{ runner.temp }}/secretless-private-entries-${{ github.run_id }}-${{ github.run_attempt }}
           TRUSTED_PACKAGE_POLICY: ${{ vars.CI_SECRETLESS_PACKAGE_POLICY }}
@@ -631,6 +801,8 @@ jobs:
               return tuple(int(part) for part in value.split("."))
 
           def is_bounded_range(value):
+            if os.environ.get("ALLOW_PRERELEASE") == "true" and re.fullmatch(rf"{core_pattern}-(?:[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)", value):
+              return True
               if re.fullmatch(core_pattern, value):
                   return True
               if re.fullmatch(rf"[~^]{core_pattern}", value):
@@ -1001,11 +1173,13 @@ jobs:
               sys.exit("private cache entry file already exists")
           PY
       - name: Resolve approved compatibility ranges without lifecycle execution
-        if: inputs.secretless-compatibility-ranges != ''
+        if: inputs.protected-type-surface-declaration-path != '' || inputs.secretless-compatibility-ranges != ''
         env:
           APPROVED_INTERNAL_SCOPES: ${{ inputs.approved-internal-scopes }}
           COMPATIBILITY_PROVENANCE: ${{ runner.temp }}/secretless-compatibility-${{ github.run_id }}-${{ github.run_attempt }}/_compatibility/provenance.json
-          COMPATIBILITY_RANGES: ${{ inputs.secretless-compatibility-ranges }}
+          PROTECTED_BASELINE_RECEIPT_PATH: ${{ steps.resolve-protected-type-surface.outputs.receipt-path }}
+          COMPATIBILITY_RANGES: ${{ steps.resolve-protected-type-surface.outputs.compatibility-ranges || inputs.secretless-compatibility-ranges }}
+          ALLOW_PRERELEASE: ${{ inputs.protected-type-surface-allow-prerelease }}
           NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
           NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/secretless-empty-global.npmrc
           NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/secretless-acquisition.npmrc
@@ -1092,6 +1266,13 @@ jobs:
               return tuple(int(part) for part in match.groups()) if match else None
 
           def satisfies_bounded_range(version, range_value):
+            if (
+            os.environ.get("ALLOW_PRERELEASE") == "true"
+            and "-" in range_value
+            and version == range_value
+            and version_pattern.fullmatch(version)
+            ):
+              return True
               selected = parse_core(version)
               if selected is None:
                   return False
@@ -1196,6 +1377,86 @@ jobs:
           provenance.write_text(
               json.dumps({"schemaVersion": 1, "request": request, "lanes": lanes},
                          sort_keys=True, separators=(",", ":")) + "\n",
+              encoding="utf-8",
+          )
+          PY
+      - name: Bind protected baseline receipt to verified artifact provenance
+        if: inputs.protected-type-surface-declaration-path != ''
+        env:
+          COMPATIBILITY_PROVENANCE: ${{ runner.temp }}/secretless-compatibility-${{ github.run_id }}-${{ github.run_attempt }}/_compatibility/provenance.json
+          PROTECTED_BASELINE_RECEIPT: ${{ steps.resolve-protected-type-surface.outputs.receipt-path }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          class DuplicateObjectKeyError(ValueError):
+              pass
+
+          def reject_duplicate_object_keys(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise DuplicateObjectKeyError
+                  result[key] = value
+              return result
+
+          def read_json(path):
+              try:
+                  return json.loads(
+                      Path(path).read_text(encoding="utf-8"),
+                      object_pairs_hook=reject_duplicate_object_keys,
+                  )
+              except (OSError, UnicodeDecodeError, json.JSONDecodeError, DuplicateObjectKeyError) as error:
+                  raise SystemExit(f"protected baseline receipt is invalid: {error}")
+
+          receipt = read_json(os.environ["PROTECTED_BASELINE_RECEIPT"])
+          receipt_fields = {
+              "schemaVersion", "repository", "declarationPath", "baseSha",
+              "declarationSha256", "package", "version", "script",
+          }
+          if not isinstance(receipt, dict) or set(receipt) != receipt_fields or receipt["schemaVersion"] != 1:
+              raise SystemExit("protected baseline receipt has an invalid shape")
+          provenance_path = Path(os.environ["COMPATIBILITY_PROVENANCE"])
+          provenance = read_json(provenance_path)
+          if (
+              not isinstance(provenance, dict)
+              or set(provenance) != {"schemaVersion", "request", "lanes"}
+              or provenance["schemaVersion"] != 1
+              or not isinstance(provenance["request"], dict)
+              or not isinstance(provenance["lanes"], list)
+              or len(provenance["lanes"]) != 1
+          ):
+              raise SystemExit("protected baseline compatibility provenance has an invalid shape")
+          request = provenance["request"]
+          if (
+              set(request) != {"package", "ranges", "script"}
+              or request["package"] != receipt["package"]
+              or request["ranges"] != [receipt["version"]]
+              or request["script"] != receipt["script"]
+          ):
+              raise SystemExit("protected baseline receipt does not match the compatibility request")
+          lane = provenance["lanes"][0]
+          if (
+              not isinstance(lane, dict)
+              or lane.get("package") != receipt["package"]
+              or lane.get("range") != receipt["version"]
+              or lane.get("version") != receipt["version"]
+              or lane.get("script") != receipt["script"]
+              or not all(isinstance(lane.get(key), str) and lane[key] for key in ("integrity", "tarball", "sha512"))
+          ):
+              raise SystemExit("protected baseline artifact provenance does not match the declaration")
+          protected_baseline = dict(receipt)
+          protected_baseline["artifact"] = {
+              "integrity": lane["integrity"],
+              "tarball": lane["tarball"],
+              "sha512": lane["sha512"],
+          }
+          provenance["protectedBaseline"] = protected_baseline
+          provenance_path.write_text(
+              json.dumps(provenance, sort_keys=True, separators=(",", ":")) + "\n",
               encoding="utf-8",
           )
           PY
@@ -1456,7 +1717,8 @@ jobs:
           AUXILIARY_REPOSITORY: ${{ steps.resolve-auxiliary-source.outputs.repository }}
           CACHE_DIR: ${{ steps.populate-private-cache.outputs.cache-dir }}
           COMPATIBILITY_ROOT: ${{ runner.temp }}/secretless-compatibility-${{ github.run_id }}-${{ github.run_attempt }}
-          COMPATIBILITY_RANGES: ${{ inputs.secretless-compatibility-ranges }}
+          COMPATIBILITY_RANGES: ${{ steps.resolve-protected-type-surface.outputs.compatibility-ranges || inputs.secretless-compatibility-ranges }}
+          ALLOW_PRERELEASE: ${{ inputs.protected-type-surface-allow-prerelease }}
           NESTED_MANIFESTS: ${{ inputs.secretless-nested-manifests }}
           MAX_PAYLOAD_BYTES: '83886080'
           RUN_ATTEMPT: ${{ github.run_attempt }}
@@ -1632,6 +1894,7 @@ jobs:
         if: needs.eligibility.outputs.should-run != 'false'
         with:
           ref: ${{ inputs.head-sha }}
+          fetch-depth: 0
           submodules: ${{ (inputs.secretless-pr || inputs.secretless-trusted-ref) && 'false' || 'recursive' }}
           token: ${{ (inputs.secretless-pr || inputs.secretless-trusted-ref) && github.token || secrets.submodules-token || github.token }}
           persist-credentials: ${{ !(inputs.secretless-pr || inputs.secretless-trusted-ref) }}
@@ -1688,7 +1951,7 @@ jobs:
           NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/secretless-empty-global-build.npmrc
           NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/secretless-empty.npmrc
           COMPATIBILITY_ARTIFACT_DIR: ${{ runner.temp }}/secretless-compatibility-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
-          COMPATIBILITY_RANGES: ${{ inputs.secretless-compatibility-ranges }}
+          COMPATIBILITY_RANGES: ${{ needs.acquire-secretless-dependencies.outputs.protected-baseline-request || inputs.secretless-compatibility-ranges }}
           NESTED_MANIFESTS: ${{ inputs.secretless-nested-manifests }}
           PACKAGE_MANAGER: ${{ inputs.package-manager }}
           APPROVED_INTERNAL_SCOPES: ${{ inputs.approved-internal-scopes }}
@@ -1703,6 +1966,12 @@ jobs:
           EXPECTED_AUXILIARY_CONTENT_PATH: ${{ needs.acquire-secretless-dependencies.outputs.auxiliary-content-path }}
           EXPECTED_AUXILIARY_REPOSITORY: ${{ needs.acquire-secretless-dependencies.outputs.auxiliary-repository }}
           EXPECTED_COMPATIBILITY_PROVENANCE_SHA256: ${{ needs.acquire-secretless-dependencies.outputs.compatibility-provenance-sha256 }}
+          EXPECTED_PROTECTED_BASELINE_BASE_SHA: ${{ needs.acquire-secretless-dependencies.outputs.protected-baseline-base-sha }}
+          EXPECTED_PROTECTED_BASELINE_DECLARATION_SHA256: ${{ needs.acquire-secretless-dependencies.outputs.protected-baseline-declaration-sha256 }}
+          PROTECTED_BASELINE_DECLARATION_PATH: ${{ inputs.protected-type-surface-declaration-path }}
+          PROTECTED_BASELINE_EXPECTED_PACKAGE: ${{ inputs.protected-type-surface-expected-package }}
+          PROTECTED_BASELINE_EXPECTED_SCRIPT: ${{ inputs.protected-type-surface-expected-script }}
+          PROTECTED_BASELINE_REPOSITORY: ${{ github.repository }}
           EXPECTED_PAYLOAD_BYTES: ${{ needs.acquire-secretless-dependencies.outputs.transfer-payload-bytes }}
           EXPECTED_PAYLOAD_SHA256: ${{ needs.acquire-secretless-dependencies.outputs.transfer-payload-sha256 }}
           MAX_PAYLOAD_BYTES: '83886080'
@@ -1983,8 +2252,46 @@ jobs:
                       != os.environ["EXPECTED_COMPATIBILITY_PROVENANCE_SHA256"]:
                   raise SystemExit("compatibility provenance digest is missing or corrupt")
               provenance = json.loads(provenance_bytes)
+              protected_baseline = provenance.get("protectedBaseline")
+              expected_path = os.environ.get("PROTECTED_BASELINE_DECLARATION_PATH", "")
+              if expected_path:
+                  receipt_fields = {
+                      "schemaVersion", "repository", "declarationPath", "baseSha",
+                      "declarationSha256", "package", "version", "script", "artifact",
+                  }
+                  if not isinstance(protected_baseline, dict) or set(protected_baseline) != receipt_fields:
+                      raise SystemExit("protected baseline receipt is missing or malformed")
+                  if (
+                      protected_baseline["schemaVersion"] != 1
+                      or protected_baseline["repository"] != os.environ["PROTECTED_BASELINE_REPOSITORY"]
+                      or protected_baseline["declarationPath"] != expected_path
+                      or protected_baseline["baseSha"] != os.environ["EXPECTED_PROTECTED_BASELINE_BASE_SHA"]
+                      or protected_baseline["declarationSha256"] != os.environ["EXPECTED_PROTECTED_BASELINE_DECLARATION_SHA256"]
+                      or protected_baseline["package"] != os.environ["PROTECTED_BASELINE_EXPECTED_PACKAGE"]
+                      or protected_baseline["script"] != os.environ["PROTECTED_BASELINE_EXPECTED_SCRIPT"]
+                      or not isinstance(protected_baseline["version"], str)
+                      or request != {
+                          "package": protected_baseline["package"],
+                          "ranges": [protected_baseline["version"]],
+                          "script": protected_baseline["script"],
+                      }
+                      or not isinstance(protected_baseline["artifact"], dict)
+                      or set(protected_baseline["artifact"]) != {"integrity", "tarball", "sha512"}
+                      or len(provenance.get("lanes", [])) != 1
+                      or not isinstance(provenance["lanes"][0], dict)
+                      or any(
+                          protected_baseline["artifact"][key] != provenance["lanes"][0].get(key)
+                          for key in ("integrity", "tarball", "sha512")
+                      )
+                      or provenance["lanes"][0].get("package") != protected_baseline["package"]
+                      or provenance["lanes"][0].get("version") != protected_baseline["version"]
+                      or provenance["lanes"][0].get("script") != protected_baseline["script"]
+                  ):
+                      raise SystemExit("protected baseline receipt does not bind declaration, base, and artifact")
+              elif protected_baseline is not None:
+                  raise SystemExit("unexpected protected baseline receipt")
               if (not isinstance(provenance, dict)
-                      or set(provenance) != {"schemaVersion", "request", "lanes"}
+                      or set(provenance) not in ({"schemaVersion", "request", "lanes"}, {"schemaVersion", "request", "lanes", "protectedBaseline"})
                       or provenance["schemaVersion"] != 1 or provenance["request"] != request
                       or not isinstance(provenance["lanes"], list)
                       or len(provenance["lanes"]) != len(request["ranges"])):
@@ -3164,6 +3471,17 @@ jobs:
           command = ["npm", "rebuild"] if package_manager == "npm" else ["corepack", "pnpm", "rebuild"]
           subprocess.run([*command, *requested], check=True)
           PY
+      - name: Export protected type-surface base SHA
+        if: needs.eligibility.outputs.should-run != 'false' && inputs.protected-type-surface-declaration-path != ''
+        env:
+          BASE_SHA: ${{ needs.acquire-secretless-dependencies.outputs.protected-baseline-base-sha }}
+        run: |
+          set -euo pipefail
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::protected type-surface base SHA is unavailable"
+            exit 1
+          }
+          echo "VERJSON_TYPE_SURFACE_BASE_SHA=$BASE_SHA" >> "$GITHUB_ENV"
       - name: Revalidate protected pull-request identity
         if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && (inputs.secretless-ci-script-plan != '' || inputs.secretless-nested-manifests != '')
         env:
@@ -3939,7 +4257,7 @@ jobs:
           npm test
           npm run lint --if-present
       - name: Provision trusted compatibility sandbox
-        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.secretless-compatibility-ranges != '' && runner.environment == 'github-hosted'
+        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && (inputs.protected-type-surface-declaration-path != '' || inputs.secretless-compatibility-ranges != '') && runner.environment == 'github-hosted'
         env:
           ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''
           ACTIONS_ID_TOKEN_REQUEST_URL: ''
@@ -5556,7 +5874,7 @@ jobs:
           fi
 
       - name: Revalidate protected pull-request identity
-        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.secretless-compatibility-ranges != ''
+        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && (inputs.protected-type-surface-declaration-path != '' || inputs.secretless-compatibility-ranges != '')
         env:
           ADMITTED_EVENT: ${{ inputs.event-name }}
           ADMITTED_HEAD_REPOSITORY: ${{ inputs.head-repository }}
@@ -5582,7 +5900,7 @@ jobs:
           [ "$pr_head_repository" = "$ADMITTED_HEAD_REPOSITORY" ]
           [ "$pr_head_sha" = "$ADMITTED_HEAD_SHA" ]
       - name: Run runtime-resolved compatibility lanes without credentials
-        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.secretless-compatibility-ranges != ''
+        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && (inputs.protected-type-surface-declaration-path != '' || inputs.secretless-compatibility-ranges != '')
         env:
           ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''
           ACTIONS_ID_TOKEN_REQUEST_URL: ''
@@ -5591,7 +5909,7 @@ jobs:
           AWS_SESSION_TOKEN: ''
           AZURE_CREDENTIALS: ''
           COMPATIBILITY_ARTIFACT_DIR: ${{ runner.temp }}/secretless-compatibility-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
-          COMPATIBILITY_RANGES: ${{ inputs.secretless-compatibility-ranges }}
+          COMPATIBILITY_RANGES: ${{ needs.acquire-secretless-dependencies.outputs.protected-baseline-request || inputs.secretless-compatibility-ranges }}
           EXPECTED_COMPATIBILITY_PROVENANCE_SHA256: ${{ needs.acquire-secretless-dependencies.outputs.compatibility-provenance-sha256 }}
           GH_TOKEN: ''
           GITHUB_TOKEN: ''

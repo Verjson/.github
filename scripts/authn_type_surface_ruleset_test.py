@@ -30,8 +30,8 @@ class AuthnTypeSurfaceRulesetTest(unittest.TestCase):
         workflow = yaml.safe_load(MODULE.WORKFLOW.read_text(encoding="utf-8"))
         job = workflow["jobs"]["type-surface"]
         self.assertEqual(
-            "Verjson/.github/.github/workflows/node-ci.yml@"
-            "c419bd632400e9d8c06e33b468921d6e3e10ec81",
+            "Verjson/.github/.github/workflows/node-ci-protected.yml@"
+            "e1f3a897400129fc5bad6dd5182a7f20a8d920bd",
             job["uses"],
         )
         self.assertEqual("read", workflow["permissions"]["statuses"])
@@ -62,21 +62,21 @@ class AuthnTypeSurfaceRulesetTest(unittest.TestCase):
         current = MODULE.read_pinned_node_ci_workflow(MODULE.NODE_CI_SHA)
         self.assertIsInstance(current["jobs"]["deferred-ci"], dict)
 
-        previous = MODULE.read_pinned_node_ci_workflow(
-            "c973a841694a41bf0b9bcd70432f64850cba0850"
-        )
-        self.assertNotIn("deferred-ci", previous["jobs"])
+        with self.assertRaisesRegex(MODULE.ContractError, "canonical workflow"):
+            MODULE.read_pinned_node_ci_workflow(
+                "c973a841694a41bf0b9bcd70432f64850cba0850"
+            )
 
     def test_required_workflow_rejects_pre_deferred_pin(self):
         workflow = yaml.safe_load(MODULE.WORKFLOW.read_text(encoding="utf-8"))
         workflow["jobs"]["type-surface"]["uses"] = (
-            "Verjson/.github/.github/workflows/node-ci.yml@"
+            "Verjson/.github/.github/workflows/node-ci-protected.yml@"
             "c973a841694a41bf0b9bcd70432f64850cba0850"
         )
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "required.yml"
             path.write_text(yaml.safe_dump(workflow), encoding="utf-8")
-            with self.assertRaisesRegex(MODULE.ContractError, "deferred-ci"):
+            with self.assertRaisesRegex(MODULE.ContractError, "canonical workflow"):
                 MODULE.validate_workflow(path)
 
     def test_required_workflow_rejects_missing_status_permission(self):
@@ -91,21 +91,20 @@ class AuthnTypeSurfaceRulesetTest(unittest.TestCase):
     def test_required_baseline_is_allowed_by_the_current_consumer_package_policy(self):
         policy = json.loads((ROOT / "scripts/fixtures/authn-type-surface/package-policy.json").read_text())
         workflow = yaml.safe_load(MODULE.WORKFLOW.read_text(encoding="utf-8"))
-        request = json.loads(workflow["jobs"]["type-surface"]["with"]["secretless-compatibility-ranges"])
+        inputs = workflow["jobs"]["type-surface"]["with"]
 
-        self.assertEqual(["3.0.0"], request["ranges"])
-        self.assertTrue(set(request["ranges"]).issubset(policy["compatibility"][request["package"]]))
+        self.assertEqual("@verjson/authn", inputs["protected-type-surface-expected-package"])
+        self.assertEqual("test:type-surface-compatibility", inputs["protected-type-surface-expected-script"])
+        self.assertEqual(["3.0.0"], policy["compatibility"]["@verjson/authn"])
         self.assertNotIn("1.0.3", policy["compatibility"]["@verjson/authn"])
 
     def test_required_workflow_rejects_the_failed_trial_baseline(self):
         workflow = yaml.safe_load(MODULE.WORKFLOW.read_text(encoding="utf-8"))
-        workflow["jobs"]["type-surface"]["with"]["secretless-compatibility-ranges"] = json.dumps({
-            "package": "@verjson/authn", "ranges": ["1.0.3"], "script": "test:type-surface-compatibility",
-        })
+        workflow["jobs"]["type-surface"]["with"]["protected-type-surface-expected-package"] = "@verjson/authz"
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "required.yml"
             path.write_text(yaml.safe_dump(workflow), encoding="utf-8")
-            with self.assertRaisesRegex(MODULE.ContractError, "compatibility request drifted"):
+            with self.assertRaisesRegex(MODULE.ContractError, "type-surface package drifted"):
                 MODULE.validate_workflow(path)
 
     def test_payload_uses_exact_repository_workflow_sha_and_only_release_bypass(self):
@@ -230,7 +229,7 @@ class AuthnTypeSurfaceRulesetTest(unittest.TestCase):
         MODULE.validate_retired_ruleset(live, expected)
         mutations = []
         for key, value in (
-            ("enforcement", "disabled"),
+            ("enforcement", "active"),
             ("bypass_actors", [{
                 "actor_id": None,
                 "actor_type": "OrganizationAdmin",
