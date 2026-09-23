@@ -12,6 +12,7 @@ Reverse-chronological index of org-level decisions.
 <!-- prettier-ignore -->
 | # | Date | Decision |
 |---|------|----------|
+| [0203](0203-protected-consumer-type-surface-baseline/README.md) | 2026-09-23 | Resolve protected consumer type-surface baselines from the PR base |
 | [0202](0202-bind-autonomous-merge-to-independent-review-receipt/README.md) | 2026-09-23 | Bind autonomous merge to an independent-review receipt |
 | [0201](0201-secret-bearing-fleet-report-uses-default-branch/README.md) | 2026-09-22 | Keep the full fleet report in a private workflow run |
 | [0200](0200-temporary-legacy-authorization-check-write/README.md) | 2026-09-22 | Temporarily authorize exact legacy review-App checks |
