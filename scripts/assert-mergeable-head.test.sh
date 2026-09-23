@@ -277,6 +277,7 @@ expect "a queued advisory check blocks rather than being read as absent" 5 "mirr
 # --- unevaluable states fail closed, never green ----------------------------
 reset_env; FAIL_PR_VIEW=1 run
 expect "a pull-request metadata failure is a fault, not a pass" 1 "failed to fetch pull request metadata"
+expect "a pull-request metadata failure names its required read grant" 1 "Pull requests (read) or Actions permissions.pull-requests: read"
 
 reset_env; FAIL_RULES=1 run
 expect "an unreadable ruleset is a fault: the required set must never be inferred from the head" 1 "cannot establish the required-check set"
@@ -294,6 +295,14 @@ for code in 401 403; do
     1 "the token presented cannot read it"
   expect "an HTTP $code on the ruleset read states the read access Gate A requires" \
     1 "Metadata (read)"
+  expect "an HTTP $code on the ruleset read states pull-request metadata access" \
+    1 "Pull requests (read)"
+  expect "an HTTP $code on the ruleset read states check-run access" \
+    1 "Checks (read)"
+  expect "an HTTP $code on the ruleset read states commit-status access" \
+    1 "Commit statuses (read)"
+  expect "an HTTP $code on the ruleset read states Actions grants" \
+    1 "permissions.pull-requests: read, permissions.checks: read, permissions.statuses: read"
 done
 
 # GitHub masks an unauthorized read of a private repository as 404, so a 404
@@ -396,12 +405,15 @@ expect "a commit-status response that states no total_count is unattested, not e
 
 reset_env; FAIL_CHECK_RUNS=1 run
 expect "a check-runs failure is a fault, not a pass" 1 "failed to fetch check runs"
+expect "a check-runs failure names its required read grant" 1 "Checks (read) or Actions permissions.checks: read"
 
 reset_env; FAIL_STATUS=1 run
 expect "a commit-status failure is a fault, not a pass" 1 "failed to fetch commit statuses"
+expect "a commit-status failure names its required read grant" 1 "Commit statuses (read) or Actions permissions.statuses: read"
 
 reset_env; FAIL_ANNOTATIONS=1 run
 expect "an annotations failure is a fault, not a pass" 1 "failed to fetch annotations"
+expect "an annotations failure names its required read grant" 1 "Checks (read) or Actions permissions.checks: read"
 
 reset_env
 PR_JSON_FIXTURE='{"headRefOid":"","baseRefName":"main"}'
