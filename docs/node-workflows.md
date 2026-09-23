@@ -451,6 +451,13 @@ and the standard system npmrc locations are overlaid with empty mounts inside th
 namespace. Consumer code therefore cannot read or reuse those host cache and configuration
 contents by absolute path.
 
+The only host cache content admitted is a disposable staging copy of verified npm
+`content-v2` blobs. Every source entry is checked with `lstat`; directories and regular
+files are accepted, while a symlink to an otherwise regular host file fails before any
+consumer code runs. The staging bind parser accepts only `--bind`, `--dir`, `--ro-bind`,
+`--ro-bind-try`, and `--tmpfs`. Its arity and destination offsets are tested against the
+installed `bwrap --help` synopsis, and unknown or truncated arguments fail closed.
+
 Each top-level checkout entry other than `node_modules` is a bind mountpoint inside the
 sandbox. A build may freely change an entry's contents, but it must not remove or replace
 the top-level entry's inode: Linux reports that operation as `EBUSY`. Empty a top-level
