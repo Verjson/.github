@@ -38,6 +38,27 @@ CONTRACT = ROOT / '.github/workflows/node-ci.yml'
 PROTECTED_CONTRACT = ROOT / '.github/workflows/node-ci-protected.yml'
 PRE_ADR_0178 = (Path(__file__).resolve().parent
                 / 'regressions/node-ci-pre-adr-0178.yml')
+MISSING = object()
+
+
+def document_differences(before, after, path=()):
+    if isinstance(before, dict) and isinstance(after, dict):
+        differences = []
+        keys = list(before)
+        keys.extend(key for key in after if key not in before)
+        for key in keys:
+            if key not in before:
+                differences.append((path + (key,), MISSING, after[key]))
+            elif key not in after:
+                differences.append((path + (key,), before[key], MISSING))
+            else:
+                differences.extend(
+                    document_differences(before[key], after[key], path + (key,))
+                )
+        return differences
+    if before != after:
+        return [(path, before, after)]
+    return []
 
 # A merge predicate may treat these as satisfying a required context; anything
 # else is a positive signal that something did not go to plan. Keeping the set
@@ -188,13 +209,46 @@ class DeferredLaneIsDistinguishableFromSuccess(unittest.TestCase):
         """
         contract = yaml.safe_load(CONTRACT.read_text(encoding='utf-8'))
         counter_example = yaml.safe_load(PRE_ADR_0178.read_text(encoding='utf-8'))
-        removed = contract['jobs'].pop('deferred-ci', None)
-        self.assertIsNotNone(removed, 'the contract no longer declares deferred-ci')
+        differences = document_differences(contract, counter_example)
         self.assertEqual(
-            contract, counter_example,
-            'the counter-example differs from the contract by more than the '
-            'deferred-ci job, so what it proves about Verjson/verjson-ci#184 '
-            'is no longer what it claims to prove')
+            1,
+            len(differences),
+            'the counter-example must carry exactly one structural delta; '
+            f'found paths {[difference[0] for difference in differences]!r}')
+        path, contract_value, fixture_value = differences[0]
+        self.assertEqual(
+            ('jobs', 'deferred-ci'),
+            path,
+            'the counter-example mutated the wrong field instead of the '
+            'deferred-ci job')
+        self.assertIsInstance(
+            contract_value,
+            dict,
+            'the contract jobs.deferred-ci value is no longer a job mapping')
+        self.assertIs(
+            MISSING,
+            fixture_value,
+            'the counter-example changed jobs.deferred-ci instead of removing it')
+
+    def test_the_delta_probe_accepts_the_exact_deferred_job_removal(self):
+        before = {'jobs': {'build-test': {}, 'deferred-ci': {'if': 'deferred'}}}
+        after = {'jobs': {'build-test': {}}}
+
+        self.assertEqual(
+            [(('jobs', 'deferred-ci'), {'if': 'deferred'}, MISSING)],
+            document_differences(before, after))
+
+    def test_the_delta_probe_exposes_a_wrong_field_mutation(self):
+        before = {'jobs': {'build-test': {'if': 'run'}, 'deferred-ci': {}}}
+        after = {'jobs': {'build-test': {}, 'deferred-ci': {}}}
+
+        differences = document_differences(before, after)
+
+        self.assertEqual((('jobs', 'build-test', 'if'),),
+                         tuple(difference[0] for difference in differences))
+        self.assertNotIn(
+            ('jobs', 'deferred-ci'),
+            (difference[0] for difference in differences))
 
     def test_a_deferred_run_executes_no_work_while_the_required_context_reports(self):
         for caller in callers_for(CONTRACT):
