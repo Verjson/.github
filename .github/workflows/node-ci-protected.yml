@@ -730,6 +730,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.head-sha }}
+          fetch-depth: 0
           persist-credentials: false
       - name: Revalidate protected pull-request identity
         env:
@@ -772,6 +773,7 @@ jobs:
           APPROVED_INTERNAL_PACKAGES: ${{ inputs.approved-internal-packages }}
           APPROVED_INTERNAL_SCOPES: ${{ inputs.approved-internal-scopes }}
           COMPATIBILITY_RANGES: ${{ steps.resolve-protected-type-surface.outputs.compatibility-ranges || inputs.secretless-compatibility-ranges }}
+          ALLOW_PRERELEASE: ${{ inputs.protected-type-surface-allow-prerelease }}
           NESTED_MANIFESTS: ${{ inputs.secretless-nested-manifests }}
           PRIVATE_CACHE_ENTRIES: ${{ runner.temp }}/secretless-private-entries-${{ github.run_id }}-${{ github.run_attempt }}
           TRUSTED_PACKAGE_POLICY: ${{ vars.CI_SECRETLESS_PACKAGE_POLICY }}
@@ -799,6 +801,8 @@ jobs:
               return tuple(int(part) for part in value.split("."))
 
           def is_bounded_range(value):
+            if os.environ.get("ALLOW_PRERELEASE") == "true" and re.fullmatch(rf"{core_pattern}-(?:[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)", value):
+              return True
               if re.fullmatch(core_pattern, value):
                   return True
               if re.fullmatch(rf"[~^]{core_pattern}", value):
@@ -1169,12 +1173,13 @@ jobs:
               sys.exit("private cache entry file already exists")
           PY
       - name: Resolve approved compatibility ranges without lifecycle execution
-        if: inputs.secretless-compatibility-ranges != ''
+        if: inputs.protected-type-surface-declaration-path != '' || inputs.secretless-compatibility-ranges != ''
         env:
           APPROVED_INTERNAL_SCOPES: ${{ inputs.approved-internal-scopes }}
           COMPATIBILITY_PROVENANCE: ${{ runner.temp }}/secretless-compatibility-${{ github.run_id }}-${{ github.run_attempt }}/_compatibility/provenance.json
           PROTECTED_BASELINE_RECEIPT_PATH: ${{ steps.resolve-protected-type-surface.outputs.receipt-path }}
           COMPATIBILITY_RANGES: ${{ steps.resolve-protected-type-surface.outputs.compatibility-ranges || inputs.secretless-compatibility-ranges }}
+          ALLOW_PRERELEASE: ${{ inputs.protected-type-surface-allow-prerelease }}
           NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
           NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/secretless-empty-global.npmrc
           NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/secretless-acquisition.npmrc
@@ -1261,6 +1266,13 @@ jobs:
               return tuple(int(part) for part in match.groups()) if match else None
 
           def satisfies_bounded_range(version, range_value):
+            if (
+            os.environ.get("ALLOW_PRERELEASE") == "true"
+            and "-" in range_value
+            and version == range_value
+            and version_pattern.fullmatch(version)
+            ):
+              return True
               selected = parse_core(version)
               if selected is None:
                   return False
@@ -1706,6 +1718,7 @@ jobs:
           CACHE_DIR: ${{ steps.populate-private-cache.outputs.cache-dir }}
           COMPATIBILITY_ROOT: ${{ runner.temp }}/secretless-compatibility-${{ github.run_id }}-${{ github.run_attempt }}
           COMPATIBILITY_RANGES: ${{ steps.resolve-protected-type-surface.outputs.compatibility-ranges || inputs.secretless-compatibility-ranges }}
+          ALLOW_PRERELEASE: ${{ inputs.protected-type-surface-allow-prerelease }}
           NESTED_MANIFESTS: ${{ inputs.secretless-nested-manifests }}
           MAX_PAYLOAD_BYTES: '83886080'
           RUN_ATTEMPT: ${{ github.run_attempt }}
@@ -1881,6 +1894,7 @@ jobs:
         if: needs.eligibility.outputs.should-run != 'false'
         with:
           ref: ${{ inputs.head-sha }}
+          fetch-depth: 0
           submodules: ${{ (inputs.secretless-pr || inputs.secretless-trusted-ref) && 'false' || 'recursive' }}
           token: ${{ (inputs.secretless-pr || inputs.secretless-trusted-ref) && github.token || secrets.submodules-token || github.token }}
           persist-credentials: ${{ !(inputs.secretless-pr || inputs.secretless-trusted-ref) }}
@@ -3457,6 +3471,17 @@ jobs:
           command = ["npm", "rebuild"] if package_manager == "npm" else ["corepack", "pnpm", "rebuild"]
           subprocess.run([*command, *requested], check=True)
           PY
+      - name: Export protected type-surface base SHA
+        if: inputs.protected-type-surface-declaration-path != ''
+        env:
+          BASE_SHA: ${{ needs.acquire-secretless-dependencies.outputs.protected-baseline-base-sha }}
+        run: |
+          set -euo pipefail
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::protected type-surface base SHA is unavailable"
+            exit 1
+          }
+          echo "VERJSON_TYPE_SURFACE_BASE_SHA=$BASE_SHA" >> "$GITHUB_ENV"
       - name: Revalidate protected pull-request identity
         if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && (inputs.secretless-ci-script-plan != '' || inputs.secretless-nested-manifests != '')
         env:
@@ -4232,7 +4257,7 @@ jobs:
           npm test
           npm run lint --if-present
       - name: Provision trusted compatibility sandbox
-        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.secretless-compatibility-ranges != '' && runner.environment == 'github-hosted'
+        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && (inputs.protected-type-surface-declaration-path != '' || inputs.secretless-compatibility-ranges != '') && runner.environment == 'github-hosted'
         env:
           ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''
           ACTIONS_ID_TOKEN_REQUEST_URL: ''
@@ -5849,7 +5874,7 @@ jobs:
           fi
 
       - name: Revalidate protected pull-request identity
-        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.secretless-compatibility-ranges != ''
+        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && (inputs.protected-type-surface-declaration-path != '' || inputs.secretless-compatibility-ranges != '')
         env:
           ADMITTED_EVENT: ${{ inputs.event-name }}
           ADMITTED_HEAD_REPOSITORY: ${{ inputs.head-repository }}
@@ -5875,7 +5900,7 @@ jobs:
           [ "$pr_head_repository" = "$ADMITTED_HEAD_REPOSITORY" ]
           [ "$pr_head_sha" = "$ADMITTED_HEAD_SHA" ]
       - name: Run runtime-resolved compatibility lanes without credentials
-        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.secretless-compatibility-ranges != ''
+        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && (inputs.protected-type-surface-declaration-path != '' || inputs.secretless-compatibility-ranges != '')
         env:
           ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''
           ACTIONS_ID_TOKEN_REQUEST_URL: ''

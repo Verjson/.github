@@ -16,32 +16,37 @@ on:
   pull_request:
 
 permissions:
+  actions: read
   contents: read
   packages: read
+  pull-requests: read
   statuses: read
 
 jobs:
   type-surface:
     if: github.repository == 'Verjson/verjson-authn'
     permissions:
+      actions: read
       contents: read
       packages: read
+      pull-requests: read
       statuses: read
-    uses: Verjson/.github/.github/workflows/node-ci.yml@@NODE_CI_SHA@
+    uses: Verjson/.github/.github/workflows/node-ci-protected.yml@@NODE_CI_SHA@
     secrets:
       NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     with:
       node-version: '24'
-      scope: '@verjson'
       secretless-pr: true
+      event-name: ${{ github.event_name }}
+      head-repository: ${{ github.event.pull_request.head.repo.full_name }}
+      head-sha: ${{ github.event.pull_request.head.sha }}
+      protected-type-surface-declaration-path: .github/ci/type-surface-baseline.json
+      protected-type-surface-expected-package: '@verjson/authn'
+      protected-type-surface-expected-script: test:type-surface-compatibility
       approved-internal-packages: |-
         @verjson/authn
         @verjson/identity-contracts
         @verjson/tsconfig
-      secretless-compatibility-ranges: >-
-        {"package":"@verjson/authn","ranges":["2.0.0"],"script":"test:type-surface-compatibility"}
-      secretless-auxiliary-source: >-
-        {"repository":"Verjson/verjson-authn","pinFile":".github/ci/type-surface-base.json","checkoutPath":".authn-type-base","sparsePath":"NEXT"}
       secretless-ci-script-plan: >-
         ["build"]
 """.replace("@NODE_CI_SHA@", node_ci_sha)

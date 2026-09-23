@@ -314,6 +314,19 @@ PROTECTED_BASELINE_TRANSFER_VALIDATION = """          protected_baseline = prove
               raise SystemExit("unexpected protected baseline receipt")
 """
 
+PROTECTED_BASELINE_REF_STEP = """      - name: Export protected type-surface base SHA
+        if: inputs.protected-type-surface-declaration-path != ''
+        env:
+          BASE_SHA: ${{ needs.acquire-secretless-dependencies.outputs.protected-baseline-base-sha }}
+        run: |
+          set -euo pipefail
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::protected type-surface base SHA is unavailable"
+            exit 1
+          }
+          echo "VERJSON_TYPE_SURFACE_BASE_SHA=$BASE_SHA" >> "$GITHUB_ENV"
+"""
+
 INPUTS = """      event-name:\n        description: Authenticated pull-request event identity.\n        required: true\n        type: string\n+      head-repository:\n        description: Authenticated pull-request head repository.\n        required: true\n        type: string\n+      head-sha:\n        description: Authenticated immutable pull-request head SHA.\n        required: true\n        type: string\n+"""
 
 VERIFY_STEP = """      - name: Revalidate protected pull-request identity\n        env:\n          ADMITTED_EVENT: ${{ inputs.event-name }}\n          ADMITTED_HEAD_REPOSITORY: ${{ inputs.head-repository }}\n          ADMITTED_HEAD_SHA: ${{ inputs.head-sha }}\n          GH_TOKEN: ${{ github.token }}\n          REPOSITORY: ${{ github.repository }}\n          RUN_ID: ${{ github.run_id }}\n        run: |\n          set -euo pipefail\n          [ "$ADMITTED_EVENT" = pull_request ]\n          [ -n "$ADMITTED_HEAD_REPOSITORY" ]\n          [[ "$ADMITTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]\n          [[ "$RUN_ID" =~ ^[1-9][0-9]*$ ]]\n          run_record="$(gh api "repos/$REPOSITORY/actions/runs/$RUN_ID" --jq '[.event,.head_sha,(.pull_requests|length),(.pull_requests[0].number//"")]|@tsv')"\n          IFS=$'\\t' read -r run_event run_head binding_count pr_number <<<"$run_record"\n          [ "$run_event" = "$ADMITTED_EVENT" ]\n          [ "$run_head" = "$ADMITTED_HEAD_SHA" ]\n          [ "$binding_count" = 1 ]\n          [[ "$pr_number" =~ ^[1-9][0-9]*$ ]]\n          pr_record="$(gh api "repos/$REPOSITORY/pulls/$pr_number" --jq '[.state,.head.repo.full_name,.head.sha]|@tsv')"\n          IFS=$'\\t' read -r pr_state pr_head_repository pr_head_sha <<<"$pr_record"\n          [ "$pr_state" = open ]\n          [ "$pr_head_repository" = "$ADMITTED_HEAD_REPOSITORY" ]\n          [ "$pr_head_sha" = "$ADMITTED_HEAD_SHA" ]\n+"""
@@ -1066,6 +1079,37 @@ def insert_protected_baseline_step(document: str) -> str:
 
 
 def configure_protected_baseline(document: str) -> str:
+    def insert_after_signature(source: str, signature: str, body: str) -> str:
+        lines = source.splitlines(keepends=True)
+        matches = [index for index, line in enumerate(lines) if line.strip() == signature]
+        if len(matches) != 1:
+            raise SystemExit(f"protected node-ci expected one {signature!r} boundary")
+        index = matches[0]
+        indentation = lines[index][: len(lines[index]) - len(lines[index].lstrip())]
+        body_lines = [
+            f"{indentation}  {line}\n" for line in body.splitlines()
+        ]
+        lines[index + 1 : index + 1] = body_lines
+        return "".join(lines)
+
+    document = insert_after_signature(
+        document,
+        "def is_bounded_range(value):",
+        'if os.environ.get("ALLOW_PRERELEASE") == "true" and re.fullmatch('
+        'rf"{core_pattern}-(?:[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)", value):\n'
+        "  return True",
+    )
+    document = insert_after_signature(
+        document,
+        "def satisfies_bounded_range(version, range_value):",
+        'if (\n'
+        'os.environ.get("ALLOW_PRERELEASE") == "true"\n'
+        "and \"-\" in range_value\n"
+        "and version == range_value\n"
+        "and version_pattern.fullmatch(version)\n"
+        "):\n"
+        "  return True",
+    )
     acquisition_end = document.index("  build-test:\n")
     acquisition = document[:acquisition_end]
     remainder = document[acquisition_end:]
@@ -1079,6 +1123,30 @@ def configure_protected_baseline(document: str) -> str:
         "COMPATIBILITY_RANGES: ${{ inputs.secretless-compatibility-ranges }}",
         dynamic_request,
     )
+
+    acquisition_gate = "if: inputs.secretless-compatibility-ranges != ''"
+    if acquisition.count(acquisition_gate) != 1:
+        raise SystemExit("protected node-ci compatibility acquisition gate drifted")
+    acquisition = acquisition.replace(
+        acquisition_gate,
+        "if: inputs.protected-type-surface-declaration-path != '' || "
+        "inputs.secretless-compatibility-ranges != ''",
+        1,
+    )
+
+    compatibility_marker = dynamic_request
+    if acquisition.count(compatibility_marker) < 1:
+        raise SystemExit("protected node-ci compatibility environment drifted")
+    environment_lines = []
+    for line in acquisition.splitlines(keepends=True):
+        environment_lines.append(line)
+        if line.lstrip().startswith(compatibility_marker):
+            indentation = line[: len(line) - len(line.lstrip())]
+            environment_lines.append(
+                indentation
+                + "ALLOW_PRERELEASE: ${{ inputs.protected-type-surface-allow-prerelease }}\n"
+            )
+    acquisition = "".join(environment_lines)
     provenance_env = (
         "          COMPATIBILITY_PROVENANCE: ${{ runner.temp }}/secretless-compatibility-"
         "${{ github.run_id }}-${{ github.run_attempt }}/_compatibility/provenance.json\n"
@@ -1167,7 +1235,12 @@ def configure_protected_baseline(document: str) -> str:
 
 def render() -> str:
     document = SOURCE.read_text(encoding="utf-8")
-    document = replace_once(document, "# Reusable CI for the verJSON Node libraries:", "# Generated by scripts/gen-node-ci-protected.py; do not edit.\n# Protected required-workflow Node.js CI variant:")
+    document = replace_once(
+        document,
+        "# Reusable CI for the verJSON Node libraries:",
+        "# Generated by scripts/gen-node-ci-protected.py; do not edit.\n"
+        "# Protected required-workflow Node.js CI variant:",
+    )
     document = replace_once(
         document,
         "      db-image:\n",
@@ -1197,7 +1270,13 @@ def render() -> str:
     plan_if = "needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && (inputs.secretless-ci-script-plan != '' || inputs.secretless-nested-manifests != '')"
     default_if = "needs.eligibility.outputs.should-run != 'false' && (!(inputs.secretless-pr || inputs.secretless-trusted-ref) || inputs.secretless-ci-script-plan == '')"
     document = replace_once(document, "      - name: Rebuild exact approved lifecycle packages without credentials\n", verifier_step(rebuild_if) + "      - name: Rebuild exact approved lifecycle packages without credentials\n")
-    document = replace_once(document, "      - name: Run exact credentialless consumer script plan\n", verifier_step(plan_if) + "      - name: Run exact credentialless consumer script plan\n")
+    document = replace_once(
+        document,
+        "      - name: Run exact credentialless consumer script plan\n",
+        PROTECTED_BASELINE_REF_STEP
+        + verifier_step(plan_if)
+        + "      - name: Run exact credentialless consumer script plan\n",
+    )
     default_commands = """      - run: npm run build
         if: needs.eligibility.outputs.should-run != 'false' && (!(inputs.secretless-pr || inputs.secretless-trusted-ref) || inputs.secretless-ci-script-plan == '')
       - run: npm run typecheck --if-present
@@ -1216,9 +1295,32 @@ def render() -> str:
           npm run lint --if-present
 """
     document = replace_once(document, default_commands, verifier_step(default_if) + grouped_default)
-    compatibility_if = "needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.secretless-compatibility-ranges != ''"
+    compatibility_if = (
+        "needs.eligibility.outputs.should-run != 'false' && "
+        "(inputs.secretless-pr || inputs.secretless-trusted-ref) && "
+        "(inputs.protected-type-surface-declaration-path != '' || "
+        "inputs.secretless-compatibility-ranges != '')"
+    )
+    legacy_compatibility_if = (
+        "needs.eligibility.outputs.should-run != 'false' && "
+        "(inputs.secretless-pr || inputs.secretless-trusted-ref) && "
+        "inputs.secretless-compatibility-ranges != ''"
+    )
+    if document.count(legacy_compatibility_if) != 2:
+        raise SystemExit("protected node-ci compatibility runtime gate drifted")
+    document = document.replace(legacy_compatibility_if, compatibility_if)
     document = replace_once(document, "      - name: Run runtime-resolved compatibility lanes without credentials\n", verifier_step(compatibility_if) + "      - name: Run runtime-resolved compatibility lanes without credentials\n")
     document = remove_step(document, "Install schema submodule deps")
+    document = document.replace(
+        "          ref: ${{ inputs.head-sha }}\n          persist-credentials: false\n",
+        "          ref: ${{ inputs.head-sha }}\n          fetch-depth: 0\n          persist-credentials: false\n",
+        1,
+    )
+    document = document.replace(
+        "          ref: ${{ inputs.head-sha }}\n          submodules: ${{ (inputs.secretless-pr || inputs.secretless-trusted-ref) && 'false' || 'recursive' }}\n",
+        "          ref: ${{ inputs.head-sha }}\n          fetch-depth: 0\n          submodules: ${{ (inputs.secretless-pr || inputs.secretless-trusted-ref) && 'false' || 'recursive' }}\n",
+        1,
+    )
     for step_name in (
         "Rebuild exact approved lifecycle packages without credentials",
         "Run exact credentialless consumer script plan",
