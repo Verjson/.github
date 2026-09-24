@@ -59,6 +59,8 @@ jobs:
           sudo aa-status || true
           sudo dmesg --color=never | tail -80 || true
           bwrap --ro-bind / / --unshare-user --unshare-pid true
+      - name: Checkout canonical workflow source
+        uses: actions/checkout@v5
       - name: Run canonical sandbox acquirer and report installed package
         shell: bash
         run: |
