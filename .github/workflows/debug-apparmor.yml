@@ -61,6 +61,13 @@ jobs:
           bwrap --ro-bind / / --unshare-user --unshare-pid true
       - name: Checkout canonical workflow source
         uses: actions/checkout@v5
+      - name: Report runner tool-cache identity
+        shell: bash
+        run: |
+          set -u
+          printf 'RUNNER_TOOL_CACHE=%s\\n' "$RUNNER_TOOL_CACHE"
+          stat -c 'mode=%a uid=%u gid=%g path=%n' \
+            /opt /opt/hostedtoolcache "$RUNNER_TOOL_CACHE"
       - name: Run canonical sandbox acquirer and report installed package
         shell: bash
         run: |
