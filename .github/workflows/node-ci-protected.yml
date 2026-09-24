@@ -5373,6 +5373,8 @@ jobs:
               sys.exit("trusted setup-node tool root unavailable or noncanonical")
           trusted_tool_root = trusted_tool_root_input
           hosted_tool_cache_root = Path("/opt/hostedtoolcache")
+          # uid 0 is root; uid 1001 is the "runner" account GitHub-hosted
+          # images provision and run Actions steps as.
           hosted_tool_cache_uids = (0, 1001)
 
           def paths_overlap(left, right):
