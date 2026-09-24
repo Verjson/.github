@@ -128,6 +128,39 @@ class RenovateTableTests(unittest.TestCase):
             renovate_changelog.parse_updates(body)[0],
         )
 
+    def test_parses_escaped_comparator_ranges_unioned_with_carets(self) -> None:
+        # Verjson/.github#1602: a spaced comparator range as one union alternative.
+        comparator_union = r"`>=0.2.2 <0.4.0 \|\| ^1.0.0 \|\| ^0.4.0`"
+        fixtures = (
+            (
+                rf"`>=0.2.2 <0.4.0 \|\| ^1.0.0` → {comparator_union}",
+                ">=0.2.2 <0.4.0 || ^1.0.0",
+                ">=0.2.2 <0.4.0 || ^1.0.0 || ^0.4.0",
+            ),
+            (
+                rf"`1.0.0` → {comparator_union}",
+                "1.0.0",
+                ">=0.2.2 <0.4.0 || ^1.0.0 || ^0.4.0",
+            ),
+            (
+                rf"{comparator_union} → `1.1.0`",
+                ">=0.2.2 <0.4.0 || ^1.0.0 || ^0.4.0",
+                "1.1.0",
+            ),
+        )
+        for change, from_version, to_version in fixtures:
+            with self.subTest(change=change):
+                body = BODY.replace("`10.4.0` → `10.5.0`", change)
+
+                self.assertEqual(
+                    renovate_changelog.Update(
+                        package="ip-address",
+                        from_version=from_version,
+                        to_version=to_version,
+                    ),
+                    renovate_changelog.parse_updates(body)[0],
+                )
+
     def test_rejects_unescaped_union_pipes_as_table_delimiters(self) -> None:
         body = BODY.replace("`10.4.0` → `10.5.0`", "`^0.1.3 || ^1.0.0` → `^0.2.0`")
 
