@@ -2,6 +2,8 @@ name: Debug Ubuntu AppArmor bubblewrap runner
 
 on:
   workflow_dispatch:
+  push:
+    branches: [debug/apparmor-runner]
 
 permissions:
   contents: read
