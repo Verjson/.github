@@ -5,6 +5,7 @@ title: Accept the hosted setup-node cache root convention
 impact: patch
 ---
 
-Allow the exact root-owned `0777` `/opt/hostedtoolcache` directory used by
-GitHub-hosted runners while retaining strict ownership and mode checks for every
-tool prefix, executable, and descendant mounted into the protected sandbox.
+Allow only the exact `0777` `/opt/hostedtoolcache` directory with the known
+GitHub-hosted runner ownership (`uid 0 or 1001`, `gid 0`). Retain strict
+ownership and mode checks for every tool prefix, executable, and descendant
+mounted into the protected sandbox.
