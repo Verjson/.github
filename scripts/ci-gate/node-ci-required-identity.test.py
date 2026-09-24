@@ -264,6 +264,7 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
         workspace_symlink=False,
         swap_tool_prefix=False,
         root_owned_tools=True,
+        tool_root_uid=None,
         pwsh_fixture=None,
         mutate_tool_in_place=False,
     ):
@@ -307,6 +308,18 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
             if root_owned_tools:
                 subprocess.run(
                     ["sudo", "-n", "chown", "-R", "0:0", str(tool_bin.parent)], check=True
+                )
+            elif tool_root_uid is not None:
+                subprocess.run(
+                    [
+                        "sudo",
+                        "-n",
+                        "chown",
+                        "-R",
+                        f"{tool_root_uid}:0",
+                        str(tool_bin.parent),
+                    ],
+                    check=True,
                 )
             fixture_roots = []
             if pwsh_fixture is not None:
@@ -525,6 +538,28 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
         )
 
         self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual([], remaining)
+
+        runner_owned_result, remaining = self.run_candidate_plan(
+            cache_setup,
+            "exit 0\n",
+            run=hosted_run,
+            tool_root_mode=0o777,
+            root_owned_tools=False,
+            tool_root_uid=1001,
+        )
+        self.assertEqual(0, runner_owned_result.returncode, runner_owned_result.stderr)
+        self.assertEqual([], remaining)
+
+        unapproved_owner_result, remaining = self.run_candidate_plan(
+            cache_setup,
+            "exit 0\n",
+            run=hosted_run,
+            tool_root_mode=0o777,
+            root_owned_tools=False,
+            tool_root_uid=1002,
+        )
+        self.assertNotEqual(0, unapproved_owner_result.returncode)
         self.assertEqual([], remaining)
 
     def test_nested_writable_tool_directory_rejects_replacement_executable(self):

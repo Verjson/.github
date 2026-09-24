@@ -600,6 +600,7 @@ def isolate_candidate_runtime_cache(document: str) -> str:
               sys.exit("trusted setup-node tool root unavailable or noncanonical")
           trusted_tool_root = trusted_tool_root_input
           hosted_tool_cache_root = Path("/opt/hostedtoolcache")
+          hosted_tool_cache_uids = (0, 1001)
 
           def paths_overlap(left, right):
             return left == right or left in right.parents or right in left.parents
@@ -648,17 +649,21 @@ def isolate_candidate_runtime_cache(document: str) -> str:
           allow_hosted_tool_cache_root = (
             trusted_tool_root == hosted_tool_cache_root
             and stat.S_IMODE(trusted_root_metadata.st_mode) == 0o777
+            and trusted_root_metadata.st_uid in hosted_tool_cache_uids
+            and trusted_root_metadata.st_gid == 0
           )
           if (
             not stat.S_ISDIR(trusted_root_metadata.st_mode)
-            or trusted_root_metadata.st_uid != 0
+            or trusted_root_metadata.st_uid not in (
+              hosted_tool_cache_uids if allow_hosted_tool_cache_root else (0,)
+            )
             or (
               trusted_root_metadata.st_mode & 0o022
               and not allow_hosted_tool_cache_root
             )
           ):
             sys.exit("trusted setup-node tool root has unsafe ownership mode")
-          trusted_tool_uids = (0,)
+          trusted_tool_uids = hosted_tool_cache_uids if allow_hosted_tool_cache_root else (0,)
 
           trusted_search_directories = []
           for entry in os.environ.get("PATH", "").split(os.pathsep):
@@ -773,7 +778,12 @@ def isolate_candidate_runtime_cache(document: str) -> str:
             executable_requires_unwritable = not (
               tool_name == "pwsh" and tool_executable.is_relative_to("/opt/microsoft/powershell")
             )
-            if executable_metadata.st_uid != 0 or (
+            executable_uids = (
+              trusted_tool_uids
+              if tool_executable.is_relative_to(hosted_tool_cache_root)
+              else (0,)
+            )
+            if executable_metadata.st_uid not in executable_uids or (
               executable_requires_unwritable and executable_metadata.st_mode & 0o022
             ):
               sys.exit(f"trusted {{tool_name}} executable has unsafe ownership mode")
@@ -787,15 +797,15 @@ def isolate_candidate_runtime_cache(document: str) -> str:
           tool_prefixes = []
           tool_prefix_identities = {{}}
 
-          def validate_root_owned_tool_tree(
-            root, require_unwritable=True, allow_writable_root=False
+          def validate_trusted_tool_tree(
+            root, allowed_uids=(0,), require_unwritable=True, allow_writable_root=False
           ):
             for directory, directory_names, file_names in os.walk(root, followlinks=False):
               directory_path = Path(directory)
               directory_metadata = directory_path.stat(follow_symlinks=False)
               if (
                 not stat.S_ISDIR(directory_metadata.st_mode)
-                or directory_metadata.st_uid != 0
+                or directory_metadata.st_uid not in allowed_uids
                 or (
                   require_unwritable
                   and directory_metadata.st_mode & 0o022
@@ -806,8 +816,8 @@ def isolate_candidate_runtime_cache(document: str) -> str:
               for name in (*directory_names, *file_names):
                 entry = directory_path / name
                 entry_metadata = entry.stat(follow_symlinks=False)
-                if entry_metadata.st_uid != 0:
-                  sys.exit("trusted tool tree entry is not root owned")
+                if entry_metadata.st_uid not in allowed_uids:
+                  sys.exit("trusted tool tree entry has unapproved ownership")
                 if stat.S_ISLNK(entry_metadata.st_mode):
                   resolved_entry = entry.resolve()
                   if resolved_entry.is_relative_to(root):
@@ -858,8 +868,13 @@ def isolate_candidate_runtime_cache(document: str) -> str:
             # See the pwsh discovery comment above: the Microsoft-shipped runtime tree
             # under GitHub-hosted /opt is root-owned but world-writable throughout, so
             # only that prefix relaxes the write-bit requirement; npm/node stay strict.
-            validate_root_owned_tool_tree(
+            validate_trusted_tool_tree(
               tool_prefix,
+              allowed_uids=(
+                trusted_tool_uids
+                if tool_prefix.is_relative_to(hosted_tool_cache_root)
+                else (0,)
+              ),
               require_unwritable=not tool_prefix.is_relative_to("/opt/microsoft/powershell"),
               allow_writable_root=allow_hosted_tool_cache_root,
             )
