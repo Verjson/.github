@@ -599,12 +599,19 @@ def isolate_candidate_runtime_cache(document: str) -> str:
           ):
               sys.exit("trusted setup-node tool root unavailable or noncanonical")
           trusted_tool_root = trusted_tool_root_input
+          hosted_tool_cache_root = Path("/opt/hostedtoolcache")
 
           def paths_overlap(left, right):
             return left == right or left in right.parents or right in left.parents
 
           def validate_trusted_ancestry(
-            root, target, allowed_uids, label, include_target=True, require_unwritable=True
+            root,
+            target,
+            allowed_uids,
+            label,
+            include_target=True,
+            require_unwritable=True,
+            allow_writable_root=False,
           ):
             try:
               relative = target.relative_to(root)
@@ -626,7 +633,9 @@ def isolate_candidate_runtime_cache(document: str) -> str:
                 if not stat.S_ISDIR(metadata.st_mode):
                   sys.exit(f"{{label}} ancestry is not canonical directories")
               if metadata.st_uid not in allowed_uids or (
-                require_unwritable and metadata.st_mode & 0o022
+                require_unwritable
+                and metadata.st_mode & 0o022
+                and not (allow_writable_root and component == root)
               ):
                 sys.exit(f"{{label}} ancestry has unsafe ownership mode")
 
@@ -636,10 +645,17 @@ def isolate_candidate_runtime_cache(document: str) -> str:
           if any(paths_overlap(trusted_tool_root, path) for path in candidate_controlled_roots):
               sys.exit("trusted setup-node tool root overlaps candidate-controlled paths")
           trusted_root_metadata = trusted_tool_root.stat(follow_symlinks=False)
+          allow_hosted_tool_cache_root = (
+            trusted_tool_root == hosted_tool_cache_root
+            and stat.S_IMODE(trusted_root_metadata.st_mode) == 0o777
+          )
           if (
             not stat.S_ISDIR(trusted_root_metadata.st_mode)
             or trusted_root_metadata.st_uid != 0
-            or trusted_root_metadata.st_mode & 0o022
+            or (
+              trusted_root_metadata.st_mode & 0o022
+              and not allow_hosted_tool_cache_root
+            )
           ):
             sys.exit("trusted setup-node tool root has unsafe ownership mode")
           trusted_tool_uids = (0,)
@@ -665,12 +681,14 @@ def isolate_candidate_runtime_cache(document: str) -> str:
               lexical_directory,
               trusted_tool_uids,
               "setup-node lexical PATH",
+              allow_writable_root=allow_hosted_tool_cache_root,
             )
             validate_trusted_ancestry(
               trusted_tool_root,
               resolved_directory,
               trusted_tool_uids,
               "setup-node resolved PATH",
+              allow_writable_root=allow_hosted_tool_cache_root,
             )
             if resolved_directory not in trusted_search_directories:
               trusted_search_directories.append(resolved_directory)
@@ -720,6 +738,7 @@ def isolate_candidate_runtime_cache(document: str) -> str:
                 trusted_tool_uids,
                 f"trusted {{tool_name}} lexical path",
                 include_target=False,
+                allow_writable_root=allow_hosted_tool_cache_root,
               )
               try:
                 resolved_candidate.relative_to(trusted_tool_root)
@@ -730,6 +749,7 @@ def isolate_candidate_runtime_cache(document: str) -> str:
                 resolved_candidate,
                 trusted_tool_uids,
                 f"trusted {{tool_name}} resolved path",
+                allow_writable_root=allow_hosted_tool_cache_root,
               )
               if resolved_candidate.is_file() and os.access(resolved_candidate, os.X_OK):
                 candidates.append(resolved_candidate)
@@ -767,14 +787,20 @@ def isolate_candidate_runtime_cache(document: str) -> str:
           tool_prefixes = []
           tool_prefix_identities = {{}}
 
-          def validate_root_owned_tool_tree(root, require_unwritable=True):
+          def validate_root_owned_tool_tree(
+            root, require_unwritable=True, allow_writable_root=False
+          ):
             for directory, directory_names, file_names in os.walk(root, followlinks=False):
               directory_path = Path(directory)
               directory_metadata = directory_path.stat(follow_symlinks=False)
               if (
                 not stat.S_ISDIR(directory_metadata.st_mode)
                 or directory_metadata.st_uid != 0
-                or (require_unwritable and directory_metadata.st_mode & 0o022)
+                or (
+                  require_unwritable
+                  and directory_metadata.st_mode & 0o022
+                  and not (allow_writable_root and directory_path == root)
+                )
               ):
                 sys.exit("trusted tool tree directory has unsafe ownership mode")
               for name in (*directory_names, *file_names):
@@ -820,7 +846,11 @@ def isolate_candidate_runtime_cache(document: str) -> str:
               sys.exit("trusted tool prefix overlaps candidate-controlled paths")
             if tool_prefix.is_relative_to(trusted_tool_root):
               validate_trusted_ancestry(
-                trusted_tool_root, tool_prefix, trusted_tool_uids, "trusted tool prefix"
+                trusted_tool_root,
+                tool_prefix,
+                trusted_tool_uids,
+                "trusted tool prefix",
+                allow_writable_root=allow_hosted_tool_cache_root,
               )
             prefix_metadata = tool_prefix.stat(follow_symlinks=False)
             if not stat.S_ISDIR(prefix_metadata.st_mode):
@@ -831,6 +861,7 @@ def isolate_candidate_runtime_cache(document: str) -> str:
             validate_root_owned_tool_tree(
               tool_prefix,
               require_unwritable=not tool_prefix.is_relative_to("/opt/microsoft/powershell"),
+              allow_writable_root=allow_hosted_tool_cache_root,
             )
             tool_prefix_identities[tool_prefix] = (
               prefix_metadata.st_dev,
