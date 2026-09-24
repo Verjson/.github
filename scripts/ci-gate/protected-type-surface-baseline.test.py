@@ -199,6 +199,14 @@ class ProtectedBaselineTest(unittest.TestCase):
             run,
         )
 
+    def test_trusted_compatibility_sandbox_is_provisioned_before_candidate_execution(self):
+        steps = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["build-test"]["steps"]
+        names = [candidate.get("name") for candidate in steps]
+        self.assertLess(
+            names.index("Provision trusted compatibility sandbox"),
+            names.index("Run exact credentialless consumer script plan"),
+        )
+
     def test_base_sha_is_resolved_once_and_head_or_merge_tree_cannot_supply_declaration(self):
         result, calls, output_text, receipt_text = run_resolver(
             '{"package":"@verjson/authn","version":"3.0.0","script":"test:type-surface-compatibility"}'

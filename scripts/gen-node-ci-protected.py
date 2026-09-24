@@ -374,6 +374,49 @@ def remove_candidate_credentials(document: str, step_name: str) -> str:
     return document[:step_start] + protected_step + document[step_end:]
 
 
+def move_step_before_guard(
+    document: str,
+    moving_name: str,
+    before_name: str,
+    guard_name: str,
+) -> str:
+    lines = document.splitlines(keepends=True)
+    moving_marker = f"      - name: {moving_name}\n"
+    before_marker = f"      - name: {before_name}\n"
+    guard_marker = f"      - name: {guard_name}\n"
+    moving_indexes = [
+        index for index, line in enumerate(lines) if line == moving_marker
+    ]
+    before_indexes = [index for index, line in enumerate(lines) if line == before_marker]
+    guard_indexes = [index for index, line in enumerate(lines) if line == guard_marker]
+    target_guard_indexes = [
+        index for index in guard_indexes if index < before_indexes[0]
+    ] if len(before_indexes) == 1 else []
+    if len(moving_indexes) != 1 or len(before_indexes) != 1 or not target_guard_indexes:
+        raise SystemExit(
+            f"protected node-ci step ordering boundary drifted: {moving_name!r}, "
+            f"{guard_name!r}, {before_name!r}"
+        )
+    moving_start = moving_indexes[0]
+    before_index = before_indexes[0]
+    guard_index = max(target_guard_indexes)
+    moving_end = next(
+        (
+            index
+            for index in range(moving_start + 1, len(lines))
+            if len(lines[index]) - len(lines[index].lstrip()) == 6
+            and lines[index].lstrip().startswith("- ")
+        ),
+        len(lines),
+    )
+    moving_step = lines[moving_start:moving_end]
+    del lines[moving_start:moving_end]
+    if guard_index > moving_start:
+        guard_index -= moving_end - moving_start
+    lines[guard_index:guard_index] = moving_step
+    return "".join(lines)
+
+
 def isolate_candidate_runtime_cache(document: str) -> str:
     step_name = "Run exact credentialless consumer script plan"
     plan_if = (
@@ -1339,6 +1382,12 @@ def render() -> str:
     ):
         document = remove_candidate_credentials(document, step_name)
     document = isolate_candidate_runtime_cache(document)
+    document = move_step_before_guard(
+        document,
+        "Provision trusted compatibility sandbox",
+        "Run exact credentialless consumer script plan",
+        "Revalidate protected pull-request identity",
+    )
     return document
 
 
