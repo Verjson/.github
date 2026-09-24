@@ -1,3 +1,4 @@
+import argparse
 import base64
 import copy
 import subprocess
@@ -7,6 +8,7 @@ import re
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -30,6 +32,10 @@ ADOPTER_CALLERS = (
 class AiReviewRequiredWorkflowAuditTest(unittest.TestCase):
     def setUp(self):
         self.contract = AUDIT.read_contract()
+        self.contract["arm_property_migration"]["repositories"] = [
+            "Verjson/alpha",
+            "Verjson/beta",
+        ]
         self.ruleset_path = f"orgs/Verjson/rulesets/{self.contract['ruleset_id']}"
         self.workflow = """\
 name: AI review authorization arm
@@ -92,10 +98,16 @@ jobs:
                     "properties": [
                         {"property_name": "verjson-stack", "value": "node"},
                         {"property_name": "verjson-core-checks", "value": "enforced"},
+                        {"property_name": "verjson-ai-authorization", "value": "enforced"},
                     ],
                 }
                 for repository in repositories
             ]],
+            "orgs/Verjson/properties/schema": [[{
+                "property_name": self.contract["arm_property"]["name"],
+                "source_type": "organization",
+                **copy.deepcopy(self.contract["arm_property"]["definition"]),
+            }]],
             "orgs/Verjson/actions/secrets/AI_REVIEW_APP_PRIVATE_KEY": [{"visibility": "all"}],
             "orgs/Verjson/actions/variables/AI_REVIEW_APP_ID": [{"visibility": "all", "value": "4528902"}],
             "orgs/Verjson/actions/variables/AI_REVIEW_APP_SLUG": [{"visibility": "all", "value": "ai-review-authorization"}],
@@ -149,14 +161,21 @@ jobs:
         listing[:] = [entry for entry in listing if entry["path"] != caller]
 
     def enter_split_state(self):
-        """Stub the organization as it looks after the split has been applied."""
+        """Stub the organization after the dedicated property migration."""
+        self.enter_split_state_with("arm_ruleset")
+
+    def enter_legacy_selector_state(self):
+        """Stub the split before the dedicated property migration."""
+        self.enter_split_state_with("legacy_arm_ruleset")
+
+    def enter_split_state_with(self, arm_image):
         self.arm_id = 4242
         self.fixture[self.ruleset_path] = [{
             "id": self.contract["ruleset_id"], **copy.deepcopy(self.contract["postimage"]),
         }]
         self.fixture["orgs/Verjson/rulesets"][0].append({"id": self.arm_id})
         self.fixture[f"orgs/Verjson/rulesets/{self.arm_id}"] = [{
-            "id": self.arm_id, **copy.deepcopy(self.contract["arm_ruleset"]),
+            "id": self.arm_id, **copy.deepcopy(self.contract[arm_image]),
         }]
 
     def read(self, path, allow_missing=False):
@@ -298,6 +317,7 @@ jobs:
         beta["properties"] = [
             {"property_name": "verjson-stack", "value": "helm"},
             {"property_name": "verjson-core-checks", "value": "enforced"},
+            {"property_name": "verjson-ai-authorization", "value": "enforced"},
         ]
         self.retired_workflow_source("name: x\non:\n  workflow_call:\njobs: {}\n")
         with self.assertRaisesRegex(AUDIT.AuditError, "armed default branches without canonical"):
@@ -333,11 +353,11 @@ jobs:
         self.assertEqual(post["conditions"]["repository_name"], {"exclude": [], "include": ["~ALL"]})
         pre["rules"] = [rule for rule in pre["rules"] if rule["type"] != "workflows"]
         self.assertEqual(pre, post)
-        # The arm is scoped by property, never by name, so it governs exactly the
-        # repositories that also carry canonical deterministic CI.
+        # The arm is scoped by its own property, never by name or by the
+        # deterministic-CI property it must remain independent from.
         self.assertNotIn("repository_name", arm["conditions"])
         self.assertEqual(arm["conditions"]["repository_property"]["include"], [{
-            "name": "verjson-core-checks", "property_values": ["enforced"], "source": "custom",
+            "name": "verjson-ai-authorization", "property_values": ["enforced"], "source": "custom",
         }])
 
     def test_fleet_is_ready_before_the_split_and_recognised_after_it(self):
@@ -358,7 +378,7 @@ jobs:
         self.fixture = self.make_fixture()
         self.enter_split_state()
         self.fixture[f"orgs/Verjson/rulesets/{self.arm_id}"][0]["enforcement"] = "evaluate"
-        self.assert_audit_error("arm ruleset drifted from the fields its reviewed image asserts")
+        self.assert_audit_error("arm ruleset drifted from both reviewed selector images")
 
     def test_the_arm_ruleset_must_not_exist_before_the_split(self):
         self.fixture["orgs/Verjson/rulesets"][0].append({"id": 4242})
@@ -375,19 +395,170 @@ jobs:
         beta["properties"] = [
             {"property_name": "verjson-stack", "value": "helm"},
             {"property_name": "verjson-core-checks", "value": "enforced"},
+            {"property_name": "verjson-ai-authorization", "value": "enforced"},
         ]
         self.assert_audit_error("armed default branches without canonical deterministic required CI.*Verjson/beta")
 
-    def test_an_unarmed_repository_is_not_required_to_have_deterministic_ci(self):
-        # The split's whole purpose: a repository the arm does not govern keeps
-        # human review and is not a rollout blocker. Under the ~ALL rule it was.
+    def test_core_checks_do_not_implicitly_arm_a_repository(self):
+        # Core-check enrollment and authorization-arm enrollment are independent.
+        # A core-check adopter without the dedicated property keeps human review.
         rows = self.fixture["orgs/Verjson/properties/values?per_page=100"][0]
         beta = next(row for row in rows if row["repository_full_name"] == "Verjson/beta")
-        beta["properties"] = []
+        beta["properties"] = [
+            {"property_name": "verjson-stack", "value": "node"},
+            {"property_name": "verjson-core-checks", "value": "enforced"},
+        ]
+        self.contract["arm_property_migration"]["repositories"] = ["Verjson/alpha"]
         self.enter_split_state()
         report = AUDIT.audit(self.contract, self.read)
         self.assertEqual(report["governed_repositories"], 2)
         self.assertEqual(report["armed_repositories"], 1)
+
+    def test_arm_enrollment_without_core_checks_is_rejected(self):
+        rows = self.fixture["orgs/Verjson/properties/values?per_page=100"][0]
+        beta = next(row for row in rows if row["repository_full_name"] == "Verjson/beta")
+        beta["properties"] = [
+            {"property_name": "verjson-stack", "value": "node"},
+            {"property_name": "verjson-ai-authorization", "value": "enforced"},
+        ]
+        self.enter_split_state()
+        self.assert_audit_error(
+            "armed default branches without canonical deterministic required CI.*Verjson/beta"
+        )
+
+    def test_authorization_property_schema_must_exist_and_match(self):
+        self.fixture["orgs/Verjson/properties/schema"] = [[]]
+        self.enter_split_state()
+        self.assert_audit_error("dedicated authorization property schema is missing")
+
+        self.fixture = self.make_fixture()
+        self.enter_split_state()
+        schema = self.fixture["orgs/Verjson/properties/schema"][0][0]
+        schema["allowed_values"] = ["enforced"]
+        self.assert_audit_error("dedicated authorization property schema drifted")
+
+    def test_legacy_selector_state_allows_ordered_property_migration(self):
+        self.fixture["orgs/Verjson/properties/schema"] = [[]]
+        for row in self.fixture["orgs/Verjson/properties/values?per_page=100"][0]:
+            row["properties"] = [
+                item
+                for item in row["properties"]
+                if item["property_name"] != self.contract["arm_property"]["name"]
+            ]
+        self.enter_legacy_selector_state()
+
+        report = AUDIT.audit(self.contract, self.read)
+        self.assertEqual(report["state"], "split-legacy-selector")
+        self.assertEqual(report["armed_repositories"], 2)
+        self.assertEqual(
+            AUDIT.render_property_migration_payload(self.contract, "schema", self.read),
+            self.contract["arm_property"]["definition"],
+        )
+        with self.assertRaisesRegex(AUDIT.AuditError, "property schema is missing"):
+            AUDIT.render_property_migration_payload(self.contract, "values", self.read)
+        with self.assertRaisesRegex(AUDIT.AuditError, "property schema is missing"):
+            AUDIT.render_property_migration_payload(self.contract, "ruleset", self.read)
+
+        self.fixture["orgs/Verjson/properties/schema"] = [[{
+            "property_name": self.contract["arm_property"]["name"],
+            "source_type": "organization",
+            **copy.deepcopy(self.contract["arm_property"]["definition"]),
+        }]]
+        self.assertEqual(
+            AUDIT.render_property_migration_payload(self.contract, "values", self.read),
+            {
+                "repository_names": ["alpha", "beta"],
+                "properties": [{
+                    "property_name": "verjson-ai-authorization",
+                    "value": "enforced",
+                }],
+            },
+        )
+        with self.assertRaisesRegex(AUDIT.AuditError, "property cohort differs"):
+            AUDIT.render_property_migration_payload(self.contract, "ruleset", self.read)
+
+        for row in self.fixture["orgs/Verjson/properties/values?per_page=100"][0]:
+            row["properties"].append({
+                "property_name": self.contract["arm_property"]["name"],
+                "value": self.contract["arm_property"]["value"],
+            })
+        self.assertEqual(
+            AUDIT.render_property_migration_payload(self.contract, "ruleset", self.read),
+            self.contract["arm_ruleset"],
+        )
+
+    def test_property_migration_rollback_recovers_a_partial_target_state(self):
+        self.enter_split_state()
+        self.fixture["orgs/Verjson/properties/schema"] = [[]]
+        for row in self.fixture["orgs/Verjson/properties/values?per_page=100"][0]:
+            row["properties"] = [
+                item
+                for item in row["properties"]
+                if item["property_name"] != self.contract["arm_property"]["name"]
+            ]
+        self.assertEqual(
+            AUDIT.render_property_migration_payload(self.contract, "rollback", self.read),
+            self.contract["legacy_arm_ruleset"],
+        )
+
+    def test_property_cleanup_unsets_values_only_after_selector_rollback(self):
+        self.enter_legacy_selector_state()
+        rows = self.fixture["orgs/Verjson/properties/values?per_page=100"][0]
+        beta = next(row for row in rows if row["repository_full_name"] == "Verjson/beta")
+        beta["properties"] = [
+            item
+            for item in beta["properties"]
+            if item["property_name"] != self.contract["arm_property"]["name"]
+        ]
+        self.assertEqual(
+            AUDIT.render_property_migration_payload(self.contract, "unset-values", self.read),
+            {
+                "repository_names": ["alpha", "beta"],
+                "properties": [{
+                    "property_name": "verjson-ai-authorization",
+                    "value": None,
+                }],
+            },
+        )
+
+        self.fixture["orgs/Verjson/properties/values?per_page=100"][0].append({
+            "repository_full_name": "Verjson/gamma",
+            "properties": [{
+                "property_name": self.contract["arm_property"]["name"],
+                "value": self.contract["arm_property"]["value"],
+            }],
+        })
+        with self.assertRaisesRegex(AUDIT.AuditError, "outside the reviewed migration set"):
+            AUDIT.render_property_migration_payload(self.contract, "unset-values", self.read)
+
+        self.fixture = self.make_fixture()
+        self.enter_split_state()
+        with self.assertRaisesRegex(AUDIT.AuditError, "restored legacy selector"):
+            AUDIT.render_property_migration_payload(self.contract, "unset-values", self.read)
+
+    def test_target_selector_requires_the_reviewed_property_cohort(self):
+        rows = self.fixture["orgs/Verjson/properties/values?per_page=100"][0]
+        beta = next(row for row in rows if row["repository_full_name"] == "Verjson/beta")
+        beta["properties"] = [
+            item
+            for item in beta["properties"]
+            if item["property_name"] != self.contract["arm_property"]["name"]
+        ]
+        self.enter_split_state()
+        self.assert_audit_error("authorization property cohort differs from the reviewed migration set")
+
+    def test_property_inventory_rejects_malformed_and_duplicate_entries(self):
+        rows = self.fixture["orgs/Verjson/properties/values?per_page=100"][0]
+        rows[0]["properties"].append({
+            "property_name": self.contract["arm_property"]["name"],
+            "value": "disabled",
+        })
+        self.assert_audit_error("organization property values are invalid")
+
+        self.fixture = self.make_fixture()
+        rows = self.fixture["orgs/Verjson/properties/values?per_page=100"][0]
+        rows[0]["properties"].append("malformed")
+        self.assert_audit_error("organization property values are invalid")
 
     def test_an_arm_governing_nothing_is_rejected(self):
         for row in self.fixture["orgs/Verjson/properties/values?per_page=100"][0]:
@@ -434,7 +605,7 @@ jobs:
         live_arm["rules"][0]["parameters"]["workflows"][0]["sha"] = "c597d69"
         self.assertEqual(AUDIT.audit(self.contract, self.read)["state"], "split")
         live_arm["enforcement"] = "evaluate"
-        self.assert_audit_error("arm ruleset drifted from the fields its reviewed image asserts")
+        self.assert_audit_error("arm ruleset drifted from both reviewed selector images")
 
     def test_the_report_names_the_unpinned_fields_of_every_contracted_ruleset(self):
         # The review this feeds has to cover the whole contracted set, not just
@@ -616,7 +787,7 @@ jobs:
             (
                 "arm",
                 self.drift_arm_ruleset,
-                "arm ruleset drifted from the fields its reviewed image asserts",
+                "arm ruleset drifted from both reviewed selector images",
             ),
             (
                 "deterministic",
@@ -649,6 +820,39 @@ jobs:
         self.assertNotIn('"--method"', source)
         self.assertNotIn("rulesets/PUT", source)
         self.assertNotIn("rulesets/PATCH", source)
+
+    def test_property_migration_cli_flags_dispatch_to_the_expected_renderer_mode(self):
+        flag_modes = {
+            "render_arm_property_schema_payload": "schema",
+            "render_arm_property_values_payload": "values",
+            "render_arm_property_ruleset_payload": "ruleset",
+            "render_arm_property_rollback_payload": "rollback",
+            "render_arm_property_unset_values_payload": "unset-values",
+        }
+        all_flags = {
+            "render_split_payload",
+            "render_arm_ruleset_payload",
+            "render_rollback_payload",
+            *flag_modes,
+        }
+        for selected_flag, mode in flag_modes.items():
+            with self.subTest(flag=selected_flag):
+                args = argparse.Namespace(**{
+                    flag: flag == selected_flag
+                    for flag in all_flags
+                })
+                with (
+                    mock.patch.object(AUDIT, "parse_args", return_value=args),
+                    mock.patch.object(AUDIT, "read_contract", return_value=self.contract),
+                    mock.patch.object(
+                        AUDIT,
+                        "render_property_migration_payload",
+                        return_value={"mode": mode},
+                    ) as render,
+                    mock.patch("builtins.print"),
+                ):
+                    self.assertEqual(AUDIT.main(), 0)
+                render.assert_called_once_with(self.contract, mode)
 
     def test_retired_replacement_and_app_status_cannot_coexist(self):
         second = {"id": 99, **copy.deepcopy(self.contract["arm_ruleset"])}
@@ -720,6 +924,27 @@ jobs:
             with self.assertRaisesRegex(AUDIT.AuditError, diagnostic):
                 AUDIT.read_contract(path)
 
+    def test_arm_property_contract_rejects_unsafe_or_ambiguous_configuration(self):
+        def reuse_core_property(contract):
+            contract["arm_property"]["name"] = contract["core_checks_property"]
+
+        self.assert_contract_rejected(reuse_core_property, "must be independent")
+
+        def delegate_property_values(contract):
+            contract["arm_property"]["definition"]["values_editable_by"] = "org_and_repo_actors"
+
+        self.assert_contract_rejected(delegate_property_values, "definition is invalid")
+
+        def duplicate_cohort(contract):
+            contract["arm_property_migration"]["repositories"].append("Verjson/alpha")
+
+        self.assert_contract_rejected(duplicate_cohort, "repositories are invalid")
+
+        def unordered_cohort(contract):
+            contract["arm_property_migration"]["repositories"].reverse()
+
+        self.assert_contract_rejected(unordered_cohort, "repositories are invalid")
+
     def test_the_split_may_not_smuggle_in_any_other_protection_change(self):
         # The postimage is derived, not trusted. A contract that also relaxes
         # enforcement, widens a bypass, or drops another rule while "just moving
@@ -753,11 +978,11 @@ jobs:
 
         def wrong_property(contract):
             contract["arm_ruleset"]["conditions"]["repository_property"]["include"][0]["name"] = "verjson-stack"
-        self.assert_contract_rejected(wrong_property, "not scoped to the deterministic-CI property")
+        self.assert_contract_rejected(wrong_property, "not scoped to the dedicated authorization property")
 
         def wrong_value(contract):
             contract["arm_ruleset"]["conditions"]["repository_property"]["include"][0]["property_values"] = ["all"]
-        self.assert_contract_rejected(wrong_value, "not scoped to the deterministic-CI property")
+        self.assert_contract_rejected(wrong_value, "not scoped to the dedicated authorization property")
 
         def other_refs(contract):
             contract["arm_ruleset"]["conditions"]["ref_name"]["include"] = ["~ALL"]
@@ -912,6 +1137,7 @@ jobs:
         rows = self.fixture["orgs/Verjson/properties/values?per_page=100"][0]
         beta = next(row for row in rows if row["repository_full_name"] == "Verjson/beta")
         beta["properties"] = [{"property_name": "verjson-stack", "value": "node"}]
+        self.contract["arm_property_migration"]["repositories"] = ["Verjson/alpha"]
         for path in list(self.fixture):
             if path.startswith("repos/Verjson/beta/contents") or "/beta/environments/" in path:
                 del self.fixture[path]
