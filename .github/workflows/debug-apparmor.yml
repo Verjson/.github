@@ -1,0 +1,59 @@
+name: Debug Ubuntu AppArmor bubblewrap runner
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Diagnose packaged AppArmor profile loading
+        shell: bash
+        run: |
+          set -u
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes apparmor apparmor-profiles bubblewrap
+
+          root="/run/verjson-apparmor-debug-${GITHUB_RUN_ID}"
+          profile="$root/bwrap-userns-restrict"
+          source_profile="/usr/share/apparmor/extra-profiles/bwrap-userns-restrict"
+          sudo install -d -o root -g root -m 0755 "$root"
+          sudo install -o root -g root -m 0400 "$source_profile" "$profile"
+          trap 'sudo /sbin/apparmor_parser --remove "$profile" >/dev/null 2>&1 || true; sudo rm -rf -- "$root"' EXIT
+
+          uname -a
+          sudo aa-status || true
+          dpkg-query -W -f='${db:Status-Abbrev} ${binary:Package} ${Version} ${Architecture}\n' apparmor apparmor-profiles bubblewrap
+          printf '%s\n' '--- pathname parser load ---'
+          sudo env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/nonexistent \
+            /sbin/apparmor_parser --replace "$profile" >/tmp/apparmor-pathname.out 2>&1
+          pathname_status=$?
+          printf 'pathname_status=%s\n' "$pathname_status"
+          sed -n '1,120p' /tmp/apparmor-pathname.out
+
+          printf '%s\n' '--- descriptor parser load ---'
+          sudo /usr/bin/python3 - "$profile" <<'PY'
+          import os
+          import sys
+
+          profile = os.open(sys.argv[1], os.O_RDONLY | os.O_CLOEXEC)
+          parser = os.open("/sbin/apparmor_parser", os.O_RDONLY | os.O_CLOEXEC)
+          os.set_inheritable(profile, True)
+          os.set_inheritable(parser, True)
+          os.execve(
+              parser,
+              ("apparmor_parser", "--replace", f"/proc/self/fd/{profile}"),
+              {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "HOME": "/nonexistent"},
+          )
+          PY
+          descriptor_status=$?
+          printf 'descriptor_status=%s\n' "$descriptor_status"
+
+          printf '%s\n' '--- kernel/profile state ---'
+          sudo aa-status || true
+          sudo dmesg --color=never | tail -80 || true
+          bwrap --ro-bind / / --unshare-user --unshare-pid true
