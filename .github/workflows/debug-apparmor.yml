@@ -59,3 +59,25 @@ jobs:
           sudo aa-status || true
           sudo dmesg --color=never | tail -80 || true
           bwrap --ro-bind / / --unshare-user --unshare-pid true
+      - name: Run canonical sandbox acquirer and report installed package
+        shell: bash
+        run: |
+          set -u
+          python3 - <<'PY'
+          from pathlib import Path
+          import textwrap
+
+          workflow = Path('.github/workflows/node-ci.yml').read_text(encoding='utf-8')
+          start = workflow.index('sandbox_acquirer_source() {')
+          body = workflow.index("/usr/bin/cat <<'PY'\\n", start) + len("/usr/bin/cat <<'PY'\\n")
+          end = workflow.index('\\n          PY', body)
+          Path('/tmp/verjson-sandbox-acquirer.py').write_text(
+              textwrap.dedent(workflow[body:end]), encoding='utf-8'
+          )
+          PY
+          sudo /usr/bin/python3 -I /tmp/verjson-sandbox-acquirer.py
+          dpkg-query -W -f='${db:Status-Abbrev} ${binary:Package} ${Version} ${Architecture}\\n' \\
+            apparmor apparmor-profiles bubblewrap
+          sudo stat -c '%U %G %a %n' \\
+            /run/verjson-compatibility-sandbox \\
+            /run/verjson-compatibility-sandbox/bwrap-userns-restrict
