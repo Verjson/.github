@@ -437,7 +437,7 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
                 mutation_thread.join(timeout=5)
                 self.assertFalse(mutation_thread.is_alive())
             remaining = [path.name for path in runner_temp.glob("verjson-candidate-caches-*")]
-            if root_owned_tools:
+            if root_owned_tools or tool_root_uid is not None:
                 for owned_tool_root in [*root.glob("tool*"), *fixture_roots]:
                     if not owned_tool_root.exists():
                         continue
