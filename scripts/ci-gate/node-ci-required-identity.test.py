@@ -509,6 +509,24 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
         self.assertNotEqual(0, equal_result.returncode)
         self.assertNotEqual(0, writable_result.returncode)
 
+    def test_hosted_tool_cache_root_allows_only_the_runner_convention(self):
+        cache_setup = lambda baseline: (baseline / "blob").write_text(
+            "verified", encoding="utf-8"
+        )
+        hosted_run = self.candidate_plan_step()["run"].replace(
+            'Path("/opt/hostedtoolcache")',
+            'Path(os.environ["RUNNER_TOOL_CACHE"])',
+        )
+        result, remaining = self.run_candidate_plan(
+            cache_setup,
+            "exit 0\n",
+            run=hosted_run,
+            tool_root_mode=0o777,
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual([], remaining)
+
     def test_nested_writable_tool_directory_rejects_replacement_executable(self):
         result, remaining = self.run_candidate_plan(
             lambda baseline: (baseline / "blob").write_text("verified", encoding="utf-8"),
