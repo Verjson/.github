@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CONTRACT = ROOT / "config/authn-type-surface-ruleset.json"
 WORKFLOW = ROOT / ".github/workflows/authn-type-surface-required.yml"
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
-NODE_CI_SHA = "c995c0b66a5bbcd4043f2bf96ef3f2e3e9a53369"
+NODE_CI_SHA = "e1d548c5f2b19ef200d818aa2d9ac9bfca3ed131"
 NODE_CI_WORKFLOW = ".github/workflows/node-ci-protected.yml"
 RELEASE_BYPASS = [{
     "actor_id": 4583107, "actor_type": "Integration", "bypass_mode": "always",
