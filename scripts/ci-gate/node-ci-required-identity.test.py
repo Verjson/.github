@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 LEGACY = ROOT / ".github/workflows/node-ci.yml"
 PROTECTED = ROOT / ".github/workflows/node-ci-protected.yml"
 HEAD = "a" * 40
-LEGACY_SHA256 = "8441d0ef3d476fa853b9687de3e18f1dd626b37570b71bd17b413c7255cf9729"
+LEGACY_SHA256 = "bbd2aa1a19d3c85fe690ad255187eb3be17ecf760e12507ed7a834f0a98bcc30"
 
 
 class RequiredWorkflowIdentityTest(unittest.TestCase):
@@ -264,6 +264,7 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
         workspace_symlink=False,
         swap_tool_prefix=False,
         root_owned_tools=True,
+        tool_root_uid=None,
         pwsh_fixture=None,
         mutate_tool_in_place=False,
     ):
@@ -307,6 +308,18 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
             if root_owned_tools:
                 subprocess.run(
                     ["sudo", "-n", "chown", "-R", "0:0", str(tool_bin.parent)], check=True
+                )
+            elif tool_root_uid is not None:
+                subprocess.run(
+                    [
+                        "sudo",
+                        "-n",
+                        "chown",
+                        "-R",
+                        f"{tool_root_uid}:0",
+                        str(tool_bin.parent),
+                    ],
+                    check=True,
                 )
             fixture_roots = []
             if pwsh_fixture is not None:
@@ -424,7 +437,7 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
                 mutation_thread.join(timeout=5)
                 self.assertFalse(mutation_thread.is_alive())
             remaining = [path.name for path in runner_temp.glob("verjson-candidate-caches-*")]
-            if root_owned_tools:
+            if root_owned_tools or tool_root_uid is not None:
                 for owned_tool_root in [*root.glob("tool*"), *fixture_roots]:
                     if not owned_tool_root.exists():
                         continue
@@ -508,6 +521,46 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
         )
         self.assertNotEqual(0, equal_result.returncode)
         self.assertNotEqual(0, writable_result.returncode)
+
+    def test_hosted_tool_cache_root_allows_only_the_runner_convention(self):
+        cache_setup = lambda baseline: (baseline / "blob").write_text(
+            "verified", encoding="utf-8"
+        )
+        hosted_run = self.candidate_plan_step()["run"].replace(
+            'Path("/opt/hostedtoolcache")',
+            'Path(os.environ["RUNNER_TOOL_CACHE"])',
+        )
+        result, remaining = self.run_candidate_plan(
+            cache_setup,
+            "exit 0\n",
+            run=hosted_run,
+            tool_root_mode=0o777,
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual([], remaining)
+
+        runner_owned_result, remaining = self.run_candidate_plan(
+            cache_setup,
+            "exit 0\n",
+            run=hosted_run,
+            tool_root_mode=0o777,
+            root_owned_tools=False,
+            tool_root_uid=1001,
+        )
+        self.assertEqual(0, runner_owned_result.returncode, runner_owned_result.stderr)
+        self.assertEqual([], remaining)
+
+        unapproved_owner_result, remaining = self.run_candidate_plan(
+            cache_setup,
+            "exit 0\n",
+            run=hosted_run,
+            tool_root_mode=0o777,
+            root_owned_tools=False,
+            tool_root_uid=1002,
+        )
+        self.assertNotEqual(0, unapproved_owner_result.returncode)
+        self.assertEqual([], remaining)
 
     def test_nested_writable_tool_directory_rejects_replacement_executable(self):
         result, remaining = self.run_candidate_plan(

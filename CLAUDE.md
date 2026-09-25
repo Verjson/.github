@@ -62,15 +62,13 @@ Each entry states the concrete fact and how/when it was last verified — a live
 not just inspection of prose (#956: an entry asserting external status should say how it
 was confirmed, since inspection-only claims go stale silently).
 
-- [#1590](https://github.com/Verjson/.github/issues/1590) — Add positive behavioral coverage for prerelease-enabled protected baseline resolution; close after the generated workflow test proves the explicit opt-in reaches compatibility resolution.
+- [#1363](https://github.com/Verjson/.github/issues/1363) — Separate AI authorization-arm enrollment from deterministic core checks. GitHub API verification on 2026-09-23 found 29 repositories selected by `verjson-core-checks=enforced` and no dedicated authorization property; ADR 0206 records the reviewed cohort-preserving migration.
 
 - [#629](https://github.com/Verjson/.github/issues/629) — Protected runner canary rollout. GitHub API verification on 2026-09-04: `verjson-github-runner` has no generated deployment caller; its protected `production` environment has the registration App key but lacks `DIGITALOCEAN_RUNNER_FLEET_TOKEN`. Its environment review policy also needs alignment with ADR 0144. Complete adopter installation and a non-production fleet canary/stop/rollback receipt in the owning repository before closure.
 
 
 - [#1451](https://github.com/Verjson/.github/issues/1451) — Complete consumer capacity validation and live host acceptance. GitHub API check on 2026-09-21 found no secrets or variables in `runner-fleet-production`; do not claim live evidence until operators provision the dedicated observation inputs and a real host run succeeds.
-- [#1502](https://github.com/Verjson/.github/issues/1502) — Lint tracked shell scripts. As of 2026-09-22, the platform Actions group does not lint standalone `.sh` files; close after the tracked-file gate is merged and green.
 - [#1540](https://github.com/Verjson/.github/issues/1540) — Remove temporary review-App `checks:write` compatibility after all active authorization receipts and adopters use Actions-owned checks; verify through the tracked migration before removing the permission.
-- [#1565](https://github.com/Verjson/.github/issues/1565) — Parameterize component release-caller defaults so generated manual dispatches select their independent prefix and component without hand-editing canonical artifacts.
 
 Prune an entry when its issue closes. This list loads into every session, so a
 closed entry costs context in each one and misreports the state of the work.

@@ -22,6 +22,21 @@ CREDENTIAL_ENV_KEYS = (
 
 CANDIDATE_CACHE_MAX_FILES = 4096
 CANDIDATE_CACHE_MAX_BYTES = 268435456
+# The complete set of keys a GitHub Actions step object may open with
+# (https://docs.github.com/actions/using-workflows/workflow-syntax-for-github-actions#jobsjob_idsteps).
+STEP_START_KEYS = (
+    "name",
+    "id",
+    "if",
+    "uses",
+    "run",
+    "shell",
+    "working-directory",
+    "env",
+    "with",
+    "continue-on-error",
+    "timeout-minutes",
+)
 
 PROTECTED_INPUTS = """      protected-type-surface-declaration-path:
         description: Repository-relative declaration fetched from the authenticated pull-request base SHA.
@@ -374,6 +389,63 @@ def remove_candidate_credentials(document: str, step_name: str) -> str:
     return document[:step_start] + protected_step + document[step_end:]
 
 
+def move_step_before_guard(
+    document: str,
+    moving_name: str,
+    before_name: str,
+    guard_name: str,
+) -> str:
+    lines = document.splitlines(keepends=True)
+    moving_marker = f"      - name: {moving_name}\n"
+    before_marker = f"      - name: {before_name}\n"
+    guard_marker = f"      - name: {guard_name}\n"
+    moving_indexes = [
+        index for index, line in enumerate(lines) if line == moving_marker
+    ]
+    before_indexes = [index for index, line in enumerate(lines) if line == before_marker]
+    guard_indexes = [index for index, line in enumerate(lines) if line == guard_marker]
+    target_guard_indexes = [
+        index for index in guard_indexes if index < before_indexes[0]
+    ] if len(before_indexes) == 1 else []
+    if len(moving_indexes) != 1 or len(before_indexes) != 1 or not target_guard_indexes:
+        raise SystemExit(
+            f"protected node-ci step ordering boundary drifted: {moving_name!r}, "
+            f"{guard_name!r}, {before_name!r}"
+        )
+    moving_start = moving_indexes[0]
+    before_index = before_indexes[0]
+    guard_index = max(target_guard_indexes)
+    def is_step_start(line: str) -> bool:
+        if len(line) - len(line.lstrip()) != 6:
+            return False
+        rest = line.lstrip()
+        if not rest.startswith("- "):
+            return False
+        key = rest[2:]
+        return any(key.startswith(f"{start_key}:") for start_key in STEP_START_KEYS)
+
+    moving_end = next(
+        (
+            index
+            for index in range(moving_start + 1, len(lines))
+            if is_step_start(lines[index])
+        ),
+        None,
+    )
+    if moving_end is None:
+        raise SystemExit(
+            f"protected node-ci step ordering boundary drifted: no step marker "
+            f"found after {moving_name!r} (before {before_name!r}, guard "
+            f"{guard_name!r})"
+        )
+    moving_step = lines[moving_start:moving_end]
+    del lines[moving_start:moving_end]
+    if guard_index > moving_start:
+        guard_index -= moving_end - moving_start
+    lines[guard_index:guard_index] = moving_step
+    return "".join(lines)
+
+
 def isolate_candidate_runtime_cache(document: str) -> str:
     step_name = "Run exact credentialless consumer script plan"
     plan_if = (
@@ -443,15 +515,20 @@ def isolate_candidate_runtime_cache(document: str) -> str:
           ):
               sys.exit("RUNNER_TEMP is not a canonical directory")
           runner_temp = runner_temp_input
-          baseline = Path(os.path.abspath(os.environ["npm_config_cache"]))
-          if not baseline.is_absolute() or baseline.is_symlink() or not baseline.is_dir():
-              sys.exit("verified runtime cache is not an absolute regular directory")
-          if baseline.resolve() != baseline:
-              sys.exit("verified runtime cache path contains a symlink")
-          try:
-              baseline.resolve().relative_to(runner_temp)
-          except ValueError:
-              sys.exit("verified runtime cache escapes RUNNER_TEMP")
+          baseline_value = os.environ.get("npm_config_cache", "").strip()
+          baseline = None
+          if baseline_value:
+              candidate_baseline = Path(os.path.abspath(baseline_value))
+              if candidate_baseline.exists() or candidate_baseline.is_symlink():
+                baseline = candidate_baseline
+                if not baseline.is_absolute() or baseline.is_symlink() or not baseline.is_dir():
+                  sys.exit("verified runtime cache is not an absolute regular directory")
+                if baseline.resolve() != baseline:
+                  sys.exit("verified runtime cache path contains a symlink")
+                try:
+                  baseline.resolve().relative_to(runner_temp)
+                except ValueError:
+                  sys.exit("verified runtime cache escapes RUNNER_TEMP")
 
           bubblewrap = Path("/usr/bin/bwrap")
           try:
@@ -513,7 +590,7 @@ def isolate_candidate_runtime_cache(document: str) -> str:
                       files.append((relative, size, digest.hexdigest()))
               return tuple(sorted(files))
 
-          baseline_inventory = inventory(baseline)
+          baseline_inventory = inventory(baseline) if baseline is not None else ()
           cache_root = Path(os.environ["CANDIDATE_CACHE_ROOT"])
           if (
               not cache_root.is_absolute()
@@ -535,9 +612,9 @@ def isolate_candidate_runtime_cache(document: str) -> str:
             sys.exit("candidate workspace is not a canonical directory")
           if workspace == runner_temp or workspace in runner_temp.parents or runner_temp in workspace.parents:
               sys.exit("candidate workspace and RUNNER_TEMP overlap")
-          if baseline.parent != runner_temp or cache_root.parent != runner_temp:
+          if (baseline is not None and baseline.parent != runner_temp) or cache_root.parent != runner_temp:
               sys.exit("candidate cache roots are not exact RUNNER_TEMP children")
-          if baseline == cache_root or baseline in cache_root.parents or cache_root in baseline.parents:
+          if baseline is not None and (baseline == cache_root or baseline in cache_root.parents or cache_root in baseline.parents):
               sys.exit("candidate cache baseline and isolation root overlap")
           if any(os.environ.get(name) for name in ("DB_HOST", "DB_PORT", "CACHE_PORT")):
               sys.exit("protected candidate scripts do not permit shared service networking")
@@ -551,12 +628,22 @@ def isolate_candidate_runtime_cache(document: str) -> str:
           ):
               sys.exit("trusted setup-node tool root unavailable or noncanonical")
           trusted_tool_root = trusted_tool_root_input
+          hosted_tool_cache_root = Path("/opt/hostedtoolcache")
+          # uid 0 is root; uid 1001 is the "runner" account GitHub-hosted
+          # images provision and run Actions steps as.
+          hosted_tool_cache_uids = (0, 1001)
 
           def paths_overlap(left, right):
             return left == right or left in right.parents or right in left.parents
 
           def validate_trusted_ancestry(
-            root, target, allowed_uids, label, include_target=True, require_unwritable=True
+            root,
+            target,
+            allowed_uids,
+            label,
+            include_target=True,
+            require_unwritable=True,
+            allow_writable_root=False,
           ):
             try:
               relative = target.relative_to(root)
@@ -578,21 +665,36 @@ def isolate_candidate_runtime_cache(document: str) -> str:
                 if not stat.S_ISDIR(metadata.st_mode):
                   sys.exit(f"{{label}} ancestry is not canonical directories")
               if metadata.st_uid not in allowed_uids or (
-                require_unwritable and metadata.st_mode & 0o022
+                require_unwritable
+                and metadata.st_mode & 0o022
+                and not (allow_writable_root and component == root)
               ):
                 sys.exit(f"{{label}} ancestry has unsafe ownership mode")
 
-          candidate_controlled_roots = (workspace, runner_temp, baseline, cache_root)
+          candidate_controlled_roots = tuple(
+              root for root in (workspace, runner_temp, baseline, cache_root) if root is not None
+          )
           if any(paths_overlap(trusted_tool_root, path) for path in candidate_controlled_roots):
               sys.exit("trusted setup-node tool root overlaps candidate-controlled paths")
           trusted_root_metadata = trusted_tool_root.stat(follow_symlinks=False)
+          allow_hosted_tool_cache_root = (
+            trusted_tool_root == hosted_tool_cache_root
+            and stat.S_IMODE(trusted_root_metadata.st_mode) == 0o777
+            and trusted_root_metadata.st_uid in hosted_tool_cache_uids
+            and trusted_root_metadata.st_gid == 0
+          )
           if (
             not stat.S_ISDIR(trusted_root_metadata.st_mode)
-            or trusted_root_metadata.st_uid != 0
-            or trusted_root_metadata.st_mode & 0o022
+            or trusted_root_metadata.st_uid not in (
+              hosted_tool_cache_uids if allow_hosted_tool_cache_root else (0,)
+            )
+            or (
+              trusted_root_metadata.st_mode & 0o022
+              and not allow_hosted_tool_cache_root
+            )
           ):
             sys.exit("trusted setup-node tool root has unsafe ownership mode")
-          trusted_tool_uids = (0,)
+          trusted_tool_uids = hosted_tool_cache_uids if allow_hosted_tool_cache_root else (0,)
 
           trusted_search_directories = []
           for entry in os.environ.get("PATH", "").split(os.pathsep):
@@ -615,12 +717,14 @@ def isolate_candidate_runtime_cache(document: str) -> str:
               lexical_directory,
               trusted_tool_uids,
               "setup-node lexical PATH",
+              allow_writable_root=allow_hosted_tool_cache_root,
             )
             validate_trusted_ancestry(
               trusted_tool_root,
               resolved_directory,
               trusted_tool_uids,
               "setup-node resolved PATH",
+              allow_writable_root=allow_hosted_tool_cache_root,
             )
             if resolved_directory not in trusted_search_directories:
               trusted_search_directories.append(resolved_directory)
@@ -670,6 +774,7 @@ def isolate_candidate_runtime_cache(document: str) -> str:
                 trusted_tool_uids,
                 f"trusted {{tool_name}} lexical path",
                 include_target=False,
+                allow_writable_root=allow_hosted_tool_cache_root,
               )
               try:
                 resolved_candidate.relative_to(trusted_tool_root)
@@ -680,6 +785,7 @@ def isolate_candidate_runtime_cache(document: str) -> str:
                 resolved_candidate,
                 trusted_tool_uids,
                 f"trusted {{tool_name}} resolved path",
+                allow_writable_root=allow_hosted_tool_cache_root,
               )
               if resolved_candidate.is_file() and os.access(resolved_candidate, os.X_OK):
                 candidates.append(resolved_candidate)
@@ -703,7 +809,12 @@ def isolate_candidate_runtime_cache(document: str) -> str:
             executable_requires_unwritable = not (
               tool_name == "pwsh" and tool_executable.is_relative_to("/opt/microsoft/powershell")
             )
-            if executable_metadata.st_uid != 0 or (
+            executable_uids = (
+              trusted_tool_uids
+              if tool_executable.is_relative_to(hosted_tool_cache_root)
+              else (0,)
+            )
+            if executable_metadata.st_uid not in executable_uids or (
               executable_requires_unwritable and executable_metadata.st_mode & 0o022
             ):
               sys.exit(f"trusted {{tool_name}} executable has unsafe ownership mode")
@@ -717,21 +828,27 @@ def isolate_candidate_runtime_cache(document: str) -> str:
           tool_prefixes = []
           tool_prefix_identities = {{}}
 
-          def validate_root_owned_tool_tree(root, require_unwritable=True):
+          def validate_trusted_tool_tree(
+            root, allowed_uids=(0,), require_unwritable=True, allow_writable_root=False
+          ):
             for directory, directory_names, file_names in os.walk(root, followlinks=False):
               directory_path = Path(directory)
               directory_metadata = directory_path.stat(follow_symlinks=False)
               if (
                 not stat.S_ISDIR(directory_metadata.st_mode)
-                or directory_metadata.st_uid != 0
-                or (require_unwritable and directory_metadata.st_mode & 0o022)
+                or directory_metadata.st_uid not in allowed_uids
+                or (
+                  require_unwritable
+                  and directory_metadata.st_mode & 0o022
+                  and not (allow_writable_root and directory_path == root)
+                )
               ):
                 sys.exit("trusted tool tree directory has unsafe ownership mode")
               for name in (*directory_names, *file_names):
                 entry = directory_path / name
                 entry_metadata = entry.stat(follow_symlinks=False)
-                if entry_metadata.st_uid != 0:
-                  sys.exit("trusted tool tree entry is not root owned")
+                if entry_metadata.st_uid not in allowed_uids:
+                  sys.exit("trusted tool tree entry has unapproved ownership")
                 if stat.S_ISLNK(entry_metadata.st_mode):
                   resolved_entry = entry.resolve()
                   if resolved_entry.is_relative_to(root):
@@ -770,7 +887,11 @@ def isolate_candidate_runtime_cache(document: str) -> str:
               sys.exit("trusted tool prefix overlaps candidate-controlled paths")
             if tool_prefix.is_relative_to(trusted_tool_root):
               validate_trusted_ancestry(
-                trusted_tool_root, tool_prefix, trusted_tool_uids, "trusted tool prefix"
+                trusted_tool_root,
+                tool_prefix,
+                trusted_tool_uids,
+                "trusted tool prefix",
+                allow_writable_root=allow_hosted_tool_cache_root,
               )
             prefix_metadata = tool_prefix.stat(follow_symlinks=False)
             if not stat.S_ISDIR(prefix_metadata.st_mode):
@@ -778,9 +899,15 @@ def isolate_candidate_runtime_cache(document: str) -> str:
             # See the pwsh discovery comment above: the Microsoft-shipped runtime tree
             # under GitHub-hosted /opt is root-owned but world-writable throughout, so
             # only that prefix relaxes the write-bit requirement; npm/node stay strict.
-            validate_root_owned_tool_tree(
+            validate_trusted_tool_tree(
               tool_prefix,
+              allowed_uids=(
+                trusted_tool_uids
+                if tool_prefix.is_relative_to(hosted_tool_cache_root)
+                else (0,)
+              ),
               require_unwritable=not tool_prefix.is_relative_to("/opt/microsoft/powershell"),
+              allow_writable_root=allow_hosted_tool_cache_root,
             )
             tool_prefix_identities[tool_prefix] = (
               prefix_metadata.st_dev,
@@ -842,7 +969,7 @@ def isolate_candidate_runtime_cache(document: str) -> str:
               signal.signal(caught_signal, handle_signal)
           try:
               for index, (script_directory, name, unset_env) in enumerate(normalized):
-                  if inventory(baseline) != baseline_inventory:
+                  if baseline is not None and inventory(baseline) != baseline_inventory:
                       sys.exit("verified runtime cache changed before candidate script")
                   script_cache = cache_root / str(index)
                   script_cache.mkdir(mode=0o700)
@@ -850,23 +977,26 @@ def isolate_candidate_runtime_cache(document: str) -> str:
                   script_home = cache_root / f"home-{{index}}"
                   script_tmp.mkdir(mode=0o700)
                   script_home.mkdir(mode=0o700)
-                  for relative, _size, _digest in baseline_inventory:
-                      source = baseline / relative
-                      target = script_cache / relative
-                      target.parent.mkdir(parents=True, exist_ok=True)
-                      try:
-                          source_descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
-                      except OSError:
-                          sys.exit("verified runtime cache changed during isolated copy")
-                      if not stat.S_ISREG(os.fstat(source_descriptor).st_mode):
-                          os.close(source_descriptor)
-                          sys.exit("verified runtime cache copy source is not a regular file")
-                      with (
-                          os.fdopen(source_descriptor, "rb") as source_stream,
-                          target.open("xb") as target_stream,
-                      ):
-                          shutil.copyfileobj(source_stream, target_stream, length=1024 * 1024)
-                  if inventory(baseline) != baseline_inventory or inventory(script_cache) != baseline_inventory:
+                  if baseline is not None:
+                      for relative, _size, _digest in baseline_inventory:
+                          source = baseline / relative
+                          target = script_cache / relative
+                          target.parent.mkdir(parents=True, exist_ok=True)
+                          try:
+                              source_descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
+                          except OSError:
+                              sys.exit("verified runtime cache changed during isolated copy")
+                          if not stat.S_ISREG(os.fstat(source_descriptor).st_mode):
+                              os.close(source_descriptor)
+                              sys.exit("verified runtime cache copy source is not a regular file")
+                          with (
+                              os.fdopen(source_descriptor, "rb") as source_stream,
+                              target.open("xb") as target_stream,
+                          ):
+                              shutil.copyfileobj(source_stream, target_stream, length=1024 * 1024)
+                  if (baseline is not None and inventory(baseline) != baseline_inventory) or (
+                      inventory(script_cache) != baseline_inventory
+                  ):
                       sys.exit("isolated candidate cache copy failed integrity verification")
                   script_env = os.environ.copy()
                   for env_name in unset_env:
@@ -999,14 +1129,14 @@ def isolate_candidate_runtime_cache(document: str) -> str:
                   script_cache.exists()
                   or script_tmp.exists()
                   or script_home.exists()
-                  or inventory(baseline) != baseline_inventory
+                  or (baseline is not None and inventory(baseline) != baseline_inventory)
                 ):
                   sys.exit("candidate script cache cleanup or baseline integrity check failed")
           finally:
               cleanup_cache_root()
               for caught_signal, previous_handler in previous_handlers.items():
                   signal.signal(caught_signal, previous_handler)
-          if cache_root.exists() or inventory(baseline) != baseline_inventory:
+          if cache_root.exists() or (baseline is not None and inventory(baseline) != baseline_inventory):
               sys.exit("candidate cache root cleanup or final baseline integrity check failed")
 """
     if step.count(execution) != 1:
@@ -1329,6 +1459,12 @@ def render() -> str:
     ):
         document = remove_candidate_credentials(document, step_name)
     document = isolate_candidate_runtime_cache(document)
+    document = move_step_before_guard(
+        document,
+        "Provision trusted compatibility sandbox",
+        "Run exact credentialless consumer script plan",
+        "Revalidate protected pull-request identity",
+    )
     return document
 
 
