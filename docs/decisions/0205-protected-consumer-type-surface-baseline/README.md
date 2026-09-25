@@ -51,6 +51,19 @@ released version in their protected package policy.
 - The protected caller must remain pinned to an immutable organization workflow
   commit and must not pass package credentials to candidate execution.
 
+## Adoption
+
+Subsequent `@verjson/*` packages adopt this contract by adding the exact
+three-field declaration on protected `main`, adding the exact package and released
+version to the protected compatibility policy, and generating the thin protected
+caller from the package's checked-in generator. The generated caller must pin the
+organization workflow to one reviewed immutable commit, pass the authenticated
+pull-request identity and declaration inputs, and keep the credentialless execution
+plan fixed. Run the generator's contract tests, the protected-baseline adversarial
+tests, and the package's normal build, type-surface, changelog, and security checks
+before opening the adoption PR; never hand-edit a generated workflow or substitute a
+PR-head, merge-tree, fork, workspace, or floating-main baseline.
+
 ## Rollback
 
 Remove the protected declaration input from an adopter only after restoring an
