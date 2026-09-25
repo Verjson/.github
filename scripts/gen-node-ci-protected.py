@@ -22,6 +22,21 @@ CREDENTIAL_ENV_KEYS = (
 
 CANDIDATE_CACHE_MAX_FILES = 4096
 CANDIDATE_CACHE_MAX_BYTES = 268435456
+# The complete set of keys a GitHub Actions step object may open with
+# (https://docs.github.com/actions/using-workflows/workflow-syntax-for-github-actions#jobsjob_idsteps).
+STEP_START_KEYS = (
+    "name",
+    "id",
+    "if",
+    "uses",
+    "run",
+    "shell",
+    "working-directory",
+    "env",
+    "with",
+    "continue-on-error",
+    "timeout-minutes",
+)
 
 PROTECTED_INPUTS = """      protected-type-surface-declaration-path:
         description: Repository-relative declaration fetched from the authenticated pull-request base SHA.
@@ -400,15 +415,29 @@ def move_step_before_guard(
     moving_start = moving_indexes[0]
     before_index = before_indexes[0]
     guard_index = max(target_guard_indexes)
+    def is_step_start(line: str) -> bool:
+        if len(line) - len(line.lstrip()) != 6:
+            return False
+        rest = line.lstrip()
+        if not rest.startswith("- "):
+            return False
+        key = rest[2:]
+        return any(key.startswith(f"{start_key}:") for start_key in STEP_START_KEYS)
+
     moving_end = next(
         (
             index
             for index in range(moving_start + 1, len(lines))
-            if len(lines[index]) - len(lines[index].lstrip()) == 6
-            and lines[index].lstrip().startswith("- ")
+            if is_step_start(lines[index])
         ),
-        len(lines),
+        None,
     )
+    if moving_end is None:
+        raise SystemExit(
+            f"protected node-ci step ordering boundary drifted: no step marker "
+            f"found after {moving_name!r} (before {before_name!r}, guard "
+            f"{guard_name!r})"
+        )
     moving_step = lines[moving_start:moving_end]
     del lines[moving_start:moving_end]
     if guard_index > moving_start:
