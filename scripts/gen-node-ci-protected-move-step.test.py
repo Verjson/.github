@@ -43,15 +43,63 @@ class MoveStepBeforeGuardBoundaryTests(unittest.TestCase):
         result = self.module.move_step_before_guard(
             document, "Move me", "Before step", "Guard step"
         )
-        self.assertIn("cat <<'YAML'\n", result)
-        self.assertIn("some: embedded-fixture-line\n", result)
-        self.assertIn("          YAML\n", result)
-        lines = result.splitlines(keepends=True)
-        moved_index = lines.index("      - name: Move me\n")
-        guard_index = lines.index("      - name: Guard step\n")
-        trailing_index = lines.index("      - name: Trailing step\n")
-        self.assertLess(moved_index, guard_index)
-        self.assertGreater(trailing_index, guard_index)
+        # Exact equality, not membership: the old boundary scan matched the
+        # embedded "- some: ..." bullet as a false step marker, truncating
+        # "Move me" mid-heredoc and stranding its closing "YAML" marker as an
+        # orphaned line after "Before step" instead of moving with its step.
+        self.assertEqual(
+            result,
+            "jobs:\n"
+            "  example:\n"
+            "    steps:\n"
+            "      - name: Move me\n"
+            "        run: |\n"
+            "          cat <<'YAML'\n"
+            "      - some: embedded-fixture-line\n"
+            "          YAML\n"
+            "      - name: Guard step\n"
+            "        run: guard\n"
+            "      - name: Before step\n"
+            "        run: before\n"
+            "      - name: Trailing step\n"
+            "        run: trailing\n",
+        )
+
+    def test_a_real_step_starting_with_id_or_run_is_still_recognized_as_the_boundary(self):
+        # Not every step's first key is "name:" or "uses:" — this repo's own
+        # generated workflow has real steps opening with "- id: " and
+        # "- run: ". The boundary scan must recognize those too instead of
+        # scanning past them.
+        document = (
+            "jobs:\n"
+            "  example:\n"
+            "    steps:\n"
+            "      - name: Guard step\n"
+            "        run: guard\n"
+            "      - name: Before step\n"
+            "        run: before\n"
+            "      - name: Move me\n"
+            "        run: move\n"
+            "      - id: check\n"
+            "        run: echo check\n"
+        )
+        result = self.module.move_step_before_guard(
+            document, "Move me", "Before step", "Guard step"
+        )
+        self.assertEqual(
+            result,
+            "jobs:\n"
+            "  example:\n"
+            "    steps:\n"
+            "      - name: Move me\n"
+            "        run: move\n"
+            "      - name: Guard step\n"
+            "        run: guard\n"
+            "      - name: Before step\n"
+            "        run: before\n"
+            "      - id: check\n"
+            "        run: echo check\n",
+        )
 
     def test_no_step_marker_after_the_moving_step_fails_closed(self):
         document = (
