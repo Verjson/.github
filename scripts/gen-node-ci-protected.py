@@ -405,10 +405,18 @@ def move_step_before_guard(
             index
             for index in range(moving_start + 1, len(lines))
             if len(lines[index]) - len(lines[index].lstrip()) == 6
-            and lines[index].lstrip().startswith("- ")
+            and (
+                lines[index].lstrip().startswith("- name: ")
+                or lines[index].lstrip().startswith("- uses: ")
+            )
         ),
-        len(lines),
+        None,
     )
+    if moving_end is None:
+        raise SystemExit(
+            f"protected node-ci step ordering boundary drifted: no step "
+            f"marker found after {moving_name!r}"
+        )
     moving_step = lines[moving_start:moving_end]
     del lines[moving_start:moving_end]
     if guard_index > moving_start:
