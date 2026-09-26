@@ -87,6 +87,33 @@ else
   fail "a missing privileged_lane did not fail closed: $out"
 fi
 
+# --- whitespace-only input: jq 1.6 also treats this as zero JSON values -------
+# A here-string always appends a trailing newline, so PRIVILEGED_LANE=""
+# alone doesn't prove whitespace-only content (e.g. caller-supplied spaces or
+# a tab) is also rejected -- that degenerate shape hits the exact same jq
+# "filter never ran" behavior as a missing input (#1612).
+out="$(PRIVILEGED_LANE='   ' run_case)"
+rc=$?
+if [ "$rc" -ne 0 ] && grep -qF '::error::' <<<"$out" && grep -qF 'missing, malformed' <<<"$out"; then
+  pass "a whitespace-only privileged_lane fails closed"
+else
+  fail "a whitespace-only privileged_lane did not fail closed: $out"
+fi
+
+# --- valid value followed by trailing garbage ----------------------------------
+# jq parses concatenated JSON values as a stream: for a checked-but-not-status
+# version of this comparison, jq emits "true" to stdout for the first (valid)
+# value, then fails on the unparsed remainder -- an exit status discarded by
+# `2>/dev/null` in a bare stdout-string comparison would let this slip through
+# as if the input were an exact match, even though the raw string is not.
+out="$(PRIVILEGED_LANE='["ubuntu-24.04"]xxxxx' run_case)"
+rc=$?
+if [ "$rc" -ne 0 ] && grep -qF '::error::' <<<"$out"; then
+  pass "a valid lane followed by trailing garbage fails closed"
+else
+  fail "trailing garbage after a valid lane did not fail closed: $out"
+fi
+
 # --- malformed JSON -------------------------------------------------------
 out="$(PRIVILEGED_LANE='not-json' run_case)"
 rc=$?
