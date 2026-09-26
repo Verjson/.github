@@ -164,6 +164,19 @@ fi
 write_base; expect_pass "explicit bash invocation supports a non-executable sparse-checkout verifier" run_promote
 grep -q -- '--admin --squash --match-head-commit' "$CALLS" \
   && pass "all-success promotion merges the exact authorized head" || fail "terminal promotion did not use exact-head admin squash merge"
+write_base
+# #1615: the reviewing token cannot always resolve author_association correctly (e.g. a
+# default GITHUB_TOKEN without org-membership read visibility reports a real org MEMBER as
+# "NONE"). The independent-review revalidation must not gate on that unreliable field; the
+# live admin/maintain collaborator-permission check is the actual, already-authoritative
+# eligibility test.
+jq '.[1].author_association="NONE"' "$REVIEWS_FILE" >"$tmp/x" && mv "$tmp/x" "$REVIEWS_FILE"
+jq '.[1]' "$REVIEWS_FILE" >"$REVIEW_REFETCH_FILE"
+cp "$REVIEWS_FILE" "$LATEST_REVIEWS_FILE"
+expect_pass "unresolvable author_association still promotes a real admin/maintain reviewer (#1615)" run_promote
+grep -q -- '--admin --squash --match-head-commit' "$CALLS" \
+  && pass "author_association-blind promotion still merges the exact authorized head" \
+  || fail "author_association-blind promotion did not use exact-head admin squash merge"
 write_base; REVIEW_POLICY="$(encode_policy "$ai_approve_policy")" expect_fail "ai-approve authority never reaches terminal merge" run_promote
 ! grep -q 'pr merge' "$CALLS" || fail "ai-approve authority attempted a terminal merge"
 write_base; jq '.conclusion="failure"' "$CHECK_FILE" >"$tmp/x" && mv "$tmp/x" "$CHECK_FILE"; expect_fail "failed authorization never promotes" run_promote

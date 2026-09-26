@@ -465,15 +465,18 @@ jobs:
           marker="<!-- independent-review:v1 pr:${PR_NUMBER} head:${EXPECTED_HEAD_SHA} verdict:approved -->"
           reviews="$(gh api --paginate \
             "repos/$TARGET_REPO/pulls/$PR_NUMBER/reviews?per_page=100" | jq -s '.')"
+          # author_association is not used as a gate here: it reflects the *calling
+          # token's* visibility into org membership, not the reviewer's actual standing
+          # (#1615 — a default GITHUB_TOKEN without org-membership read access reports a
+          # real MEMBER as "NONE"). The collaborator-permission checks below, which query
+          # the reviewer's own live admin/maintain role directly, are the authoritative
+          # eligibility test.
           candidate="$(jq -er --arg head "$EXPECTED_HEAD_SHA" '
               [ .[][]
                 | select(
                     .commit_id == $head and
                     .user.type == "User" and
-                    (.user.login | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9-]*$")) and
-                    (.author_association == "OWNER" or
-                     .author_association == "MEMBER" or
-                     .author_association == "COLLABORATOR")
+                    (.user.login | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9-]*$"))
                   )
                 | {id, login: .user.login}
               ]
@@ -503,9 +506,6 @@ jobs:
               .commit_id == $head and
               .user.type == "User" and
               .user.login == $login and
-              (.author_association == "OWNER" or
-               .author_association == "MEMBER" or
-               .author_association == "COLLABORATOR") and
               (.body | type == "string" and gsub("^\\s+|\\s+$"; "") == $marker)
             ' <<<"$live_review" >/dev/null || {
               echo "::error::latest independent-review verdict is edited, withdrawn, dismissed, or not approving"; exit 1;
@@ -517,10 +517,7 @@ jobs:
                 | select(
                     .commit_id == $head and
                     .user.type == "User" and
-                    (.user.login | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9-]*$")) and
-                    (.author_association == "OWNER" or
-                     .author_association == "MEMBER" or
-                     .author_association == "COLLABORATOR")
+                    (.user.login | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9-]*$"))
                   )
                 | .id
               ]
