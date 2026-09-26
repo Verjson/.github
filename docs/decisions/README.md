@@ -12,6 +12,7 @@ Reverse-chronological index of org-level decisions.
 <!-- prettier-ignore -->
 | # | Date | Decision |
 |---|------|----------|
+| [0208](0208-independent-review-eligibility-is-collaborator-permission-not-association/README.md) | 2026-09-26 | Independent-review eligibility is the live collaborator permission, not `author_association` |
 | [0207](0207-withhold-issue-mutation-from-terminal-merge-app/README.md) | 2026-09-23 | Withhold issue mutation from the terminal merge App |
 | [0206](0206-ai-authorization-property-is-independent/README.md) | 2026-09-23 | Enroll the AI authorization arm with an independent property |
 | [0205](0205-protected-consumer-type-surface-baseline/README.md) | 2026-09-23 | Resolve protected consumer type-surface baselines from the PR base |
