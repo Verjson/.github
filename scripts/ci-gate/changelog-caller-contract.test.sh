@@ -2812,6 +2812,17 @@ grep -qE '^  verify:$' <<<"$snapshot_release" \
   && pass "release-snapshot emits verify/snapshot/publish with no build or publication stage" \
   || fail "release-snapshot did not emit the snapshot-only release shape"
 
+# #1616: the publish job runs in its own job context, so it cannot read
+# `steps.release-version` — that step ID exists only inside the `verify` job.
+# Regression: publish's tag/note verification step once read the version from
+# `steps.release-version.outputs.version` (always empty there), so the exact-tag
+# check failed on every release.
+snapshot_publish_job="$(awk '/^  publish:[[:space:]]*$/{seen=1} seen' <<<"$snapshot_release")"
+grep -qF 'VERSION: ${{ needs.verify.outputs.version }}' <<<"$snapshot_publish_job" \
+  && ! grep -qF 'steps.release-version' <<<"$snapshot_publish_job" \
+  && pass "release-snapshot publish job resolves VERSION from needs.verify, not the unreachable verify-job step" \
+  || fail "release-snapshot publish job references steps.release-version, which does not exist outside the verify job (#1616)"
+
 build_snapshot_adopter() {
   # An adopter that consumes NEXT/ but publishes nothing from the release
   # workflow: no package, no GitHub Release assets, no release-build.sh hook.
