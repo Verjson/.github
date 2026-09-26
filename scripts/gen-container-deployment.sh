@@ -190,6 +190,12 @@ assert_digest .github/workflows/container-deployment-review-producer.yml $review
 assert_digest scripts/container_deployment_review_producer.py $review_producer_digest
 
 [ -f "$config" ] || contract_fail "deployment config $config is missing"
+# \`-e\` alone cannot reject a config with no JSON value at all: jq 1.6
+# exits 0 on empty or whitespace-only input regardless of \`-e\` (#1617),
+# because the filter never runs when there is nothing to run it against.
+# Catch that case in plain bash before jq ever sees the file.
+[ -s "$config" ] || contract_fail "$config is empty"
+grep -q '[^[:space:]]' "$config" || contract_fail "$config contains only whitespace"
 # The nine deployment-config preconditions are stated once. This program is both
 # the verdict and the report: the contract passes iff it names no violation, so a
 # condition added later cannot be enforced without also being diagnosed. \`-e\`
