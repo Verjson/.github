@@ -1998,7 +1998,7 @@ ${release_plan_step}
           persist-credentials: false
       - name: Verify the checked-out tag and immutable release note
         env:
-          VERSION: \${{ steps.release-version.outputs.version }}
+          VERSION: \${{ needs.verify.outputs.version }}
         run: |
           test "\$(git describe --tags --exact-match HEAD)" = "\$VERSION"
           test -f "CHANGELOG/\$VERSION.md"
