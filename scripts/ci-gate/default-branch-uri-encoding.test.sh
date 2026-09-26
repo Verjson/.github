@@ -2510,29 +2510,12 @@ REF_SITE_ALLOWLIST=(
   # sha-guarded: `require_sha` is the 40-hex boundary check for this value, but it is a
   # call rather than an inline pattern, so the scan cannot read it as one.
   $'scripts/renovate-changelog.py\thead_sha\tscripts/renovate-changelog.py\trequire_sha(planned["head_sha"], "plan.head_sha")'
-  # ref: guarded at verify-arm-receipt.sh:59-60 with a charset pattern plus explicit
-  # rejection of a leading "/", of "..", and of "//" -- a traversal guard rather than an
-  # encoding, which is the one other shape this test accepts by hand. Note that this site
-  # interpolates the branch into a `rules/branches/` path with NO encoding at all, which
-  # puts it on the literal-slash side of the disagreement recorded below.
-  $'scripts/ci-gate/verify-arm-receipt.sh\tarm_base_branch\tscripts/ci-gate/verify-arm-receipt.sh\t[[ "$arm_base_branch" =~ ^[A-Za-z0-9._/-]+$ ]]'
-  # ref: DELIBERATE and UNRESOLVED. assert-mergeable-head.sh encodes with `@uri` and then
-  # gsubs %2F back to "/", i.e. the QUERY form, into a `rules/branches/` PATH segment,
-  # because its comment states the literal separator is what addresses the ruleset.
-  #
-  # This repository does not agree with itself about that endpoint. FOUR sites build the
-  # path form -- gate_coverage_audit.py:210, required-checks-audit.sh:233,
-  # required-checks-rollout.sh:233, and scripts/privileged-merge-conformance.sh:92 -- while
-  # TWO keep the slash literal: assert-mergeable-head.sh:215 (query form into a path) and
-  # scripts/ci-gate/verify-arm-receipt.sh:62 (no encoding at all, above).
-  #
-  # `branches/` and `commits/` were measured to accept BOTH forms against the live API
-  # while widening this scan; `rules/branches/` could not be settled here because no
-  # Verjson ruleset targets a slash-bearing ref to compare against, and the endpoint
-  # returned zero rules for both forms. Do not "fix" either side on a guess: settling it
-  # is tracked in #1470. `base_ref` also appears here in fault prose that quotes the URL.
-  $'scripts/assert-mergeable-head.sh\tbase_ref_path\t\t'
-  $'scripts/assert-mergeable-head.sh\tbase_ref\t\t'
+  # `rules/branches/` was settled on 2026-09-26 (#1470): measured against a temporary
+  # ruleset targeting `release/2026.09` in Verjson/demo-repository, the endpoint resolves
+  # the same rules for `release%2F2026.09` and `release/2026.09`, so the path form is the
+  # strictly safer spelling. assert-mergeable-head.sh and verify-arm-receipt.sh now
+  # encode their base ref with `@uri` like every other rules/branches/ reader, and the
+  # scan below pins that: no allowlist entry remains for either site.
 )
 
 allowlisted_hits=()

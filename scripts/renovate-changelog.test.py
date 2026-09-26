@@ -614,7 +614,7 @@ class GitDataWriteTests(unittest.TestCase):
             {
                 (
                     "GET",
-                    f"repos/{REPOSITORY}/git/ref/heads/renovate/ip-address-10.x",
+                    f"repos/{REPOSITORY}/git/ref/heads/renovate%2Fip-address-10.x",
                 ): [{"object": {"type": "commit", "sha": ref_sha}}],
                 ("GET", f"repos/{REPOSITORY}/git/commits/{HEAD}"): [
                     {"tree": {"sha": TREE}}
@@ -624,7 +624,7 @@ class GitDataWriteTests(unittest.TestCase):
                 ("POST", f"repos/{REPOSITORY}/git/commits"): [{"sha": NEW_COMMIT}],
                 (
                     "PATCH",
-                    f"repos/{REPOSITORY}/git/refs/heads/renovate/ip-address-10.x",
+                    f"repos/{REPOSITORY}/git/refs/heads/renovate%2Fip-address-10.x",
                 ): [{"object": {"sha": NEW_COMMIT}}],
             },
             pages=[],
@@ -650,6 +650,8 @@ class GitDataWriteTests(unittest.TestCase):
 
     def test_writes_the_fixed_fragment_for_a_lock_file_maintenance_branch(self) -> None:
         head_ref = "renovate/lock-file-maintenance"
+        # Pinned spelling of the same ref as ONE path segment (#1458).
+        encoded_head_ref = "renovate%2Flock-file-maintenance"
         fragment_path = "NEXT/2026-08-16-issue-263-renovate-lock-file-maintenance.md"
         document = pull_request(body=LOCK_FILE_BODY, head_ref=head_ref)
         planned = renovate_changelog.plan(
@@ -673,7 +675,7 @@ class GitDataWriteTests(unittest.TestCase):
         )
         write_client = FakeClient(
             {
-                ("GET", f"repos/{REPOSITORY}/git/ref/heads/{head_ref}"): [
+                ("GET", f"repos/{REPOSITORY}/git/ref/heads/{encoded_head_ref}"): [
                     {"object": {"type": "commit", "sha": HEAD}}
                 ],
                 ("GET", f"repos/{REPOSITORY}/git/commits/{HEAD}"): [
@@ -682,7 +684,7 @@ class GitDataWriteTests(unittest.TestCase):
                 ("POST", f"repos/{REPOSITORY}/git/blobs"): [{"sha": BLOB}],
                 ("POST", f"repos/{REPOSITORY}/git/trees"): [{"sha": NEW_TREE}],
                 ("POST", f"repos/{REPOSITORY}/git/commits"): [{"sha": NEW_COMMIT}],
-                ("PATCH", f"repos/{REPOSITORY}/git/refs/heads/{head_ref}"): [
+                ("PATCH", f"repos/{REPOSITORY}/git/refs/heads/{encoded_head_ref}"): [
                     {"object": {"sha": NEW_COMMIT}}
                 ],
             },

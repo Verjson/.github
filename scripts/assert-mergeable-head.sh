@@ -147,11 +147,6 @@ head_sha="$(jq -r '.headRefOid // ""' <<<"$pr_json")"
 base_ref="$(jq -r '.baseRefName // ""' <<<"$pr_json")"
 [ -n "$base_ref" ] \
   || fault 1 "could not resolve a base ref for $repo#$pr"
-# A ref name is a path segment sequence; percent-encode anything else so a
-# `release/1.x` base ref addresses the ruleset endpoint rather than a 404.
-base_ref_path="$(jq -rn --arg r "$base_ref" '$r | @uri' | sed 's|%2F|/|g')" \
-  || fault 1 "could not encode the base ref for $repo#$pr"
-
 # The head's checks are read from REST rather than from `gh pr view`'s
 # `statusCheckRollup`, because the rollup projection carries no app identity and
 # Gate A has to know WHO produced a required check, not merely that something
@@ -216,6 +211,13 @@ trap 'rm -f "$rules_err"' EXIT
 # empty body all into `[]` -- indistinguishable below from a genuine empty rule list, and
 # reported with that arm's remedies. Those are exactly the bodies a proxy or a cached
 # error page produces. Preserving the shape is what lets the discriminator name it.
+# The base ref is spent as ONE path segment of `rules/branches/<ref>`, so it is
+# percent-encoded in full: a `release/1.x` base ref travels as `release%2F1.x`.
+# Measured live on 2026-09-26 (#1470): `rules/branches/` resolves the same ruleset
+# for `release%2F2026.09` and `release/2026.09`, so the path form is the strictly
+# safer spelling, and it is the one every other `rules/branches/` reader here uses.
+base_ref_path="$(jq -rn --arg r "$base_ref" '$r | @uri')"
+readonly base_ref_path
 rules_json="$(gh api --paginate "repos/$repo/rules/branches/$base_ref_path" </dev/null 2>"$rules_err" | jq -s 'add')"
 rules_rc=$?
 # Replay unconditionally, not only on failure. Capturing stderr to inspect the status
@@ -229,7 +231,7 @@ if [ "$rules_rc" -ne 0 ]; then
   rules_status="$(sed -n 's/.*(HTTP \([0-9]\{3\}\)).*/\1/p' "$rules_err" | tail -1)"
   case "$rules_status" in
     401 | 403 | 404)
-      fault 1 "Gate A cannot read the ruleset at repos/$repo/rules/branches/$base_ref (HTTP $rules_status): the token presented cannot read it. Gate A's required set comes only from this endpoint and is never inferred from the head, so this refusal is fatal rather than degraded. Grant the caller read access to $repo -- $(permission_help)" ;;
+      fault 1 "Gate A cannot read the ruleset at repos/$repo/rules/branches/$base_ref_path (HTTP $rules_status): the token presented cannot read it. Gate A's required set comes only from this endpoint and is never inferred from the head, so this refusal is fatal rather than degraded. Grant the caller read access to $repo -- $(permission_help)" ;;
   esac
   fault 1 "failed to read branch rules for $repo@$base_ref; cannot establish the required-check set"
 fi
