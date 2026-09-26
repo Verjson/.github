@@ -578,6 +578,36 @@ class PackageRetentionTest(unittest.TestCase):
         )
         self.assertEqual(request.headers["Authorization"], "Bearer test-token")
 
+    def test_request_bounds_every_call_with_a_socket_timeout(self):
+        target = retention.Target("container", "studio/api", "1.0.0")
+        deletion = retention.Deletion(target, 42, "old", ("0.1.0",))
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b""
+        response.__enter__.return_value.headers.get.return_value = None
+        client = retention.GitHubPackages("Verjson", "test-token", "https://api.github.test")
+
+        with mock.patch.object(retention.urllib.request, "urlopen", return_value=response) as urlopen:
+            client.delete(deletion)
+
+        # A stalled connection to the GitHub API must fail fast rather than
+        # block the job indefinitely until an external job-level timeout
+        # kills it with zero diagnostic output (observed: a 30-minute hang
+        # with no output at all on a real release run).
+        self.assertIn("timeout", urlopen.call_args.kwargs)
+        self.assertGreater(urlopen.call_args.kwargs["timeout"], 0)
+
+    def test_a_stalled_connection_fails_closed_with_a_reported_reason(self):
+        target = retention.Target("container", "studio/api", "1.0.0")
+        deletion = retention.Deletion(target, 42, "old", ("0.1.0",))
+        client = retention.GitHubPackages("Verjson", "test-token", "https://api.github.test")
+        timeout_error = retention.urllib.error.URLError(TimeoutError("timed out"))
+
+        with mock.patch.object(retention.urllib.request, "urlopen", side_effect=timeout_error):
+            with self.assertRaises(retention.RetentionError) as context:
+                client.delete(deletion)
+
+        self.assertIn("timed out", str(context.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
