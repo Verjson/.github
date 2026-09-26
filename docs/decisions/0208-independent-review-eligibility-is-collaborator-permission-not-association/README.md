@@ -56,6 +56,14 @@ directly; the walk-and-skip selection means an unprivileged account's review can
 even interfere with a real approval's selection, which is strictly narrower than the
 previous design allowed on a public repository.
 
+The walk itself is bounded (`MAX_CANDIDATE_LOOKUPS`, currently 20): without a cap, a flood
+of junk reviews posted above the real approval would force an unbounded number of live
+`collaborators/{user}/permission` lookups per authorization attempt. Exceeding the cap
+fails closed exactly like finding no candidate at all, trading a small, predictable
+availability cost (a merge that needs a manual `--admin` fallback if a PR is ever flooded
+with more than 20 candidate reviews above the real one) for a bounded worst-case request
+count instead of an unbounded one.
+
 ## Consequences
 
 - An autonomous merge no longer depends on the automation token's ability to resolve a
@@ -71,5 +79,7 @@ previous design allowed on a public repository.
   version of this fix would otherwise have introduced.
 - `scripts/ci-gate/native-automerge.test.sh` gained regression cases: a review with an
   unresolvable `author_association` (`"NONE"`) still promotes when the live permission
-  check confirms `admin`/`maintain`, and a higher-ID review from a non-privileged account
-  cannot block or supersede a real approval's selection.
+  check confirms `admin`/`maintain`; a higher-ID review from a non-privileged account
+  cannot block or supersede a real approval's selection; and flooding the exact head with
+  more non-privileged candidates than `MAX_CANDIDATE_LOOKUPS` fails closed within a
+  bounded number of permission lookups rather than searching indefinitely.

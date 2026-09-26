@@ -478,10 +478,20 @@ jobs:
           # skipping any that don't, rather than trusting the highest ID unconditionally. The
           # same walk is run again later to revalidate that nothing supersedes the accepted
           # receipt, so a single function is the one place this selection is defined (ADR 0208).
+          #
+          # The walk is bounded: without a cap, an attacker posting enough junk reviews above
+          # the real approval could force this step through an unbounded number of live
+          # permission lookups. Capping at MAX_CANDIDATE_LOOKUPS makes the worst case a
+          # predictable, small amount of API calls rather than a griefing PR's review count —
+          # exceeding it fails closed (no autonomous merge), same as finding no candidate at
+          # all, rather than exhausting the token's request budget.
+          MAX_CANDIDATE_LOOKUPS=20
           select_privileged_candidate() {
-            local reviews_json="$1" cid clogin role
+            local reviews_json="$1" cid clogin role attempts=0
             while IFS=$'\t' read -r cid clogin; do
               [ -n "$cid" ] || continue
+              attempts=$((attempts + 1))
+              [ "$attempts" -le "$MAX_CANDIDATE_LOOKUPS" ] || return 1
               role="$(gh api "repos/$TARGET_REPO/collaborators/$clogin/permission" \
                 --jq '.role_name // ""' 2>/dev/null)" || role=""
               case "$role" in

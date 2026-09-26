@@ -29,10 +29,15 @@ both for the initial pick and the later supersession recheck. The live
 was already the trust anchor ADR 0202 relied on; it is now part of selection
 itself rather than a separate step run once after selection.
 
+The walk is bounded (`MAX_CANDIDATE_LOOKUPS`, currently 20): a flood of junk
+reviews posted above the real approval fails closed within a bounded number
+of live permission lookups rather than searching indefinitely.
+
 `scripts/ci-gate/native-automerge.test.sh` gained regression cases: a review
 whose `author_association` is `"NONE"` still promotes when the live
-`admin`/`maintain` permission check confirms eligibility, and a higher-ID
-review from a non-privileged account can no longer block or supersede a real
-approval. See
+`admin`/`maintain` permission check confirms eligibility; a higher-ID review
+from a non-privileged account can no longer block or supersede a real
+approval; and flooding the exact head with more non-privileged candidates
+than the bound fails closed with a bounded lookup cost. See
 [ADR 0208](../docs/decisions/0208-independent-review-eligibility-is-collaborator-permission-not-association/README.md),
 which amends ADR 0202.

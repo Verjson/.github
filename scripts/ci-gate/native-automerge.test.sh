@@ -192,6 +192,24 @@ expect_pass "a higher-ID review from a non-privileged public account cannot bloc
 grep -q -- '--admin --squash --match-head-commit' "$CALLS" \
   && pass "griefing-resistant selection still merges the real approver's exact-head receipt" \
   || fail "griefing-resistant selection did not reach terminal merge"
+
+write_base
+# The walk-from-highest-ID search that closes the griefing gap above must itself be
+# bounded: without a cap, a flood of junk reviews posted above the real approval would
+# force an unbounded number of live permission lookups. More non-privileged candidates
+# than the search bound allows must fail closed rather than search indefinitely.
+jq --argjson base "$(jq '.[1]' "$REVIEWS_FILE")" '
+    . + [range(100; 125) as $n | $base | .id=$n | .user.login="attacker" | .body="unrelated comment"]
+  ' "$REVIEWS_FILE" >"$tmp/x" && mv "$tmp/x" "$REVIEWS_FILE"
+cp "$REVIEWS_FILE" "$LATEST_REVIEWS_FILE"
+if run_promote >"$tmp/out" 2>&1; then
+  fail "flooding the exact head with more junk reviews than the search bound still promoted"
+elif [ "$(grep -c 'collaborators/attacker/permission' "$CALLS")" -le 20 ] &&
+    [ "$(grep -c 'collaborators/independent-reviewer/permission' "$CALLS")" = 0 ]; then
+  pass "a junk-review flood past the search bound fails closed with a bounded number of lookups"
+else
+  fail "a junk-review flood past the search bound did not stay within its bounded lookup cost"
+fi
 write_base; REVIEW_POLICY="$(encode_policy "$ai_approve_policy")" expect_fail "ai-approve authority never reaches terminal merge" run_promote
 ! grep -q 'pr merge' "$CALLS" || fail "ai-approve authority attempted a terminal merge"
 write_base; jq '.conclusion="failure"' "$CHECK_FILE" >"$tmp/x" && mv "$tmp/x" "$CHECK_FILE"; expect_fail "failed authorization never promotes" run_promote
