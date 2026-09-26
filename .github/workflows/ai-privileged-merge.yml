@@ -118,7 +118,18 @@ jobs:
       - name: Validate caller-supplied privileged lane routing
         run: |
           set -euo pipefail
-          jq -e '. == ["ubuntu-24.04"]' >/dev/null 2>&1 <<<"${PRIVILEGED_LANE:-}" || {
+          # A here-string always appends a trailing newline, so an unset,
+          # empty, or whitespace-only PRIVILEGED_LANE feeds jq a stream with
+          # no JSON values. jq treats that as "the filter never ran" and
+          # exits 0 regardless of -e (#1612), so -e alone cannot be trusted.
+          # Trailing garbage after a valid value (e.g. a second concatenated
+          # JSON value) is the mirror problem: jq emits "true" for the first
+          # value on stdout, then fails on the remainder, so stdout alone
+          # cannot be trusted either. Require both: -e's exit status AND an
+          # exact "true" on stdout.
+          lane_check="$(jq -e '. == ["ubuntu-24.04"]' <<<"${PRIVILEGED_LANE:-}" 2>/dev/null)" \
+            && lane_check_status=0 || lane_check_status=$?
+          [ "$lane_check_status" -eq 0 ] && [ "$lane_check" = "true" ] || {
             echo "::error::privileged_lane is missing, malformed, or is not the exact admitted ubuntu-24.04 lane (ADR 0118); got: ${PRIVILEGED_LANE:-<empty>}"
             exit 1
           }
