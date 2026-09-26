@@ -89,7 +89,7 @@ empty and failed closed with `read-only host observation authority not provision
 although every one of those secrets has existed in the caller repository's protected
 `production` environment since 2026-09-24. The environment's protection rule fired
 and was approved, so the job was bound to `production`; its secrets still did not
-resolve. That is the mechanism [ADR 0171](../0171-inherit-reusable-environment-secret-context/README.md)
+resolve. That is the mechanism [ADR 0171](../0171-inherited-reusable-environment-context/README.md)
 recorded on 2026-09-15 for the App-key jobs, citing
 [actions/runner#4453](https://github.com/actions/runner/issues/4453): an environment
 binding inside a reusable workflow never resolves the caller repository's
