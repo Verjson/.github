@@ -58,11 +58,11 @@ previous design allowed on a public repository.
 
 The walk itself is bounded (`MAX_CANDIDATE_LOOKUPS`, currently 20): without a cap, a flood
 of junk reviews posted above the real approval would force an unbounded number of live
-`collaborators/{user}/permission` lookups per authorization attempt. Exceeding the cap
-fails closed exactly like finding no candidate at all, trading a small, predictable
-availability cost (a merge that needs a manual `--admin` fallback if a PR is ever flooded
-with more than 20 candidate reviews above the real one) for a bounded worst-case request
-count instead of an unbounded one.
+`collaborators/{user}/permission` lookups per authorization attempt. Reaching the cap
+before finding a privileged candidate fails closed exactly like finding no candidate at
+all, trading a small, predictable availability cost (a merge that needs a manual
+`--admin` fallback if a PR is ever flooded with 20 or more candidate reviews above the
+real one) for a bounded worst-case request count instead of an unbounded one.
 
 ## Consequences
 
