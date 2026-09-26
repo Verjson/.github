@@ -5,7 +5,9 @@ import datetime
 import hashlib
 import json
 import pathlib
+import socket
 import sys
+import threading
 import unittest
 from unittest import mock
 
@@ -596,7 +598,7 @@ class PackageRetentionTest(unittest.TestCase):
         self.assertIn("timeout", urlopen.call_args.kwargs)
         self.assertGreater(urlopen.call_args.kwargs["timeout"], 0)
 
-    def test_a_stalled_connection_fails_closed_with_a_reported_reason(self):
+    def test_a_connect_phase_timeout_fails_closed_with_a_reported_reason(self):
         target = retention.Target("container", "studio/api", "1.0.0")
         deletion = retention.Deletion(target, 42, "old", ("0.1.0",))
         client = retention.GitHubPackages("Verjson", "test-token", "https://api.github.test")
@@ -607,6 +609,47 @@ class PackageRetentionTest(unittest.TestCase):
                 client.delete(deletion)
 
         self.assertIn("timed out", str(context.exception))
+
+    def test_a_response_that_stalls_after_connecting_fails_closed(self):
+        # urlopen wraps only a connect-phase failure in URLError. A server
+        # that accepts the connection and reads the request but never
+        # responds raises a *bare* TimeoutError from getresponse()/read() —
+        # a different, unwrapped failure surface the handler must also catch.
+        # This is real-world the more likely shape of the observed incident
+        # (a live release run producing zero output for 30 minutes), so it is
+        # exercised here against a real local socket, not a mocked exception.
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        port = server.getsockname()[1]
+        stop = threading.Event()
+
+        def accept_and_stall():
+            server.settimeout(5)
+            try:
+                conn, _ = server.accept()
+            except OSError:
+                return
+            with conn:
+                conn.settimeout(5)
+                try:
+                    conn.recv(65536)
+                except OSError:
+                    return
+                stop.wait(5)
+
+        thread = threading.Thread(target=accept_and_stall, daemon=True)
+        thread.start()
+        try:
+            client = retention.GitHubPackages("Verjson", "test-token", f"http://127.0.0.1:{port}")
+            with mock.patch.object(retention, "REQUEST_TIMEOUT_SECONDS", 0.5):
+                with self.assertRaises(retention.RetentionError) as context:
+                    client.versions(retention.Target("npm", "studio-api", "1.0.0"))
+            self.assertIn("did not respond", str(context.exception))
+        finally:
+            stop.set()
+            server.close()
+            thread.join(timeout=5)
 
 
 if __name__ == "__main__":
