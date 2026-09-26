@@ -5387,7 +5387,6 @@ jobs:
             label,
             include_target=True,
             require_unwritable=True,
-            allow_writable_root=False,
           ):
             try:
               relative = target.relative_to(root)
@@ -5409,9 +5408,7 @@ jobs:
                 if not stat.S_ISDIR(metadata.st_mode):
                   sys.exit(f"{label} ancestry is not canonical directories")
               if metadata.st_uid not in allowed_uids or (
-                require_unwritable
-                and metadata.st_mode & 0o022
-                and not (allow_writable_root and component == root)
+                require_unwritable and metadata.st_mode & 0o022
               ):
                 sys.exit(f"{label} ancestry has unsafe ownership mode")
 
@@ -5439,6 +5436,15 @@ jobs:
           ):
             sys.exit("trusted setup-node tool root has unsafe ownership mode")
           trusted_tool_uids = hosted_tool_cache_uids if allow_hosted_tool_cache_root else (0,)
+          # GitHub-hosted images provision every entry under /opt/hostedtoolcache
+          # (directories, files, and symlinks alike) as uid 1001 mode 0777 -- the
+          # same convention as the root, measured on ubuntu-latest for #1599 -- so
+          # an unwritable requirement on any descendant can never pass there. The
+          # trust anchor for that tree is the owner allowlist plus the fact that
+          # nothing PR-controlled runs before this check (npm ci uses
+          # --ignore-scripts): the write bit is unexploited capability, not
+          # evidence of tampering. Every other tool root stays strict.
+          trusted_tool_tree_requires_unwritable = not allow_hosted_tool_cache_root
 
           trusted_search_directories = []
           for entry in os.environ.get("PATH", "").split(os.pathsep):
@@ -5461,14 +5467,14 @@ jobs:
               lexical_directory,
               trusted_tool_uids,
               "setup-node lexical PATH",
-              allow_writable_root=allow_hosted_tool_cache_root,
+              require_unwritable=trusted_tool_tree_requires_unwritable,
             )
             validate_trusted_ancestry(
               trusted_tool_root,
               resolved_directory,
               trusted_tool_uids,
               "setup-node resolved PATH",
-              allow_writable_root=allow_hosted_tool_cache_root,
+              require_unwritable=trusted_tool_tree_requires_unwritable,
             )
             if resolved_directory not in trusted_search_directories:
               trusted_search_directories.append(resolved_directory)
@@ -5518,7 +5524,7 @@ jobs:
                 trusted_tool_uids,
                 f"trusted {tool_name} lexical path",
                 include_target=False,
-                allow_writable_root=allow_hosted_tool_cache_root,
+                require_unwritable=trusted_tool_tree_requires_unwritable,
               )
               try:
                 resolved_candidate.relative_to(trusted_tool_root)
@@ -5529,7 +5535,7 @@ jobs:
                 resolved_candidate,
                 trusted_tool_uids,
                 f"trusted {tool_name} resolved path",
-                allow_writable_root=allow_hosted_tool_cache_root,
+                require_unwritable=trusted_tool_tree_requires_unwritable,
               )
               if resolved_candidate.is_file() and os.access(resolved_candidate, os.X_OK):
                 candidates.append(resolved_candidate)
@@ -5548,16 +5554,15 @@ jobs:
             # untampered system pwsh there. Root ownership alone still holds for that
             # one location: nothing PR-controlled runs outside this sandbox before this
             # check (npm ci uses --ignore-scripts), so the write bit is unexploited
-            # capability, not evidence of tampering. npm/node stay strict since their
-            # trusted tool root is not expected to be world-writable.
+            # capability, not evidence of tampering. npm/node under an admitted hosted
+            # tool cache carry the same image convention (see
+            # trusted_tool_tree_requires_unwritable); every other root stays strict.
+            executable_in_hosted_tool_cache = tool_executable.is_relative_to(hosted_tool_cache_root)
             executable_requires_unwritable = not (
-              tool_name == "pwsh" and tool_executable.is_relative_to("/opt/microsoft/powershell")
+              (tool_name == "pwsh" and tool_executable.is_relative_to("/opt/microsoft/powershell"))
+              or (executable_in_hosted_tool_cache and not trusted_tool_tree_requires_unwritable)
             )
-            executable_uids = (
-              trusted_tool_uids
-              if tool_executable.is_relative_to(hosted_tool_cache_root)
-              else (0,)
-            )
+            executable_uids = trusted_tool_uids if executable_in_hosted_tool_cache else (0,)
             if executable_metadata.st_uid not in executable_uids or (
               executable_requires_unwritable and executable_metadata.st_mode & 0o022
             ):
@@ -5572,20 +5577,14 @@ jobs:
           tool_prefixes = []
           tool_prefix_identities = {}
 
-          def validate_trusted_tool_tree(
-            root, allowed_uids=(0,), require_unwritable=True, allow_writable_root=False
-          ):
+          def validate_trusted_tool_tree(root, allowed_uids=(0,), require_unwritable=True):
             for directory, directory_names, file_names in os.walk(root, followlinks=False):
               directory_path = Path(directory)
               directory_metadata = directory_path.stat(follow_symlinks=False)
               if (
                 not stat.S_ISDIR(directory_metadata.st_mode)
                 or directory_metadata.st_uid not in allowed_uids
-                or (
-                  require_unwritable
-                  and directory_metadata.st_mode & 0o022
-                  and not (allow_writable_root and directory_path == root)
-                )
+                or (require_unwritable and directory_metadata.st_mode & 0o022)
               ):
                 sys.exit("trusted tool tree directory has unsafe ownership mode")
               for name in (*directory_names, *file_names):
@@ -5635,23 +5634,23 @@ jobs:
                 tool_prefix,
                 trusted_tool_uids,
                 "trusted tool prefix",
-                allow_writable_root=allow_hosted_tool_cache_root,
+                require_unwritable=trusted_tool_tree_requires_unwritable,
               )
             prefix_metadata = tool_prefix.stat(follow_symlinks=False)
             if not stat.S_ISDIR(prefix_metadata.st_mode):
               sys.exit("trusted tool prefix is not a directory")
             # See the pwsh discovery comment above: the Microsoft-shipped runtime tree
-            # under GitHub-hosted /opt is root-owned but world-writable throughout, so
-            # only that prefix relaxes the write-bit requirement; npm/node stay strict.
+            # under GitHub-hosted /opt is root-owned but world-writable throughout, and
+            # the admitted hosted tool cache is world-writable throughout by the same
+            # image convention; only those prefixes relax the write-bit requirement.
+            prefix_in_hosted_tool_cache = tool_prefix.is_relative_to(hosted_tool_cache_root)
             validate_trusted_tool_tree(
               tool_prefix,
-              allowed_uids=(
-                trusted_tool_uids
-                if tool_prefix.is_relative_to(hosted_tool_cache_root)
-                else (0,)
+              allowed_uids=trusted_tool_uids if prefix_in_hosted_tool_cache else (0,),
+              require_unwritable=not (
+                tool_prefix.is_relative_to("/opt/microsoft/powershell")
+                or (prefix_in_hosted_tool_cache and not trusted_tool_tree_requires_unwritable)
               ),
-              require_unwritable=not tool_prefix.is_relative_to("/opt/microsoft/powershell"),
-              allow_writable_root=allow_hosted_tool_cache_root,
             )
             tool_prefix_identities[tool_prefix] = (
               prefix_metadata.st_dev,
