@@ -146,3 +146,17 @@ the consumer deliberately removed. The protected current-Node lane now invokes t
 supported `test:release` command. Restoring the retired alias would hide canonical-plan
 drift in the consumer instead of correcting the organization-owned contract. Activation
 still requires a fresh exact-head canary after this corrected workflow is merged.
+
+### 2026-09-26 — Repin both protected lanes to the hosted tool-cache tree fix
+
+Issue [#1599](https://github.com/Verjson/.github/issues/1599) found `node-ci-protected.yml`
+failing every GitHub-hosted protected run because only the `/opt/hostedtoolcache` root, not
+its descendants, was admitted; [ADR 0209](../0209-hosted-tool-cache-trust-is-a-tree-property/README.md)
+records the fix (#1624). Both required Node lanes of this workflow are repinned to the
+immutable organization contract commit `3f8fb4bae1bdf0ced0b821e1b4277523f72a93b9`, through
+`config/cli-projects-required-node-ci.json`, so activating ruleset 21830367 under
+[#1423](https://github.com/Verjson/.github/issues/1423) cannot land on that check. The
+consumer's `ci.yml` must be regenerated to the same commit before activation, because the
+admission step compares the consumer's default-branch bytes with `CONSUMER_WORKFLOW_SHA256`
+and fails closed on a mismatch. The admission and fail-closed identity contract are
+otherwise unchanged.
