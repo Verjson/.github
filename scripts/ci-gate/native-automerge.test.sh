@@ -234,6 +234,12 @@ write_base; jq '.check_runs += [{id:102,name:"shell-tests",status:"in_progress",
 write_base; jq '.check_runs = [{id:100,name:"shell-tests",status:"completed",conclusion:"failure",details_url:"https://github.com/Verjson/example/actions/runs/7002/job/8001",app:{id:15368,slug:"github-actions"}}, .check_runs[0]]' "$CI_CHECKS_FILE" >"$tmp/x" && mv "$tmp/x" "$CI_CHECKS_FILE"; expect_pass "newer success overrides older failure" run_promote
 write_base; jq '.check_runs += [(.check_runs[0] | .id=102 | .app.id=999)]' "$CI_CHECKS_FILE" >"$tmp/x" && mv "$tmp/x" "$CI_CHECKS_FILE"; expect_fail "newest duplicate context from wrong App cannot forge required CI" run_promote
 write_base; jq '.workflow_id=999' "$CI_RUN_FILE" >"$tmp/x" && mv "$tmp/x" "$CI_RUN_FILE"; expect_fail "wrong workflow identity cannot satisfy required CI" run_promote
+# #1610: a required check's own job can finish (and satisfy $CI_CHECKS_FILE) well before
+# the multi-job run backing it as a whole reaches "completed". That must retry, not
+# hard-fail, as long as the run's identity still matches; only a run that finished
+# unsuccessfully is a terminal block.
+write_base; jq '.status="in_progress" | .conclusion=null' "$CI_RUN_FILE" >"$tmp/x" && mv "$tmp/x" "$CI_RUN_FILE"; expect_pass "in-progress trusted workflow run with an already-completed required-check job remains pending" run_promote; ! grep -q 'pr merge' "$CALLS" || fail "in-progress trusted workflow run merged"
+write_base; jq '.conclusion="failure"' "$CI_RUN_FILE" >"$tmp/x" && mv "$tmp/x" "$CI_RUN_FILE"; expect_fail "terminally unsuccessful trusted workflow run blocks despite a completed required-check job" run_promote; ! grep -q 'pr merge' "$CALLS" || fail "unsuccessful trusted workflow run merged"
 write_base; jq '.check_runs[0].check_suite.id=9999' "$CI_CHECKS_FILE" >"$tmp/x" && mv "$tmp/x" "$CI_CHECKS_FILE"; expect_fail "same-App forged check cannot claim an unrelated successful workflow run" run_promote
 write_base; jq '.jobs[0].check_run_url="https://api.github.com/repos/Verjson/example/check-runs/9999"' "$CI_JOBS_FILE" >"$tmp/x" && mv "$tmp/x" "$CI_JOBS_FILE"; expect_fail "same-suite forged check must be the exact job check run" run_promote
 write_base; jq '.jobs += [.jobs[0]]' "$CI_JOBS_FILE" >"$tmp/x" && mv "$tmp/x" "$CI_JOBS_FILE"; expect_fail "ambiguous duplicate job association fails closed" run_promote

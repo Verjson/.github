@@ -397,10 +397,22 @@ jobs:
               --arg path "$workflow_path" --argjson workflow_id "$expected_workflow_id" '
                 .workflow_id == $workflow_id and .path == $path and
                 .event == "pull_request" and .head_sha == $head and
-                .head_repository.full_name == $repo and
-                .status == "completed" and .conclusion == "success"
+                .head_repository.full_name == $repo
               ' <<<"$ci_run" >/dev/null || {
               echo "::error::required check $name is not backed by the trusted exact-head workflow run"; exit 1;
+            }
+            # Liveness/conclusion are checked separately from identity above: a
+            # multi-job run whose required-check job already succeeded can still be
+            # "in_progress" overall while a slower sibling job finishes (#1610). That
+            # is retriable, not a trust failure — only a completed-but-unsuccessful
+            # run is.
+            ci_run_status="$(jq -r '.status // "" | ascii_upcase' <<<"$ci_run")"
+            ci_run_conclusion="$(jq -r '.conclusion // "" | ascii_upcase' <<<"$ci_run")"
+            [ "$ci_run_status" = COMPLETED ] || {
+              echo "Required check $name is backed by workflow run $ci_run_id, which has not finished; a later workflow completion will retry promotion."; exit 0;
+            }
+            [ "$ci_run_conclusion" = SUCCESS ] || {
+              echo "::error::workflow run $ci_run_id backing required check $name is terminally unsuccessful: $ci_run_conclusion"; exit 1;
             }
             head_workflow_blob="$(gh api "repos/$TARGET_REPO/contents/$workflow_path?ref=$EXPECTED_HEAD_SHA" --jq '.sha // ""')"
             trusted_workflow_blob="$(gh api "repos/$TARGET_REPO/contents/$workflow_path?ref=$branch_ref" --jq '.sha // ""')"
