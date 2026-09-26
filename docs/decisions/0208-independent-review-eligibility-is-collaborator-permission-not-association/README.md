@@ -26,39 +26,50 @@ whenever the automation's own token cannot see that membership — a false negat
 security question answered "no".
 
 The revalidation already performs a separate, live, and strictly more direct check: it
-looks up the reviewer's current repository role via
-`repos/{repo}/collaborators/{user}/permission` and requires `admin` or `maintain`, both
-before selecting a candidate and again immediately before authorizing merge. That check
-does not depend on organization-membership visibility — it asks GitHub directly what
-permission this specific user holds on this specific repository — and was already the
-trust anchor ADR 0202 relied on for the "governing account" requirement.
+looks up a candidate's current repository role via
+`repos/{repo}/collaborators/{user}/permission` and requires `admin` or `maintain`. That
+check does not depend on organization-membership visibility — it asks GitHub directly what
+permission a specific user holds on a specific repository — and was already the trust
+anchor ADR 0202 relied on for the "governing account" requirement.
 
 ## Decision
 
-Drop `author_association` as a gating condition from all three places
-`ai-privileged-merge.yml`'s independent-review step used it: the initial candidate search,
-the live-review body/state revalidation, and the later-review supersession check. The
-remaining conditions — exact head SHA, `user.type == "User"`, a well-formed login, exact
-`COMMENTED` state, an unedited canonical marker body, and the unconditional live
-`admin`/`maintain` collaborator-permission check before and after selection — remain the
-full eligibility test, and are sufficient on their own: they already establish that the
-review came from a real (non-bot) account that currently holds `admin` or `maintain` on
-the exact repository being merged into, for the exact head being merged, with an unedited,
-non-superseded approval marker.
+Drop `author_association` as a gating condition from `ai-privileged-merge.yml`'s
+independent-review step, and fold the live `admin`/`maintain` permission check directly
+into candidate selection instead of running it once after selection.
+
+`Verjson/.github` is a public repository, so removing `author_association` means any
+GitHub account can leave a review at the exact head SHA — picking whichever candidate has
+the highest review ID, unconditionally, would let such a review supersede or block a real
+approval if posted with a later ID. Selection is therefore one shared function
+(`select_privileged_candidate`), used both for the initial pick and for the later
+supersession recheck, that walks reviews matching `commit_id == <exact head>`,
+`user.type == "User"`, and a well-formed login, from the **highest review ID down**, and
+accepts the **first** whose account currently holds live `admin` or `maintain` — skipping,
+not failing on, any higher-ID review that doesn't. The live-review step separately
+requires the accepted candidate's exact `COMMENTED` state and an unedited canonical marker
+body.
 
 This does not widen who can authorize a merge. `author_association` was a coarse,
-unreliable proxy for exactly the same fact the collaborator-permission check already
-verifies directly and unconditionally; removing it removes a redundant check that could
-silently fail closed, not a security boundary.
+unreliable proxy for exactly the fact the collaborator-permission check already verifies
+directly; the walk-and-skip selection means an unprivileged account's review can no longer
+even interfere with a real approval's selection, which is strictly narrower than the
+previous design allowed on a public repository.
 
 ## Consequences
 
 - An autonomous merge no longer depends on the automation token's ability to resolve a
-  reviewer's private organization membership. It depends only on that reviewer's live
+  reviewer's private organization membership. It depends only on a candidate's live
   repository permission, which any token with repository read access can query correctly.
 - No change to who is eligible: every review previously accepted (an `OWNER`/`MEMBER`/
   `COLLABORATOR` account that also passed the `admin`/`maintain` permission check) is still
-  accepted, because the permission check was already mandatory and unconditional.
-- `Verjson/.github/scripts/ci-gate/native-automerge.test.sh` gained a regression case
-  asserting that a review with an unresolvable `author_association` (`"NONE"`) still
-  promotes when the live permission check confirms `admin`/`maintain`.
+  accepted, because the permission check was already mandatory.
+- A review from an account that is not a current `admin`/`maintain` collaborator can no
+  longer block or supersede a real approval merely by carrying a higher review ID, even
+  though anyone can post such a review on a public repository — closing a griefing/denial-
+  of-service surface the naive "drop `author_association`, keep picking the highest ID"
+  version of this fix would otherwise have introduced.
+- `scripts/ci-gate/native-automerge.test.sh` gained regression cases: a review with an
+  unresolvable `author_association` (`"NONE"`) still promotes when the live permission
+  check confirms `admin`/`maintain`, and a higher-ID review from a non-privileged account
+  cannot block or supersede a real approval's selection.

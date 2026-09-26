@@ -72,6 +72,7 @@ case "$*" in
     review_calls=$((review_calls + 1))
     printf '%s\n' "$review_calls" >"$REVIEW_CALLS_FILE"
     if [ "$review_calls" -le 2 ]; then cat "$REVIEWS_FILE"; else cat "$LATEST_REVIEWS_FILE"; fi ;;
+  *"collaborators/attacker/permission"*) printf '%s\n' "${ATTACKER_ROLE:-none}" ;;
   *"collaborators/independent-reviewer/permission"*)
     permission_calls="$(cat "$PERMISSION_CALLS_FILE")"
     permission_calls=$((permission_calls + 1))
@@ -177,6 +178,20 @@ expect_pass "unresolvable author_association still promotes a real admin/maintai
 grep -q -- '--admin --squash --match-head-commit' "$CALLS" \
   && pass "author_association-blind promotion still merges the exact authorized head" \
   || fail "author_association-blind promotion did not use exact-head admin squash merge"
+
+write_base
+# Selection can no longer rely on author_association to keep candidates scoped to
+# org-associated accounts (#1615), and this is a PUBLIC repository: anyone can leave a
+# review at the exact head SHA. A higher-numbered review ID from an account that is not
+# actually a collaborator must not block or supersede a real approval — selection has to
+# walk candidates from the highest ID down and accept the first that still holds live
+# admin/maintain, not trust the highest ID outright.
+jq '.[1] as $base | . + [($base | .id=90 | .user.login="attacker" | .body="unrelated comment")]' "$REVIEWS_FILE" >"$tmp/x" && mv "$tmp/x" "$REVIEWS_FILE"
+cp "$REVIEWS_FILE" "$LATEST_REVIEWS_FILE"
+expect_pass "a higher-ID review from a non-privileged public account cannot block or supersede a real approval" run_promote
+grep -q -- '--admin --squash --match-head-commit' "$CALLS" \
+  && pass "griefing-resistant selection still merges the real approver's exact-head receipt" \
+  || fail "griefing-resistant selection did not reach terminal merge"
 write_base; REVIEW_POLICY="$(encode_policy "$ai_approve_policy")" expect_fail "ai-approve authority never reaches terminal merge" run_promote
 ! grep -q 'pr merge' "$CALLS" || fail "ai-approve authority attempted a terminal merge"
 write_base; jq '.conclusion="failure"' "$CHECK_FILE" >"$tmp/x" && mv "$tmp/x" "$CHECK_FILE"; expect_fail "failed authorization never promotes" run_promote
