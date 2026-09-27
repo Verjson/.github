@@ -443,6 +443,10 @@ document = yaml.safe_load(pathlib.Path(sys.argv[3]).read_text(encoding="utf-8"))
 # command of their own, so no manifest row could run them. Each entry carries the
 # reason it is not a gate; adding one is a reviewable act, not a naming accident.
 NON_GATE_MODULES = {
+    "scripts/ci-gate/merge-gate-provenance-claims.py": (
+        "provenance predicate library imported by merge-gate-provenance-claims.test.py; "
+        "a future signing rollout invokes it, no workflow does yet (ADR 0211)"
+    ),
     "scripts/ci-gate/conformance/adopter.py": (
         "adopter fixture loader imported by conformance.test.py"
     ),
