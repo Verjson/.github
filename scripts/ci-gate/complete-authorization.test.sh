@@ -196,7 +196,7 @@ case "$*" in
   "api repos/Verjson/example/check-runs/9001")
     jq -nc --argjson id "$AUTHORIZATION_CHECK_ID" --arg head "$EXPECTED_AUTHORIZED_HEAD_SHA" \
             --arg repo "$TARGET_REPO" --arg pr "$PR_NUMBER" --arg run "$ARM_RUN_ID" --arg attempt "$ARM_RUN_ATTEMPT" \
-            --arg url "$GITHUB_SERVER_URL/$TARGET_REPO/actions/runs/$ARM_RUN_ID" \
+            --arg url "$GITHUB_SERVER_URL/$TARGET_REPO/runs/$AUTHORIZATION_CHECK_ID" \
             --argjson check_app_id "${CHECK_APP_ID:-15368}" --arg check_app_slug "${CHECK_APP_SLUG:-github-actions}" \
             '{id:$id,name:"AI review authorization",head_sha:$head,
              external_id:("ai-review:v1:"+$repo+":"+$pr+":"+$head+":"+$run+":"+$attempt+":"+("a"*64)),

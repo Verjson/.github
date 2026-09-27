@@ -23,6 +23,9 @@ export GITHUB_SERVER_URL=https://github.com RUNNER_TEMP="$tmp"
 nonce=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 external_id="ai-review:v1:$TARGET_REPO:$PR_NUMBER:$EXPECTED_HEAD_SHA:$ARM_RUN_ID:$ARM_RUN_ATTEMPT:$nonce"
 details_url="$GITHUB_SERVER_URL/$TARGET_REPO/actions/runs/$ARM_RUN_ID"
+# GitHub ignores the details_url an Actions-owned check is created with and stores the
+# check's own page; the receipt keeps the arm-run URL (#1648).
+check_details_url="$GITHUB_SERVER_URL/$TARGET_REPO/runs/$AUTHORIZATION_CHECK_ID"
 
 mkdir "$tmp/bin" "$tmp/archive"
 cat >"$tmp/bin/gh" <<'GH'
@@ -69,7 +72,7 @@ write_base() {
     --arg workflow_url "https://api.github.com/repos/$TARGET_REPO/actions/workflows/77" \
     '{id:$id,run_attempt:$attempt,workflow_id:77,event:"pull_request_target",path:".github/workflows/gate-rearm.yml",workflow_url:$workflow_url,head_repository:{full_name:$repo}}' >"$RUN_FILE"
   jq -nc --argjson id "$AUTHORIZATION_CHECK_ID" --arg head "$EXPECTED_HEAD_SHA" --arg external "$external_id" \
-    --arg url "$details_url" --argjson app "$CHECK_APP_ID" --arg slug "$CHECK_APP_SLUG" \
+    --arg url "$check_details_url" --argjson app "$CHECK_APP_ID" --arg slug "$CHECK_APP_SLUG" \
     '{id:$id,name:"AI review authorization",head_sha:$head,external_id:$external,details_url:$url,app:{id:$app,slug:$slug},status:"in_progress",conclusion:null}' >"$CHECK_FILE"
   jq -nc --arg repository "$TARGET_REPO" --argjson pr_number "$PR_NUMBER" --arg head_sha "$EXPECTED_HEAD_SHA" \
     --argjson check_run_id "$AUTHORIZATION_CHECK_ID" --argjson arm_run_id "$ARM_RUN_ID" --argjson arm_run_attempt "$ARM_RUN_ATTEMPT" \
@@ -183,6 +186,8 @@ write_base; CURRENT_PERMISSION=triage expect_fail "permission revocation after a
 REVIEW_POLICY="$(encode_policy "$anthropic_policy")"
 export REVIEW_POLICY
 write_base; jq '.details_url="https://github.com/Verjson/example/actions/runs/9999"' "$CHECK_FILE" >"$tmp/x" && mv "$tmp/x" "$CHECK_FILE"; expect_fail "forged same-App details URL is rejected" verify
+write_base; jq '.details_url="https://github.com/Verjson/example/actions/runs/7001"' "$CHECK_FILE" >"$tmp/x" && mv "$tmp/x" "$CHECK_FILE"; expect_fail "an Actions-owned check carrying the arm-run URL is not the stored check (#1648)" verify
+write_base; jq '.details_url="https://github.com/Verjson/example/runs/9002"' "$CHECK_FILE" >"$tmp/x" && mv "$tmp/x" "$CHECK_FILE"; expect_fail "a check page URL for another check ID is rejected" verify
 write_base; jq '.check_run_id=9002' "$tmp/archive/receipt.json" >"$tmp/x" && mv "$tmp/x" "$tmp/archive/receipt.json"; repack; expect_fail "receipt/check ID mismatch is rejected" verify
 write_base; jq '.nonce="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' "$tmp/archive/receipt.json" >"$tmp/x" && mv "$tmp/x" "$tmp/archive/receipt.json"; repack; expect_fail "nonce/external_id mismatch is rejected" verify
 write_base; CURRENT_HEAD=ffffffffffffffffffffffffffffffffffffffff expect_fail "stale PR head is rejected" verify

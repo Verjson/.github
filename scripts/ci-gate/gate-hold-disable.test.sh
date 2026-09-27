@@ -588,7 +588,7 @@ done
 write_repromotion() {
   : >"$CALLS"
   jq -nc --arg head "$head_sha" '{id:"PR_id",state:"OPEN",isDraft:false,title:"change",labels:[],headRefOid:$head,headRepositoryOwner:{login:"Verjson"},autoMergeRequest:null}' >"$META_FILE"
-  jq -nc --arg head "$head_sha" '{id:9001,status:"completed",conclusion:"success",details_url:"https://github.com/Verjson/example/actions/runs/7001",head_sha:$head,app:{id:15368,slug:"github-actions"}}' >"$LATEST_FILE"
+  jq -nc --arg head "$head_sha" '{id:9001,status:"completed",conclusion:"success",external_id:"ai-review:v1:Verjson/example:7:0123456789abcdef0123456789abcdef01234567:7001:2:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",details_url:"https://github.com/Verjson/example/runs/9001",head_sha:$head,app:{id:15368,slug:"github-actions"}}' >"$LATEST_FILE"
   export EVENT_ACTION=unlabeled EVENT_LABEL=hold EVENT_OLD_TITLE_HELD=false EVENT_NEW_TITLE_HELD=false HOLD_CLEAR_ACTOR_PERMISSION=maintain RECEIPT_COUNT=1
 }
 write_repromotion
@@ -596,6 +596,27 @@ if run_arm >"$tmp/out" 2>&1 && grep -q 'workflow run ai-privileged-merge.yml' "$
   && grep -qF -- "-f review_policy=$receipt_policy" "$CALLS" && ! grep -q 'workflow run ai-review-merge.yml' "$CALLS"; then
   pass "hold removal reuses a live receipt without another paid review"
 else fail "hold removal did not reuse authorization: $(tail -1 "$tmp/out")"; fi
+
+write_repromotion
+jq '.external_id |= sub(":7:"; ":8:")' "$LATEST_FILE" >"$tmp/x" && mv "$tmp/x" "$LATEST_FILE"
+expect_fail "re-promotion refuses an approved check whose external_id names another pull request (#1648)"
+! grep -q 'workflow run ai-privileged-merge.yml' "$CALLS" \
+  && pass "a foreign-identity approved check never dispatches privileged merge" \
+  || fail "a foreign-identity approved check dispatched privileged merge"
+
+write_repromotion
+jq 'del(.external_id)' "$LATEST_FILE" >"$tmp/x" && mv "$tmp/x" "$LATEST_FILE"
+expect_fail "re-promotion refuses an approved check that carries no arm identity (#1648)"
+! grep -q 'workflow run ai-privileged-merge.yml' "$CALLS" \
+  && pass "an identity-less approved check never dispatches privileged merge" \
+  || fail "an identity-less approved check dispatched privileged merge"
+
+write_repromotion
+jq '.external_id |= sub("a{64}$"; "not-a-nonce")' "$LATEST_FILE" >"$tmp/x" && mv "$tmp/x" "$LATEST_FILE"
+expect_fail "re-promotion refuses an approved check whose external_id carries a malformed nonce (#1648)"
+! grep -q 'workflow run ai-privileged-merge.yml' "$CALLS" \
+  && pass "a malformed-nonce approved check never dispatches privileged merge" \
+  || fail "a malformed-nonce approved check dispatched privileged merge"
 
 for release_case in hold-label normalized-label ready-for-review edited-title; do
   write_repromotion
@@ -709,6 +730,13 @@ grep -q 'administrator must recover' "$CALLS" \
   || fail "pending recovery dispatched a paid review"
 
 write_repromotion
+jq '.status="in_progress" | .conclusion=null | .external_id |= sub(":7:"; ":8:")' "$LATEST_FILE" >"$tmp/x" && mv "$tmp/x" "$LATEST_FILE"
+expect_fail "a pending check whose external_id names another pull request is not receipt-proven (#1648)"
+grep -q 'administrator must recover' "$CALLS" && ! grep -q 'workflow run ai-review-merge.yml' "$CALLS" \
+  && pass "a foreign-identity pending check routes to admin recovery without a paid review" \
+  || fail "a foreign-identity pending check was not routed to admin recovery"
+
+write_repromotion
 jq '.status="in_progress" | .conclusion=null | .app={id:4528902,slug:"ai-review-authorization"}' "$LATEST_FILE" >"$tmp/x" && mv "$tmp/x" "$LATEST_FILE"
 export RECEIPT_COUNT=0
 run_arm >"$tmp/out" 2>&1 || true
@@ -741,7 +769,7 @@ expect_fail "withdrawn re-review label fails authoritative current-state validat
 # must create a fresh receipt instead of being mistaken for a duplicate event.
 : >"$CALLS"; : >"$GITHUB_OUTPUT"
 jq -nc --arg head "$head_sha" '{id:"PR_id",state:"OPEN",isDraft:false,title:"change",labels:[{name:"ai-review"}],headRefOid:$head,headRepositoryOwner:{login:"Verjson"},autoMergeRequest:null}' >"$META_FILE"
-jq -nc --arg head "$head_sha" '{id:9001,status:"completed",conclusion:"success",details_url:"https://github.com/Verjson/example/actions/runs/7001",head_sha:$head}' >"$LATEST_FILE"
+jq -nc --arg head "$head_sha" '{id:9001,status:"completed",conclusion:"success",external_id:"ai-review:v1:Verjson/example:7:0123456789abcdef0123456789abcdef01234567:7001:2:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",details_url:"https://github.com/Verjson/example/runs/9001",head_sha:$head}' >"$LATEST_FILE"
 export EVENT_ACTION=labeled EVENT_LABEL=ai-review REQUEST_ACTOR=maintainer ACTOR_PERMISSION=maintain
 export EVENT_NAME=pull_request_target
 export REVIEW_AUTHORITY=human PRIMARY_PROVIDER=deepseek PRIMARY_MODEL=deepseek-v4-pro PRIMARY_BUDGET_USD=5.00

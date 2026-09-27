@@ -65,3 +65,35 @@ authorize, promote, or merge.
 Focused mutation tests cover missing `check_app_*` fields, legacy review-App
 ownership, token-permission regression, exact Actions ownership, same-head
 retry, recovery, promotion, and post-merge evidence.
+
+## Amendment 2026-09-27: Actions-owned checks do not keep `details_url`
+
+Issue [#1648](https://github.com/Verjson/.github/issues/1648). From the first arm
+after this decision landed (403a1da, 2026-09-27 02:02 UTC) every dispatched review
+failed preflight with `authorization check is not receipt-bound`, and every
+`AI review authorization` check in the fleet stayed `in_progress`. GitHub does not
+honor the `details_url` a check run is created with when the creator is the
+GitHub Actions App (15368): the arm passes the arm-run URL, and the stored check
+reads `https://github.com/<repo>/runs/<check_id>` (hub check 108559180272 and
+`verjson-compliance-schema` check 108560905178, both read back live). A review-App
+owned check kept the value (hub check 108529790004, 01:54 UTC, the last success).
+
+The binding predicates were written for the review-App owner and required the
+check's `details_url` to equal the arm-run URL. They now bind the live check to its
+own stored page (`$GITHUB_SERVER_URL/<repo>/runs/<check_id>`) and derive the arm run
+from `external_id` (`ai-review:v1:<repo>:<pr>:<head>:<run_id>:<attempt>:<nonce>`),
+which GitHub stores verbatim. The receipt artifact keeps the arm-run URL in its own
+`details_url` field; that field is compared with the arm run named by `external_id`,
+never with the check. Changed sites: `scripts/ci-gate/verify-arm-receipt.sh`, the
+two re-verification steps in `ai-review-merge.yml`, orphan recovery, the recovery
+marker, hold-removal re-promotion and the in-progress path in `gate-rearm.yml`, and
+promotion-retry eligibility. Each suite first failed with the live error against a
+stubbed Actions-owned check before the change and passes after it; the promotion
+retry and receipt suites gained checks that an arm-run URL on an Actions-owned
+check, another check's page, a missing `external_id`, or a foreign pull-request
+identity are rejected.
+
+Because the arm runs at the SHA stored in ruleset 20722935 and consumers pin
+`ai-review-merge.yml`, `ai-privileged-merge.yml`, and `ai-promotion-retry.yml`, the
+fix is live only after that ruleset is rotated to the merge commit and a contract
+release repins the adopters.
