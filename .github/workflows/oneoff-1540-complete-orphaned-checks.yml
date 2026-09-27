@@ -15,15 +15,33 @@ on:
         description: Exact operator acknowledgement recorded on #1540
         required: true
         type: string
+      ai_review_environment:
+        description: Main-only environment holding the ai-review App private key (ADR 0166/0171)
+        required: false
+        default: ai-review-app
+        type: string
 permissions: {}
 concurrency:
   group: oneoff-1540
   cancel-in-progress: false
 jobs:
+  # Keyless preflight: proves the environment is main-only and exact before any
+  # job binds the App key (ADR 0166, ADR 0171), the same edge every canonical
+  # ai-review key consumer carries.
+  app-key-policy:
+    if: github.ref == 'refs/heads/main' && inputs.acknowledgement == 'COMPLETE-ORPHANED-AUTHORIZATION-CHECKS-1540'
+    uses: ./.github/workflows/app-key-environment.yml
+    permissions:
+      actions: read
+      contents: read
+    with:
+      role: ai-review
+      environment: ${{ inputs.ai_review_environment || 'ai-review-app' }}
   complete:
+    needs: app-key-policy
     if: github.ref == 'refs/heads/main' && inputs.acknowledgement == 'COMPLETE-ORPHANED-AUTHORIZATION-CHECKS-1540'
     runs-on: ${{ fromJSON(vars.CI_LANE_PRIVILEGED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
-    environment: ai-review-app
+    environment: ${{ inputs.ai_review_environment || 'ai-review-app' }}
     permissions: {}
     strategy:
       fail-fast: false
