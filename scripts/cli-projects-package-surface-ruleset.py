@@ -109,7 +109,7 @@ def read_contract(path=CONTRACT):
             "ROTATE-CLI-PROJECTS-REQUIRED-WORKFLOW-1187",
             "rollout acknowledgement drifted")
     require(rollout["previous_workflow_sha"] ==
-            "483afa0995f0df51cb9dfa001ded1b48c73ae8f5",
+            "ebe574b639ff5ffc1dfb5cf935014c5c7ad5d081",
             "previous workflow identity drifted")
     require(rollout["previous_disabled_workflow_sha"] ==
             "4525c152a77bd04c006fa2b790f4b64833b1bbbe",
@@ -184,7 +184,7 @@ def validate_workflow(path=WORKFLOW):
         }, f"{name} permissions drifted")
         require(job.get("uses") == (
             "Verjson/.github/.github/workflows/node-ci-protected.yml@"
-            "3f8fb4bae1bdf0ced0b821e1b4277523f72a93b9"
+            "4a08c756547ccaf8977eda692e14eff56fddaf15"
         ), f"{name} reusable workflow identity drifted")
         require(job.get("secrets") == {
             "NODE_AUTH_TOKEN": "${{ secrets.GITHUB_TOKEN }}",

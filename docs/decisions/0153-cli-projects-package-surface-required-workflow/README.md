@@ -160,3 +160,14 @@ consumer's `ci.yml` must be regenerated to the same commit before activation, be
 admission step compares the consumer's default-branch bytes with `CONSUMER_WORKFLOW_SHA256`
 and fails closed on a mismatch. The admission and fail-closed identity contract are
 otherwise unchanged.
+
+### 2026-09-27 — Repin both protected lanes to the hosted sandbox-provisioning fix
+
+The first exact-head control after activation (verjson-cli-projects#142, run 36283749779)
+failed closed with `verified bubblewrap namespace boundary is unavailable`: the protected
+plan requires the sandbox but hosted provisioning was gated on inputs these lanes do not
+pass ([ADR 0209](../0209-hosted-tool-cache-trust-is-a-tree-property/README.md) amendment,
+#1636). Both lanes are repinned to `4a08c756547ccaf8977eda692e14eff56fddaf15`; the
+rollout contract's `previous_workflow_sha` moves to `ebe574b…` so the active ruleset can be
+rotated from its current image, and the consumer `ci.yml` is regenerated to the same commit
+before rotation.
