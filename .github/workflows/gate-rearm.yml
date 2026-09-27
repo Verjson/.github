@@ -475,7 +475,13 @@ jobs:
                 .id == $run_id and .run_attempt == $attempt and .status == "completed" and
                 .event == "pull_request_target" and (.path == ".github/workflows/gate-rearm.yml" or .path == ".github/workflows/ai-review-label-rearm.yml") and
                 .head_repository.full_name == $repo and .repository.id == $repo_id and
-                (.completed_at | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
+                # GitHub can report a completed run with completed_at still null
+                # (an observed API anomaly, not evidence it might still be
+                # active); accept updated_at as the terminal timestamp then.
+                # `== null` also matches a missing key, which is intentional:
+                # the GitHub REST API always sends this key on a run object.
+                ((.completed_at | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")) or
+                 (.completed_at == null and (.updated_at | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))))
               ' <<<"$source_run" >/dev/null || return 10
             if [ "$(jq -r .path <<<"$source_run")" = .github/workflows/ai-review-label-rearm.yml ]; then
               jq -e --arg head "$head_sha" '.run_attempt == 1 and .head_sha == $head' <<<"$source_run" >/dev/null || return 1
@@ -484,7 +490,7 @@ jobs:
               [[ "$source_workflow_id" =~ ^[1-9][0-9]*$ ]] || return 1
               jq -e --argjson workflow "$source_workflow_id" '.workflow_id == $workflow' <<<"$source_run" >/dev/null || return 1
             fi
-            completed_epoch="$(date -u -d "$(jq -r '.completed_at' <<<"$source_run")" +%s)" || return 1
+            completed_epoch="$(date -u -d "$(jq -r '.completed_at // .updated_at' <<<"$source_run")" +%s)" || return 1
             now_epoch="$(date -u +%s)"
             [ "$now_epoch" -ge "$completed_epoch" ] || return 1
             # Bound API eventual consistency: a just-accepted workflow dispatch
