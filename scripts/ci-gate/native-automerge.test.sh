@@ -20,13 +20,22 @@ names = [
     "Authorize terminal merge from trusted metadata",
     "Revalidate independent review receipt",
     "Merge the authorized head",
-    "Confirm merge and consume the arm receipt",
+    "Confirm terminal merge state",
+    "Export terminal merge cleanup receipt",
 ]
 for name in names:
     matches = [step for step in steps if step.get("name") == name]
     if len(matches) != 1 or not matches[0].get("run"):
         raise SystemExit(f"missing unique non-empty step: {name}")
     print(matches[0]["run"])
+cleanup_steps = document["jobs"]["cleanup_arm_receipt"]["steps"]
+cleanup = [
+    step
+    for step in cleanup_steps
+    if step.get("name") == "Delete consumed arm receipt artifact"
+]
+if len(cleanup) != 1 or not cleanup[0].get("run"):
+    raise SystemExit("missing unique non-empty cleanup deletion step")
 PY
 [ -s "$tmp/promote.sh" ] || { echo "FAIL - promotion block missing"; exit 1; }
 
@@ -34,6 +43,7 @@ mkdir -p "$tmp/bin" "$tmp/run/.gate-trust/scripts/ci-gate"
 cat >"$tmp/run/.gate-trust/scripts/ci-gate/verify-arm-receipt.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'verify-arm-receipt\n' >>"$CALLS"
+printf '8001\n' >"$ARM_RECEIPT_ARTIFACT_ID_FILE"
 exit "${VERIFY_RC:-0}"
 SH
 chmod 0644 "$tmp/run/.gate-trust/scripts/ci-gate/verify-arm-receipt.sh"
@@ -62,6 +72,7 @@ case "$*" in
     review_calls=$((review_calls + 1))
     printf '%s\n' "$review_calls" >"$REVIEW_CALLS_FILE"
     if [ "$review_calls" -le 2 ]; then cat "$REVIEWS_FILE"; else cat "$LATEST_REVIEWS_FILE"; fi ;;
+  *"collaborators/attacker/permission"*) printf '%s\n' "${ATTACKER_ROLE:-none}" ;;
   *"collaborators/independent-reviewer/permission"*)
     permission_calls="$(cat "$PERMISSION_CALLS_FILE")"
     permission_calls=$((permission_calls + 1))
@@ -80,6 +91,10 @@ case "$*" in
   "pr merge "*)
     if [ "${MERGE_CONFIRMED:-true}" = true ]; then
       jq '.state="MERGED"' "$META_FILE" >"$META_FILE.next" && mv "$META_FILE.next" "$META_FILE"
+      if [ -n "${MERGE_CONFIRMED_HEAD:-}" ]; then
+        jq --arg head "$MERGE_CONFIRMED_HEAD" '.headRefOid = $head' "$META_FILE" \
+          >"$META_FILE.next" && mv "$META_FILE.next" "$META_FILE"
+      fi
     fi ;;
   *) echo "unexpected gh call: $*" >&2; exit 2 ;;
 esac
@@ -150,6 +165,51 @@ fi
 write_base; expect_pass "explicit bash invocation supports a non-executable sparse-checkout verifier" run_promote
 grep -q -- '--admin --squash --match-head-commit' "$CALLS" \
   && pass "all-success promotion merges the exact authorized head" || fail "terminal promotion did not use exact-head admin squash merge"
+write_base
+# #1615: the reviewing token cannot always resolve author_association correctly (e.g. a
+# default GITHUB_TOKEN without org-membership read visibility reports a real org MEMBER as
+# "NONE"). The independent-review revalidation must not gate on that unreliable field; the
+# live admin/maintain collaborator-permission check is the actual, already-authoritative
+# eligibility test.
+jq '.[1].author_association="NONE"' "$REVIEWS_FILE" >"$tmp/x" && mv "$tmp/x" "$REVIEWS_FILE"
+jq '.[1]' "$REVIEWS_FILE" >"$REVIEW_REFETCH_FILE"
+cp "$REVIEWS_FILE" "$LATEST_REVIEWS_FILE"
+expect_pass "unresolvable author_association still promotes a real admin/maintain reviewer (#1615)" run_promote
+grep -q -- '--admin --squash --match-head-commit' "$CALLS" \
+  && pass "author_association-blind promotion still merges the exact authorized head" \
+  || fail "author_association-blind promotion did not use exact-head admin squash merge"
+
+write_base
+# Selection can no longer rely on author_association to keep candidates scoped to
+# org-associated accounts (#1615), and this is a PUBLIC repository: anyone can leave a
+# review at the exact head SHA. A higher-numbered review ID from an account that is not
+# actually a collaborator must not block or supersede a real approval — selection has to
+# walk candidates from the highest ID down and accept the first that still holds live
+# admin/maintain, not trust the highest ID outright.
+jq '.[1] as $base | . + [($base | .id=90 | .user.login="attacker" | .body="unrelated comment")]' "$REVIEWS_FILE" >"$tmp/x" && mv "$tmp/x" "$REVIEWS_FILE"
+cp "$REVIEWS_FILE" "$LATEST_REVIEWS_FILE"
+expect_pass "a higher-ID review from a non-privileged public account cannot block or supersede a real approval" run_promote
+grep -q -- '--admin --squash --match-head-commit' "$CALLS" \
+  && pass "griefing-resistant selection still merges the real approver's exact-head receipt" \
+  || fail "griefing-resistant selection did not reach terminal merge"
+
+write_base
+# The walk-from-highest-ID search that closes the griefing gap above must itself be
+# bounded: without a cap, a flood of junk reviews posted above the real approval would
+# force an unbounded number of live permission lookups. More non-privileged candidates
+# than the search bound allows must fail closed rather than search indefinitely.
+jq --argjson base "$(jq '.[1]' "$REVIEWS_FILE")" '
+    . + [range(100; 125) as $n | $base | .id=$n | .user.login="attacker" | .body="unrelated comment"]
+  ' "$REVIEWS_FILE" >"$tmp/x" && mv "$tmp/x" "$REVIEWS_FILE"
+cp "$REVIEWS_FILE" "$LATEST_REVIEWS_FILE"
+if run_promote >"$tmp/out" 2>&1; then
+  fail "flooding the exact head with more junk reviews than the search bound still promoted"
+elif [ "$(grep -c 'collaborators/attacker/permission' "$CALLS")" -le 20 ] &&
+    [ "$(grep -c 'collaborators/independent-reviewer/permission' "$CALLS")" = 0 ]; then
+  pass "a junk-review flood past the search bound fails closed with a bounded number of lookups"
+else
+  fail "a junk-review flood past the search bound did not stay within its bounded lookup cost"
+fi
 write_base; REVIEW_POLICY="$(encode_policy "$ai_approve_policy")" expect_fail "ai-approve authority never reaches terminal merge" run_promote
 ! grep -q 'pr merge' "$CALLS" || fail "ai-approve authority attempted a terminal merge"
 write_base; jq '.conclusion="failure"' "$CHECK_FILE" >"$tmp/x" && mv "$tmp/x" "$CHECK_FILE"; expect_fail "failed authorization never promotes" run_promote
@@ -220,6 +280,12 @@ write_base; jq '.check_runs += [{id:102,name:"shell-tests",status:"in_progress",
 write_base; jq '.check_runs = [{id:100,name:"shell-tests",status:"completed",conclusion:"failure",details_url:"https://github.com/Verjson/example/actions/runs/7002/job/8001",app:{id:15368,slug:"github-actions"}}, .check_runs[0]]' "$CI_CHECKS_FILE" >"$tmp/x" && mv "$tmp/x" "$CI_CHECKS_FILE"; expect_pass "newer success overrides older failure" run_promote
 write_base; jq '.check_runs += [(.check_runs[0] | .id=102 | .app.id=999)]' "$CI_CHECKS_FILE" >"$tmp/x" && mv "$tmp/x" "$CI_CHECKS_FILE"; expect_fail "newest duplicate context from wrong App cannot forge required CI" run_promote
 write_base; jq '.workflow_id=999' "$CI_RUN_FILE" >"$tmp/x" && mv "$tmp/x" "$CI_RUN_FILE"; expect_fail "wrong workflow identity cannot satisfy required CI" run_promote
+# #1610: a required check's own job can finish (and satisfy $CI_CHECKS_FILE) well before
+# the multi-job run backing it as a whole reaches "completed". That must retry, not
+# hard-fail, as long as the run's identity still matches; only a run that finished
+# unsuccessfully is a terminal block.
+write_base; jq '.status="in_progress" | .conclusion=null' "$CI_RUN_FILE" >"$tmp/x" && mv "$tmp/x" "$CI_RUN_FILE"; expect_pass "in-progress trusted workflow run with an already-completed required-check job remains pending" run_promote; ! grep -q 'pr merge' "$CALLS" || fail "in-progress trusted workflow run merged"
+write_base; jq '.conclusion="failure"' "$CI_RUN_FILE" >"$tmp/x" && mv "$tmp/x" "$CI_RUN_FILE"; expect_fail "terminally unsuccessful trusted workflow run blocks despite a completed required-check job" run_promote; ! grep -q 'pr merge' "$CALLS" || fail "unsuccessful trusted workflow run merged"
 write_base; jq '.check_runs[0].check_suite.id=9999' "$CI_CHECKS_FILE" >"$tmp/x" && mv "$tmp/x" "$CI_CHECKS_FILE"; expect_fail "same-App forged check cannot claim an unrelated successful workflow run" run_promote
 write_base; jq '.jobs[0].check_run_url="https://api.github.com/repos/Verjson/example/check-runs/9999"' "$CI_JOBS_FILE" >"$tmp/x" && mv "$tmp/x" "$CI_JOBS_FILE"; expect_fail "same-suite forged check must be the exact job check run" run_promote
 write_base; jq '.jobs += [.jobs[0]]' "$CI_JOBS_FILE" >"$tmp/x" && mv "$tmp/x" "$CI_JOBS_FILE"; expect_fail "ambiguous duplicate job association fails closed" run_promote
@@ -269,11 +335,28 @@ for self_path in ai-review-merge ai-privileged-merge ai-promotion-retry; do
   fi
 done
 write_base
+: >"$GITHUB_OUTPUT"
 if (export MERGE_CONFIRMED=false; run_promote) >"$tmp/out" 2>&1; then
   fail "unconfirmed merge postcondition did not fail closed"
 else
   pass "unconfirmed merge postcondition fails closed"
 fi
+! grep -q '^terminal_merge_succeeded=true$' "$GITHUB_OUTPUT" \
+  && pass "unconfirmed merge does not export cleanup eligibility" \
+  || fail "unconfirmed merge exported cleanup eligibility"
+
+write_base
+: >"$GITHUB_OUTPUT"
+export MERGE_CONFIRMED_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+if run_promote >"$tmp/out" 2>&1; then
+  fail "wrong-head merged postcondition did not fail closed"
+else
+  pass "wrong-head merged postcondition fails closed"
+fi
+unset MERGE_CONFIRMED_HEAD
+! grep -q '^terminal_merge_succeeded=true$' "$GITHUB_OUTPUT" \
+  && pass "wrong-head merged postcondition does not export cleanup eligibility" \
+  || fail "wrong-head merged postcondition exported cleanup eligibility"
 # A promotion that arrives after the PR left OPEN is a no-op either way, but the
 # two ways are not the same event and must not read the same in the log. MERGED is
 # the ordinary race: a duplicate dispatch for work already landed. CLOSED-unmerged

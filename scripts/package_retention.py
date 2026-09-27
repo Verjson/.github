@@ -28,6 +28,7 @@ OCI_IMAGE_TYPES = {
     "application/vnd.oci.image.manifest.v1+json",
 }
 UNTAGGED_MINIMUM_AGE = datetime.timedelta(days=7)
+REQUEST_TIMEOUT_SECONDS = 30
 
 
 class RetentionError(Exception):
@@ -72,12 +73,20 @@ class GitHubPackages:
             },
         )
         try:
-            with urllib.request.urlopen(request) as response:
+            with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
                 body = response.read()
                 return (json.loads(body) if body else None, response.headers.get("Link"))
         except urllib.error.HTTPError as error:
             detail = error.read().decode("utf-8", errors="replace")
             raise RetentionError(f"GitHub API {method} {path} failed: {error.code}: {detail}") from error
+        except (urllib.error.URLError, TimeoutError) as error:
+            # urlopen wraps only a connect-phase failure in URLError; a
+            # response that stalls after connecting (getresponse()/read())
+            # raises a bare TimeoutError instead.
+            reason = getattr(error, "reason", error)
+            raise RetentionError(
+                f"GitHub API {method} {path} did not respond within {REQUEST_TIMEOUT_SECONDS}s: {reason}"
+            ) from error
 
     def versions(self, target: Target) -> list[dict[str, Any]]:
         name = urllib.parse.quote(target.name, safe="")

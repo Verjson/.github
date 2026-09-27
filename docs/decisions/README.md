@@ -12,6 +12,12 @@ Reverse-chronological index of org-level decisions.
 <!-- prettier-ignore -->
 | # | Date | Decision |
 |---|------|----------|
+| [0209](0209-hosted-tool-cache-trust-is-a-tree-property/README.md) | 2026-09-26 | Hosted tool-cache trust is a property of the admitted tree, not its root component |
+| [0208](0208-independent-review-eligibility-is-collaborator-permission-not-association/README.md) | 2026-09-26 | Independent-review eligibility is the live collaborator permission, not `author_association` |
+| [0207](0207-withhold-issue-mutation-from-terminal-merge-app/README.md) | 2026-09-23 | Withhold issue mutation from the terminal merge App |
+| [0206](0206-ai-authorization-property-is-independent/README.md) | 2026-09-23 | Enroll the AI authorization arm with an independent property |
+| [0205](0205-protected-consumer-type-surface-baseline/README.md) | 2026-09-23 | Resolve protected consumer type-surface baselines from the PR base |
+| [0204](0204-retire-duplicate-cli-projects-repository-rule/README.md) | 2026-09-23 | Retire duplicate cli-projects repository rule |
 | [0203](0203-retire-review-app-authorization-check-ownership/README.md) | 2026-09-23 | Retire review-App authorization-check ownership |
 | [0202](0202-bind-autonomous-merge-to-independent-review-receipt/README.md) | 2026-09-23 | Bind autonomous merge to an independent-review receipt |
 | [0201](0201-secret-bearing-fleet-report-uses-default-branch/README.md) | 2026-09-22 | Keep the full fleet report in a private workflow run |

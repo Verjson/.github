@@ -46,7 +46,7 @@ contract_errors() {
     || printf '%s\n' 'review workflow receives ORG_ADMIN_TOKEN'
   ! grep -qF 'ORG_ADMIN_TOKEN' "$privileged" \
     || printf '%s\n' 'privileged workflow still consumes ORG_ADMIN_TOKEN'
-  ! grep -qE 'needs\..*outputs|resolve_privileged_route' "$privileged" \
+  ! grep -qE 'needs\..*outputs|resolve_privileged_route' <<<"$terminal" \
     || printf '%s\n' 'runner-produced data can select terminal credential placement'
   ! grep -qF 'ACTIONS_VARIABLES_TOKEN' "$privileged" \
     || printf '%s\n' 'privileged workflow still depends on an organization-variable PAT'

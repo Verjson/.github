@@ -82,6 +82,15 @@ class OrgRulesetConformanceTest(unittest.TestCase):
                         },
                         "required_check_producer_app_id": 15368,
                         "bypassless_required_workflows": [],
+                        "bypass_actor_contracts": [
+                            {
+                                "ruleset_id": ruleset_id,
+                                "name": detail["name"],
+                                "bypass_actors": detail["bypass_actors"],
+                            }
+                            for ruleset_id, detail in details.items()
+                            if detail.get("bypass_actors")
+                        ],
                     }
                 ),
                 encoding="utf-8",
@@ -189,14 +198,84 @@ class OrgRulesetConformanceTest(unittest.TestCase):
                     "workflow_ref": "refs/heads/main",
                 },
                 ],
+                "bypass_actor_contracts": [
+                    {
+                        "ruleset_id": 20722935,
+                        "name": "ai-authorization-arm-required",
+                        "bypass_actors": [
+                            {"actor_type": "OrganizationAdmin", "actor_id": None, "bypass_mode": "always"},
+                            {"actor_type": "Integration", "actor_id": 2740, "bypass_mode": "always"},
+                            {"actor_type": "Integration", "actor_id": 4583107, "bypass_mode": "always"},
+                            {"actor_type": "Integration", "actor_id": 4693283, "bypass_mode": "always"},
+                        ],
+                    },
+                    {
+                        "ruleset_id": 21750617,
+                        "name": "authn-type-surface-required-workflow",
+                        "bypass_actors": [
+                            {"actor_type": "Integration", "actor_id": 4583107, "bypass_mode": "always"},
+                        ],
+                    },
+                    {
+                        "ruleset_id": 20513599,
+                        "name": "changelog-contract-required",
+                        "bypass_actors": [
+                            {"actor_type": "OrganizationAdmin", "actor_id": None, "bypass_mode": "always"},
+                            {"actor_type": "Integration", "actor_id": 4583107, "bypass_mode": "always"},
+                            {"actor_type": "Integration", "actor_id": 4693283, "bypass_mode": "always"},
+                        ],
+                    },
+                    {
+                        "ruleset_id": 20515822,
+                        "name": "core-checks-actions",
+                        "bypass_actors": [
+                            {"actor_type": "OrganizationAdmin", "actor_id": None, "bypass_mode": "always"},
+                            {"actor_type": "Integration", "actor_id": 4583107, "bypass_mode": "always"},
+                            {"actor_type": "Integration", "actor_id": 4693283, "bypass_mode": "always"},
+                        ],
+                    },
+                    {
+                        "ruleset_id": 20515817,
+                        "name": "core-checks-node",
+                        "bypass_actors": [
+                            {"actor_type": "OrganizationAdmin", "actor_id": None, "bypass_mode": "always"},
+                            {"actor_type": "Integration", "actor_id": 4583107, "bypass_mode": "always"},
+                            {"actor_type": "Integration", "actor_id": 4693283, "bypass_mode": "always"},
+                        ],
+                    },
+                    {
+                        "ruleset_id": 18098028,
+                        "name": "main-protection",
+                        "bypass_actors": [
+                            {"actor_type": "OrganizationAdmin", "actor_id": None, "bypass_mode": "always"},
+                            {"actor_type": "Integration", "actor_id": 2740, "bypass_mode": "always"},
+                            {"actor_type": "Integration", "actor_id": 4583107, "bypass_mode": "always"},
+                            {"actor_type": "Integration", "actor_id": 4693283, "bypass_mode": "always"},
+                        ],
+                    },
+                ],
             },
         )
 
     def test_inherited_policy_environment_cannot_redirect_production_policy(self):
-        detail = ruleset(13)
+        committed = json.loads(POLICY.read_text(encoding="utf-8"))
+        details = {
+            contract["ruleset_id"]: ruleset(
+                contract["ruleset_id"],
+                name=contract["name"],
+                include=["refs/heads/release/*"],
+                bypass_actors=contract["bypass_actors"],
+            )
+            for contract in committed["bypass_actor_contracts"]
+        }
+        details[13] = ruleset(
+            13,
+            include=["refs/heads/release/*"],
+            bypass_actors=[],
+        )
         result, calls = self.run_audit(
-            [[{"id": 13}]],
-            {13: detail},
+            [[{"id": ruleset_id} for ruleset_id in details]],
+            details,
             use_test_policy=False,
             inherited_policy={
                 "organization": "Attacker",
@@ -265,9 +344,10 @@ class OrgRulesetConformanceTest(unittest.TestCase):
             "ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []},
             "repository_id": {"repository_ids": [1302124584]},
         }
-        policy = POLICY.read_text(encoding="utf-8")
+        policy = json.loads(POLICY.read_text(encoding="utf-8"))
+        policy["bypass_actor_contracts"] = []
         result, _ = self.run_audit(
-            [[{"id": 99}]], {99: detail}, raw_policy=policy
+            [[{"id": 99}]], {99: detail}, raw_policy=json.dumps(policy)
         )
         self.assertEqual(0, result.returncode, result.stderr)
 
@@ -287,7 +367,7 @@ class OrgRulesetConformanceTest(unittest.TestCase):
                         "bypass_mode": "always",
                     }]
                 result, _ = self.run_audit(
-                    [[{"id": 99}]], {99: changed}, raw_policy=policy
+                    [[{"id": 99}]], {99: changed}, raw_policy=json.dumps(policy)
                 )
                 self.assertEqual(1, result.returncode)
                 self.assertIn("required release authorization bypass is absent", result.stderr)
@@ -318,6 +398,286 @@ class OrgRulesetConformanceTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("rulesets=4 default_branch_token_rulesets=0", result.stdout)
+
+    def test_uncontracted_bypass_is_rejected_outside_default_branch_scope(self):
+        detail = ruleset(17, include=["refs/heads/release/*"])
+        policy = {
+            "organization": "Verjson",
+            "release_authorization_bypass": {
+                "actor_type": "Integration",
+                "actor_id": 4583107,
+                "bypass_mode": "always",
+            },
+            "required_check_producer_app_id": 15368,
+            "bypassless_required_workflows": [],
+            "bypass_actor_contracts": [],
+        }
+
+        result, _ = self.run_audit(
+            [[{"id": 17}]],
+            {17: detail},
+            raw_policy=json.dumps(policy),
+        )
+
+        self.assertEqual(1, result.returncode, result.stderr)
+        self.assertIn(
+            "ruleset-17 (17): bypass actors are not covered by a reviewed contract",
+            result.stderr,
+        )
+
+    def test_reviewed_contract_and_uncontracted_bypassless_ruleset_pass(self):
+        contracted = ruleset(17, include=["refs/heads/release/*"])
+        bypassless = ruleset(
+            18,
+            include=["refs/heads/release/*"],
+            bypass_actors=[],
+        )
+        policy = {
+            "organization": "Verjson",
+            "release_authorization_bypass": {
+                "actor_type": "Integration",
+                "actor_id": 4583107,
+                "bypass_mode": "always",
+            },
+            "required_check_producer_app_id": 15368,
+            "bypassless_required_workflows": [],
+            "bypass_actor_contracts": [
+                {
+                    "ruleset_id": 17,
+                    "name": "ruleset-17",
+                    "bypass_actors": list(reversed(contracted["bypass_actors"])),
+                }
+            ],
+        }
+
+        result, _ = self.run_audit(
+            [[{"id": 17}, {"id": 18}]],
+            {17: contracted, 18: bypassless},
+            raw_policy=json.dumps(policy),
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_uncontracted_bypassless_push_ruleset_without_ref_conditions_passes(self):
+        detail = ruleset(19, target="push", bypass_actors=[])
+        detail["conditions"] = {
+            "repository_name": {"include": ["~ALL"], "exclude": []}
+        }
+        policy = {
+            "organization": "Verjson",
+            "release_authorization_bypass": {
+                "actor_type": "Integration",
+                "actor_id": 4583107,
+                "bypass_mode": "always",
+            },
+            "required_check_producer_app_id": 15368,
+            "bypassless_required_workflows": [],
+            "bypass_actor_contracts": [],
+        }
+
+        result, _ = self.run_audit(
+            [[{"id": 19}]],
+            {19: detail},
+            raw_policy=json.dumps(policy),
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_push_ruleset_bypass_still_requires_a_reviewed_contract(self):
+        detail = ruleset(20, target="push")
+        detail["conditions"] = {
+            "repository_name": {"include": ["~ALL"], "exclude": []}
+        }
+        policy = {
+            "organization": "Verjson",
+            "release_authorization_bypass": {
+                "actor_type": "Integration",
+                "actor_id": 4583107,
+                "bypass_mode": "always",
+            },
+            "required_check_producer_app_id": 15368,
+            "bypassless_required_workflows": [],
+            "bypass_actor_contracts": [],
+        }
+
+        result, _ = self.run_audit(
+            [[{"id": 20}]],
+            {20: detail},
+            raw_policy=json.dumps(policy),
+        )
+
+        self.assertEqual(1, result.returncode, result.stderr)
+        self.assertIn(
+            "ruleset-20 (20): bypass actors are not covered by a reviewed contract",
+            result.stderr,
+        )
+
+    def test_stale_or_mismatched_bypass_contract_fails(self):
+        reviewed_actors = ruleset(17)["bypass_actors"]
+        base_policy = {
+            "organization": "Verjson",
+            "release_authorization_bypass": {
+                "actor_type": "Integration",
+                "actor_id": 4583107,
+                "bypass_mode": "always",
+            },
+            "required_check_producer_app_id": 15368,
+            "bypassless_required_workflows": [],
+        }
+        cases = [
+            (
+                {17: ruleset(17, include=["refs/heads/release/*"])},
+                {
+                    "ruleset_id": 17,
+                    "name": "renamed-ruleset",
+                    "bypass_actors": reviewed_actors,
+                },
+                "contract identity drifted",
+            ),
+            (
+                {18: ruleset(18, include=["refs/heads/release/*"], bypass_actors=[])},
+                {
+                    "ruleset_id": 17,
+                    "name": "ruleset-17",
+                    "bypass_actors": reviewed_actors,
+                },
+                "ruleset is absent; remove the stale contract",
+            ),
+            (
+                {
+                    17: ruleset(17, include=["refs/heads/release/*"])
+                    | {
+                        "bypass_actors": reviewed_actors
+                        + [
+                            {
+                                "actor_type": "Integration",
+                                "actor_id": 999,
+                                "bypass_mode": "always",
+                            }
+                        ]
+                    }
+                },
+                {
+                    "ruleset_id": 17,
+                    "name": "ruleset-17",
+                    "bypass_actors": reviewed_actors,
+                },
+                "bypass actors differ from the reviewed contract",
+            ),
+            (
+                {17: ruleset(17, include=["refs/heads/release/*"], bypass_actors=[])},
+                {
+                    "ruleset_id": 17,
+                    "name": "ruleset-17",
+                    "bypass_actors": reviewed_actors,
+                },
+                "bypass actors differ from the reviewed contract",
+            ),
+        ]
+        for details, contract, diagnostic in cases:
+            with self.subTest(diagnostic=diagnostic):
+                policy = base_policy | {"bypass_actor_contracts": [contract]}
+                result, _ = self.run_audit(
+                    [[{"id": ruleset_id} for ruleset_id in details]],
+                    details,
+                    raw_policy=json.dumps(policy),
+                )
+                self.assertEqual(1, result.returncode, result.stderr)
+                self.assertIn(diagnostic, result.stderr)
+
+    def test_duplicate_bypass_contract_identity_fails_closed(self):
+        reviewed_actors = ruleset(17)["bypass_actors"]
+        base_policy = {
+            "organization": "Verjson",
+            "release_authorization_bypass": {
+                "actor_type": "Integration",
+                "actor_id": 4583107,
+                "bypass_mode": "always",
+            },
+            "required_check_producer_app_id": 15368,
+            "bypassless_required_workflows": [],
+        }
+        cases = [
+            (
+                [
+                    {
+                        "ruleset_id": 17,
+                        "name": "ruleset-17",
+                        "bypass_actors": reviewed_actors,
+                    },
+                    {
+                        "ruleset_id": 17,
+                        "name": "renamed-ruleset",
+                        "bypass_actors": reviewed_actors,
+                    },
+                ],
+                "duplicate bypass contract id 17",
+            ),
+            (
+                [
+                    {
+                        "ruleset_id": 17,
+                        "name": "ruleset-17",
+                        "bypass_actors": reviewed_actors,
+                    },
+                    {
+                        "ruleset_id": 18,
+                        "name": "ruleset-17",
+                        "bypass_actors": reviewed_actors,
+                    },
+                ],
+                "duplicate bypass contract name ruleset-17",
+            ),
+        ]
+        for contracts, diagnostic in cases:
+            with self.subTest(diagnostic=diagnostic):
+                policy = base_policy | {"bypass_actor_contracts": contracts}
+                result, _ = self.run_audit(
+                    [[{"id": 17}]],
+                    {17: ruleset(17)},
+                    raw_policy=json.dumps(policy),
+                )
+                self.assertEqual(2, result.returncode, result.stderr)
+                self.assertIn(diagnostic, result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+
+    def test_bypass_contract_actor_image_must_be_nonempty_unique_and_well_formed(self):
+        actor = {
+            "actor_type": "Integration",
+            "actor_id": 4583107,
+            "bypass_mode": "always",
+        }
+        base_policy = {
+            "organization": "Verjson",
+            "release_authorization_bypass": actor,
+            "required_check_producer_app_id": 15368,
+            "bypassless_required_workflows": [],
+        }
+        cases = [
+            ([], "bypass_actors must not be empty"),
+            ([actor, actor], "contains duplicate bypass actor"),
+            ([actor | {"unexpected": True}], "keys are"),
+            ([actor | {"actor_id": 0}], "actor_id must be a positive integer"),
+        ]
+        for actors, diagnostic in cases:
+            with self.subTest(diagnostic=diagnostic):
+                policy = base_policy | {
+                    "bypass_actor_contracts": [
+                        {
+                            "ruleset_id": 17,
+                            "name": "ruleset-17",
+                            "bypass_actors": actors,
+                        }
+                    ]
+                }
+                result, _ = self.run_audit(
+                    [[{"id": 17}]],
+                    {17: ruleset(17)},
+                    raw_policy=json.dumps(policy),
+                )
+                self.assertEqual(2, result.returncode, result.stderr)
+                self.assertIn(diagnostic, result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
 
     def test_paginated_listing_is_fully_enumerated(self):
         first = ruleset(5)
@@ -365,6 +725,59 @@ class OrgRulesetConformanceTest(unittest.TestCase):
             with self.subTest(diagnostic=diagnostic):
                 result, _ = self.run_audit(pages, details)
                 self.assertEqual(result.returncode, 2)
+                self.assertIn(diagnostic, result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+
+    def test_malformed_live_bypass_actor_shapes_fail_closed(self):
+        cases = [
+            (
+                13,
+                {
+                    "actor_type": "Integration",
+                    "actor_id": 4583107,
+                    "bypass_mode": "always",
+                    "unexpected": "field",
+                },
+                "ruleset 13 bypass actor 0 keys are",
+            ),
+            (
+                14,
+                {
+                    "actor_type": "Integration",
+                    "bypass_mode": "always",
+                },
+                "ruleset 14 bypass actor 0 keys are",
+            ),
+        ]
+        for ruleset_id, actor, diagnostic in cases:
+            with self.subTest(diagnostic=diagnostic):
+                reviewed = ruleset(ruleset_id)["bypass_actors"]
+                policy = {
+                    "organization": "Verjson",
+                    "release_authorization_bypass": {
+                        "actor_type": "Integration",
+                        "actor_id": 4583107,
+                        "bypass_mode": "always",
+                    },
+                    "required_check_producer_app_id": 15368,
+                    "bypassless_required_workflows": [],
+                    "bypass_actor_contracts": [
+                        {
+                            "ruleset_id": ruleset_id,
+                            "name": f"ruleset-{ruleset_id}",
+                            "bypass_actors": reviewed,
+                        }
+                    ],
+                }
+                detail = ruleset(ruleset_id, bypass_actors=[actor])
+
+                result, _ = self.run_audit(
+                    [[{"id": ruleset_id}]],
+                    {ruleset_id: detail},
+                    raw_policy=json.dumps(policy),
+                )
+
+                self.assertEqual(2, result.returncode, result.stderr)
                 self.assertIn(diagnostic, result.stderr)
                 self.assertNotIn("Traceback", result.stderr)
 

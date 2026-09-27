@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "organization": "Verjson",
   "ruleset_id": 18098028,
   "retired_path": ".github/workflows/ai-review-merge.yml",
@@ -126,6 +126,48 @@
     ]
   },
   "arm_ruleset_name": "ai-authorization-arm-required",
+  "legacy_arm_ruleset": {
+    "name": "ai-authorization-arm-required",
+    "target": "branch",
+    "enforcement": "active",
+    "bypass_actors": [
+      {"actor_id": null, "actor_type": "OrganizationAdmin", "bypass_mode": "always"},
+      {"actor_id": 2740, "actor_type": "Integration", "bypass_mode": "always"},
+      {"actor_id": 4583107, "actor_type": "Integration", "bypass_mode": "always"},
+      {"actor_id": 4693283, "actor_type": "Integration", "bypass_mode": "always"}
+    ],
+    "conditions": {
+      "ref_name": {
+        "exclude": [],
+        "include": ["~DEFAULT_BRANCH", "refs/heads/develop"]
+      },
+      "repository_property": {
+        "exclude": [],
+        "include": [
+          {
+            "name": "verjson-core-checks",
+            "property_values": ["enforced"],
+            "source": "custom"
+          }
+        ]
+      }
+    },
+    "rules": [
+      {
+        "type": "workflows",
+        "parameters": {
+          "do_not_enforce_on_create": true,
+          "workflows": [
+            {
+              "path": ".github/workflows/gate-rearm.yml",
+              "ref": "refs/heads/main",
+              "repository_id": 1269388380
+            }
+          ]
+        }
+      }
+    ]
+  },
   "arm_ruleset": {
     "name": "ai-authorization-arm-required",
     "target": "branch",
@@ -161,7 +203,7 @@
         "exclude": [],
         "include": [
           {
-            "name": "verjson-core-checks",
+            "name": "verjson-ai-authorization",
             "property_values": ["enforced"],
             "source": "custom"
           }
@@ -265,6 +307,52 @@
   ],
   "core_checks_property": "verjson-core-checks",
   "core_checks_value": "enforced",
+  "arm_property": {
+    "name": "verjson-ai-authorization",
+    "value": "enforced",
+    "definition": {
+      "value_type": "single_select",
+      "required": false,
+      "default_value": null,
+      "description": "Whether the repository is enrolled in the AI authorization-arm required-workflow contract, independently of its core-check stack.",
+      "allowed_values": ["enforced", "disabled"],
+      "values_editable_by": "org_actors",
+      "require_explicit_values": false
+    }
+  },
+  "arm_property_migration": {
+    "repositories": [
+      "Verjson/.github",
+      "Verjson/verjson-agent-observer",
+      "Verjson/verjson-agents",
+      "Verjson/verjson-ai",
+      "Verjson/verjson-ai-gguf",
+      "Verjson/verjson-authn",
+      "Verjson/verjson-browser-agent",
+      "Verjson/verjson-ci",
+      "Verjson/verjson-cli",
+      "Verjson/verjson-cli-cloud",
+      "Verjson/verjson-cli-projects",
+      "Verjson/verjson-cloud-storage",
+      "Verjson/verjson-compliance",
+      "Verjson/verjson-compliance-schema",
+      "Verjson/verjson-customer-lifecycle",
+      "Verjson/verjson-email",
+      "Verjson/verjson-eslint-config",
+      "Verjson/verjson-git-runners",
+      "Verjson/verjson-graphql-conventions",
+      "Verjson/verjson-identity-contracts",
+      "Verjson/verjson-identity-lifecycle",
+      "Verjson/verjson-infra",
+      "Verjson/verjson-leads",
+      "Verjson/verjson-object-storage",
+      "Verjson/verjson-observability",
+      "Verjson/verjson-oidc-claims-middleware",
+      "Verjson/verjson-payments",
+      "Verjson/verjson-temporal-kit",
+      "Verjson/verjson-video-forge"
+    ]
+  },
   "deterministic_rulesets": [
     {
       "id": 20515822,

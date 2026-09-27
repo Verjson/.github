@@ -118,7 +118,18 @@ jobs:
       - name: Validate caller-supplied privileged lane routing
         run: |
           set -euo pipefail
-          jq -e '. == ["ubuntu-24.04"]' >/dev/null 2>&1 <<<"${PRIVILEGED_LANE:-}" || {
+          # A here-string always appends a trailing newline, so an unset,
+          # empty, or whitespace-only PRIVILEGED_LANE feeds jq a stream with
+          # no JSON values. jq treats that as "the filter never ran" and
+          # exits 0 regardless of -e (#1612), so -e alone cannot be trusted.
+          # Trailing garbage after a valid value (e.g. a second concatenated
+          # JSON value) is the mirror problem: jq emits "true" for the first
+          # value on stdout, then fails on the remainder, so stdout alone
+          # cannot be trusted either. Require both: -e's exit status AND an
+          # exact "true" on stdout.
+          lane_check="$(jq -e '. == ["ubuntu-24.04"]' <<<"${PRIVILEGED_LANE:-}" 2>/dev/null)" \
+            && lane_check_status=0 || lane_check_status=$?
+          [ "$lane_check_status" -eq 0 ] && [ "$lane_check" = "true" ] || {
             echo "::error::privileged_lane is missing, malformed, or is not the exact admitted ubuntu-24.04 lane (ADR 0118); got: ${PRIVILEGED_LANE:-<empty>}"
             exit 1
           }
@@ -130,10 +141,14 @@ jobs:
     if: ${{ needs.app-key-policy.result == 'success' && (always() && (github.repository_owner != 'Verjson' || github.event.repository.visibility == 'public' && (github.repository == 'Verjson/.github' || github.repository == 'Verjson/verjson-github-runner') || github.event.repository.visibility == 'private' && github.repository != 'Verjson/.github' && github.repository != 'Verjson/verjson-github-runner' && inputs.privileged_lane == '["ubuntu-24.04"]' && needs.validate_privileged_lane.result == 'success')) }}
     runs-on: ${{ github.repository_owner != 'Verjson' && inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.visibility == 'public' && 'ubuntu-24.04' || fromJSON(inputs.privileged_lane) }}
     timeout-minutes: 5
+    outputs:
+      arm_receipt_artifact_id: ${{ steps.export-cleanup-receipt.outputs.arm_receipt_artifact_id }}
+      terminal_merge_succeeded: ${{ steps.export-cleanup-receipt.outputs.terminal_merge_succeeded }}
     permissions:
       actions: read
       checks: read
       contents: read
+      issues: read
       pull-requests: read
     env:
       AUTHORIZATION_CHECK_ID: ${{ inputs.authorization_check_id }}
@@ -181,6 +196,7 @@ jobs:
           ref: ${{ steps.trusted-revision.outputs.sha }}
           path: .gate-trust
           sparse-checkout: |
+            scripts/ci-gate/closing-issue-visibility.py
             scripts/ci-gate/terminal-merge.sh
             scripts/ci-gate/verify-arm-receipt.sh
             scripts/ci-gate/review-policy-envelope.py
@@ -390,10 +406,22 @@ jobs:
               --arg path "$workflow_path" --argjson workflow_id "$expected_workflow_id" '
                 .workflow_id == $workflow_id and .path == $path and
                 .event == "pull_request" and .head_sha == $head and
-                .head_repository.full_name == $repo and
-                .status == "completed" and .conclusion == "success"
+                .head_repository.full_name == $repo
               ' <<<"$ci_run" >/dev/null || {
               echo "::error::required check $name is not backed by the trusted exact-head workflow run"; exit 1;
+            }
+            # Liveness/conclusion are checked separately from identity above: a
+            # multi-job run whose required-check job already succeeded can still be
+            # "in_progress" overall while a slower sibling job finishes (#1610). That
+            # is retriable, not a trust failure — only a completed-but-unsuccessful
+            # run is.
+            ci_run_status="$(jq -r '.status // "" | ascii_upcase' <<<"$ci_run")"
+            ci_run_conclusion="$(jq -r '.conclusion // "" | ascii_upcase' <<<"$ci_run")"
+            [ "$ci_run_status" = COMPLETED ] || {
+              echo "Required check $name is backed by workflow run $ci_run_id, which has not finished; a later workflow completion will retry promotion."; exit 0;
+            }
+            [ "$ci_run_conclusion" = SUCCESS ] || {
+              echo "::error::workflow run $ci_run_id backing required check $name is terminally unsuccessful: $ci_run_conclusion"; exit 1;
             }
             head_workflow_blob="$(gh api "repos/$TARGET_REPO/contents/$workflow_path?ref=$EXPECTED_HEAD_SHA" --jq '.sha // ""')"
             trusted_workflow_blob="$(gh api "repos/$TARGET_REPO/contents/$workflow_path?ref=$branch_ref" --jq '.sha // ""')"
@@ -433,35 +461,61 @@ jobs:
         run: |
           set -euo pipefail
           marker="<!-- independent-review:v1 pr:${PR_NUMBER} head:${EXPECTED_HEAD_SHA} verdict:approved -->"
+
+          # author_association is not used as a gate: it reflects the *calling token's*
+          # visibility into org membership, not the reviewer's actual standing (#1615 — a
+          # default GITHUB_TOKEN without org-membership read access reports a real MEMBER as
+          # "NONE"). The live collaborator-permission check is the authoritative eligibility
+          # test instead.
+          #
+          # This is a PUBLIC repository, so dropping author_association means ANY GitHub
+          # account can leave a review at the exact head SHA. Picking "whichever candidate has
+          # the highest review ID" outright would let such a review — if posted after the real
+          # approval — block or supersede it. Selection therefore walks candidates from the
+          # highest ID down and accepts the first whose account currently holds admin/maintain,
+          # skipping any that don't, rather than trusting the highest ID unconditionally. The
+          # same walk is run again later to revalidate that nothing supersedes the accepted
+          # receipt, so a single function is the one place this selection is defined (ADR 0208).
+          #
+          # The walk is bounded: without a cap, an attacker posting enough junk reviews above
+          # the real approval could force this step through an unbounded number of live
+          # permission lookups. Capping at MAX_CANDIDATE_LOOKUPS makes the worst case a
+          # predictable, small amount of API calls rather than a griefing PR's review count —
+          # exceeding it fails closed (no autonomous merge), same as finding no candidate at
+          # all, rather than exhausting the token's request budget.
+          MAX_CANDIDATE_LOOKUPS=20
+          select_privileged_candidate() {
+            local reviews_json="$1" cid clogin role attempts=0
+            while IFS=$'\t' read -r cid clogin; do
+              [ -n "$cid" ] || continue
+              attempts=$((attempts + 1))
+              [ "$attempts" -le "$MAX_CANDIDATE_LOOKUPS" ] || return 1
+              role="$(gh api "repos/$TARGET_REPO/collaborators/$clogin/permission" \
+                --jq '.role_name // ""' 2>/dev/null)" || role=""
+              case "$role" in
+                admin|maintain) printf '%s\t%s\n' "$cid" "$clogin"; return 0 ;;
+              esac
+            done < <(jq -r --arg head "$EXPECTED_HEAD_SHA" '
+                [ .[][]
+                  | select(
+                      .commit_id == $head and
+                      .user.type == "User" and
+                      (.user.login | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9-]*$"))
+                    )
+                  | {id, login: .user.login}
+                ]
+                | sort_by(.id) | reverse | .[] | [.id, .login] | @tsv
+              ' <<<"$reviews_json")
+            return 1
+          }
+
           reviews="$(gh api --paginate \
             "repos/$TARGET_REPO/pulls/$PR_NUMBER/reviews?per_page=100" | jq -s '.')"
-          candidate="$(jq -er --arg head "$EXPECTED_HEAD_SHA" '
-              [ .[][]
-                | select(
-                    .commit_id == $head and
-                    .user.type == "User" and
-                    (.user.login | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9-]*$")) and
-                    (.author_association == "OWNER" or
-                     .author_association == "MEMBER" or
-                     .author_association == "COLLABORATOR")
-                  )
-                | {id, login: .user.login}
-              ]
-              | sort_by(.id) | last
-              | select(. != null)
-            ' <<<"$reviews")" || {
-              echo "::error::an exact-head independent-review verdict is required before autonomous merge"; exit 1;
-            }
-          review_id="$(jq -er '.id | select(type == "number" and . > 0 and floor == .)' <<<"$candidate")"
-          reviewer="$(jq -er '.login | select(type == "string" and test("^[A-Za-z0-9][A-Za-z0-9-]*$"))' <<<"$candidate")"
-          initial_role="$(gh api "repos/$TARGET_REPO/collaborators/$reviewer/permission" \
-            --jq '.role_name // ""')" || {
-              echo "::error::could not authorize independent-review account $reviewer"; exit 1;
-            }
-          case "$initial_role" in
-            admin|maintain) ;;
-            *) echo "::error::latest independent-review account lacks maintain/admin"; exit 1 ;;
-          esac
+          selected="$(select_privileged_candidate "$reviews")" || {
+            echo "::error::an exact-head independent-review verdict is required before autonomous merge"; exit 1;
+          }
+          review_id="$(cut -f1 <<<"$selected")"
+          reviewer="$(cut -f2 <<<"$selected")"
 
           live_review="$(gh api "repos/$TARGET_REPO/pulls/$PR_NUMBER/reviews/$review_id")" || {
             echo "::error::could not re-fetch independent-review verdict $review_id"; exit 1;
@@ -473,45 +527,30 @@ jobs:
               .commit_id == $head and
               .user.type == "User" and
               .user.login == $login and
-              (.author_association == "OWNER" or
-               .author_association == "MEMBER" or
-               .author_association == "COLLABORATOR") and
               (.body | type == "string" and gsub("^\\s+|\\s+$"; "") == $marker)
             ' <<<"$live_review" >/dev/null || {
               echo "::error::latest independent-review verdict is edited, withdrawn, dismissed, or not approving"; exit 1;
             }
 
-          latest_id="$(gh api --paginate \
-            "repos/$TARGET_REPO/pulls/$PR_NUMBER/reviews?per_page=100" | jq -ser --arg head "$EXPECTED_HEAD_SHA" '
-              [ .[][]
-                | select(
-                    .commit_id == $head and
-                    .user.type == "User" and
-                    (.user.login | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9-]*$")) and
-                    (.author_association == "OWNER" or
-                     .author_association == "MEMBER" or
-                     .author_association == "COLLABORATOR")
-                  )
-                | .id
-              ]
-              | sort | last
-              | select(type == "number" and . > 0 and floor == .)
-            ')" || {
-              echo "::error::could not revalidate latest independent-review verdict"; exit 1;
-            }
-          [ "$latest_id" = "$review_id" ] || {
+          latest_reviews="$(gh api --paginate \
+            "repos/$TARGET_REPO/pulls/$PR_NUMBER/reviews?per_page=100" | jq -s '.')"
+          latest_selected="$(select_privileged_candidate "$latest_reviews")" || {
+            echo "::error::could not revalidate latest independent-review verdict"; exit 1;
+          }
+          [ "$latest_selected" = "$selected" ] || {
             echo "::error::a later independent-review verdict superseded receipt $review_id"; exit 1;
           }
-          terminal_role="$(gh api "repos/$TARGET_REPO/collaborators/$reviewer/permission" \
-            --jq '.role_name // ""')" || {
-              echo "::error::could not revalidate independent-review account $reviewer"; exit 1;
-            }
-          case "$terminal_role" in
-            admin|maintain) ;;
-            *) echo "::error::independent-review account lost maintain/admin before authorization"; exit 1 ;;
-          esac
           echo "authorized=true" >>"$GITHUB_OUTPUT"
           echo "Independent review receipt $review_id for exact head $EXPECTED_HEAD_SHA was terminally revalidated for $reviewer."
+
+      - name: Capture closing issue references
+        if: steps.authorize-merge.outputs.authorized == 'true' && steps.independent-review.outputs.authorized == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 .gate-trust/scripts/ci-gate/closing-issue-visibility.py capture \
+            --output "$RUNNER_TEMP/closing-issues.json"
 
       - name: Mint exact-repository terminal merge App token
         if: steps.authorize-merge.outputs.authorized == 'true' && steps.independent-review.outputs.authorized == 'true'
@@ -526,6 +565,7 @@ jobs:
           permission-pull-requests: write
 
       - name: Merge the authorized head
+        id: terminal-merge
         if: steps.authorize-merge.outputs.authorized == 'true' && steps.independent-review.outputs.authorized == 'true'
         env:
           GH_TOKEN: ${{ steps.merge-app-token.outputs.token }}
@@ -535,8 +575,9 @@ jobs:
           set -euo pipefail
           bash .gate-trust/scripts/ci-gate/terminal-merge.sh
 
-      - name: Confirm merge and consume the arm receipt
-        if: steps.authorize-merge.outputs.authorized == 'true' && steps.independent-review.outputs.authorized == 'true'
+      - name: Confirm terminal merge state
+        id: confirm-terminal-merge
+        if: ${{ always() && steps.authorize-merge.outputs.authorized == 'true' && steps.independent-review.outputs.authorized == 'true' && steps.terminal-merge.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -548,15 +589,52 @@ jobs:
           }
           echo "Merged authorized head $EXPECTED_HEAD_SHA after every declared required check succeeded."
 
+      - name: Export terminal merge cleanup receipt
+        id: export-cleanup-receipt
+        if: steps.confirm-terminal-merge.outcome == 'success'
+        run: |
+          set -euo pipefail
+          receipt_artifact_id="$(<"$RUNNER_TEMP/arm-receipt-artifact-id")"
+          [[ "$receipt_artifact_id" =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::confirmed terminal merge lacks a valid arm receipt artifact ID"
+            exit 1
+          }
+          printf 'arm_receipt_artifact_id=%s\nterminal_merge_succeeded=true\n' \
+            "$receipt_artifact_id" >>"$GITHUB_OUTPUT"
+
+      - name: Report closing issue outcomes
+        if: steps.authorize-merge.outputs.authorized == 'true' && steps.independent-review.outputs.authorized == 'true' && steps.terminal-merge.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 .gate-trust/scripts/ci-gate/closing-issue-visibility.py report \
+            --input "$RUNNER_TEMP/closing-issues.json"
+
+  cleanup_arm_receipt:
+    needs: privileged_merge
+    if: ${{ always() && needs.privileged_merge.outputs.terminal_merge_succeeded == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    permissions:
+      actions: write
+    env:
+      ARM_RECEIPT_ARTIFACT_ID: ${{ needs.privileged_merge.outputs.arm_receipt_artifact_id }}
+      TARGET_REPO: ${{ github.repository }}
+    steps:
+      - name: Delete consumed arm receipt artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
           # The receipt has now served its purpose: this is the terminal
-          # consumption, confirmed by GitHub's own merged state above, not an
-          # intermediate check a retry could still repeat. Deleting it here
+          # consumption after a successful terminal merge, not an intermediate
+          # check a retry could still repeat. Deleting it here
           # (instead of only at its 90-day retention limit) is a storage-cost
           # cleanup, not a trust boundary: a delete failure is logged and does
           # not fail an already-completed merge.
-          if [ -s "$RUNNER_TEMP/arm-receipt-artifact-id" ]; then
-            receipt_artifact_id="$(<"$RUNNER_TEMP/arm-receipt-artifact-id")"
-            if [[ "$receipt_artifact_id" =~ ^[1-9][0-9]*$ ]]; then
+          receipt_artifact_id="$ARM_RECEIPT_ARTIFACT_ID"
+          if [[ "$receipt_artifact_id" =~ ^[1-9][0-9]*$ ]]; then
               if gh api --method DELETE "repos/$TARGET_REPO/actions/artifacts/$receipt_artifact_id" \
                   >/dev/null 2>"$RUNNER_TEMP/arm-artifact-delete.stderr"; then
                 echo "Consumed arm receipt artifact $receipt_artifact_id."
@@ -564,5 +642,6 @@ jobs:
                 echo "::warning::failed to delete consumed arm receipt artifact $receipt_artifact_id (non-fatal; its own retention window still bounds it)"
                 sed -E 's/(authorization: (token|bearer) )[A-Za-z0-9._-]+/\1***/Ig' "$RUNNER_TEMP/arm-artifact-delete.stderr" >&2
               fi
-            fi
+          else
+            echo "::warning::not deleting consumed arm receipt artifact because its ID is invalid"
           fi

@@ -25,7 +25,7 @@ jobs:
         env:
           REPOSITORY: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
-          CONSUMER_WORKFLOW_SHA256: d45a2150513132e58d75e6fcad6ea4d380dbb541b76b6f2b89f98ddf41f8b1e1
+          CONSUMER_WORKFLOW_SHA256: f68ee072b86977b15bfdbe1aca77b00c5c330ef61d31d1bf613314dbe033368d
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -61,7 +61,7 @@ jobs:
       packages: read
       pull-requests: read
       statuses: read
-    uses: Verjson/.github/.github/workflows/node-ci-protected.yml@e4d911fd4197e0a4a0d500cd43c49a2170234b7a
+    uses: Verjson/.github/.github/workflows/node-ci-protected.yml@3f8fb4bae1bdf0ced0b821e1b4277523f72a93b9
     secrets:
       NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     with:
@@ -71,7 +71,7 @@ jobs:
         @verjson/eslint-config
         @verjson/tsconfig
       secretless-ci-script-plan: >-
-        ["build","lint","test","test:contract","test:npm-config","test:package-surface","test:public-docs","test:release-v1"]
+        ["build","lint","test","test:contract","test:npm-config","test:package-surface","test:public-docs","test:release"]
       event-name: ${{ needs.admission.outputs.event-name }}
       head-repository: ${{ needs.admission.outputs.head-repository }}
       head-sha: ${{ needs.admission.outputs.head-sha }}
@@ -83,7 +83,7 @@ jobs:
       packages: read
       pull-requests: read
       statuses: read
-    uses: Verjson/.github/.github/workflows/node-ci-protected.yml@e4d911fd4197e0a4a0d500cd43c49a2170234b7a
+    uses: Verjson/.github/.github/workflows/node-ci-protected.yml@3f8fb4bae1bdf0ced0b821e1b4277523f72a93b9
     secrets:
       NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     with:

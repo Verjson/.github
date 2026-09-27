@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 LEGACY = ROOT / ".github/workflows/node-ci.yml"
 PROTECTED = ROOT / ".github/workflows/node-ci-protected.yml"
 HEAD = "a" * 40
-LEGACY_SHA256 = "8441d0ef3d476fa853b9687de3e18f1dd626b37570b71bd17b413c7255cf9729"
+LEGACY_SHA256 = "bbd2aa1a19d3c85fe690ad255187eb3be17ecf760e12507ed7a834f0a98bcc30"
 
 
 class RequiredWorkflowIdentityTest(unittest.TestCase):
@@ -179,7 +179,8 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
         compatibility_condition = (
             "needs.eligibility.outputs.should-run != 'false' && "
             "(inputs.secretless-pr || inputs.secretless-trusted-ref) && "
-            "inputs.secretless-compatibility-ranges != ''"
+            "(inputs.protected-type-surface-declaration-path != '' || "
+            "inputs.secretless-compatibility-ranges != '')"
         )
         self.assertEqual(compatibility_condition, build[verifier_indexes[3]]["if"])
         self.assertEqual(guarded_routes[0], build[verifier_indexes[0] + 1]["name"])
@@ -263,6 +264,10 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
         workspace_symlink=False,
         swap_tool_prefix=False,
         root_owned_tools=True,
+        tool_root_uid=None,
+        tool_tree_mode=None,
+        tool_tree_gid=None,
+        foreign_entry=None,
         pwsh_fixture=None,
         mutate_tool_in_place=False,
     ):
@@ -301,11 +306,52 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
             tool_package.chmod(0o644)
             for directory_name, _, _ in os.walk(tool_bin.parent):
                 Path(directory_name).chmod(0o755)
+            if tool_tree_mode is not None:
+                # GitHub-hosted images ship every descendant of the tool cache at one
+                # mode (0777 measured on ubuntu-latest for #1599), so apply it to every
+                # directory and regular file in the tree, root included.
+                for directory_name, _, file_names in os.walk(tool_bin.parent):
+                    Path(directory_name).chmod(tool_tree_mode)
+                    for file_name in file_names:
+                        entry = Path(directory_name) / file_name
+                        if not entry.is_symlink():
+                            entry.chmod(tool_tree_mode)
             tool_bin.parent.chmod(tool_root_mode)
             tool_bin.chmod(tool_bin_mode)
             if root_owned_tools:
                 subprocess.run(
                     ["sudo", "-n", "chown", "-R", "0:0", str(tool_bin.parent)], check=True
+                )
+            elif tool_root_uid is not None:
+                # The hosted root itself is gid 0 while its descendants carry the image
+                # builder's gid; tool_tree_gid models that split when given.
+                subprocess.run(
+                    [
+                        "sudo",
+                        "-n",
+                        "chown",
+                        "-R",
+                        f"{tool_root_uid}:{0 if tool_tree_gid is None else tool_tree_gid}",
+                        str(tool_bin.parent),
+                    ],
+                    check=True,
+                )
+                subprocess.run(
+                    ["sudo", "-n", "chown", f"{tool_root_uid}:0", str(tool_bin.parent)],
+                    check=True,
+                )
+            if foreign_entry is not None:
+                foreign_relative_path, foreign_uid = foreign_entry
+                subprocess.run(
+                    [
+                        "sudo",
+                        "-n",
+                        "chown",
+                        "-h",
+                        f"{foreign_uid}:0",
+                        str(tool_bin.parent / foreign_relative_path),
+                    ],
+                    check=True,
                 )
             fixture_roots = []
             if pwsh_fixture is not None:
@@ -423,7 +469,7 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
                 mutation_thread.join(timeout=5)
                 self.assertFalse(mutation_thread.is_alive())
             remaining = [path.name for path in runner_temp.glob("verjson-candidate-caches-*")]
-            if root_owned_tools:
+            if root_owned_tools or tool_root_uid is not None or foreign_entry is not None:
                 for owned_tool_root in [*root.glob("tool*"), *fixture_roots]:
                     if not owned_tool_root.exists():
                         continue
@@ -507,6 +553,108 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
         )
         self.assertNotEqual(0, equal_result.returncode)
         self.assertNotEqual(0, writable_result.returncode)
+
+    def test_hosted_tool_cache_root_allows_only_the_runner_convention(self):
+        cache_setup = lambda baseline: (baseline / "blob").write_text(
+            "verified", encoding="utf-8"
+        )
+        hosted_run = self.candidate_plan_step()["run"].replace(
+            'Path("/opt/hostedtoolcache")',
+            'Path(os.environ["RUNNER_TOOL_CACHE"])',
+        )
+        result, remaining = self.run_candidate_plan(
+            cache_setup,
+            "exit 0\n",
+            run=hosted_run,
+            tool_root_mode=0o777,
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual([], remaining)
+
+        runner_owned_result, remaining = self.run_candidate_plan(
+            cache_setup,
+            "exit 0\n",
+            run=hosted_run,
+            tool_root_mode=0o777,
+            root_owned_tools=False,
+            tool_root_uid=1001,
+        )
+        self.assertEqual(0, runner_owned_result.returncode, runner_owned_result.stderr)
+        self.assertEqual([], remaining)
+
+        unapproved_owner_result, remaining = self.run_candidate_plan(
+            cache_setup,
+            "exit 0\n",
+            run=hosted_run,
+            tool_root_mode=0o777,
+            root_owned_tools=False,
+            tool_root_uid=1002,
+        )
+        self.assertNotEqual(0, unapproved_owner_result.returncode)
+        self.assertEqual([], remaining)
+
+    def test_hosted_tool_cache_descendants_share_the_runner_convention(self):
+        # Measured on ubuntu-latest (Verjson/.github#1599): the root is uid 1001 gid 0
+        # mode 0777 and every descendant -- directories, files, symlinks -- is uid 1001
+        # gid 1000 mode 0777. setup-node resolves into that tree, so the admitted
+        # convention has to cover the whole tree or every hosted run fails closed.
+        cache_setup = lambda baseline: (baseline / "blob").write_text(
+            "verified", encoding="utf-8"
+        )
+        hosted_run = self.candidate_plan_step()["run"].replace(
+            'Path("/opt/hostedtoolcache")',
+            'Path(os.environ["RUNNER_TOOL_CACHE"])',
+        )
+        hosted_shape = dict(
+            run=hosted_run,
+            tool_root_mode=0o777,
+            tool_bin_mode=0o777,
+            tool_tree_mode=0o777,
+            root_owned_tools=False,
+            tool_root_uid=1001,
+            tool_tree_gid=1000,
+        )
+
+        result, remaining = self.run_candidate_plan(cache_setup, "exit 0\n", **hosted_shape)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual([], remaining)
+
+        # A foreign owner anywhere inside the admitted tree is still rejected at each
+        # relaxed site -- PATH ancestry, the selected executable, and the mounted tree
+        # walk: the owner allowlist, not the mode, is what the hosted convention trusts.
+        for foreign_relative_path, expected_rejection in (
+            ("bin", "setup-node lexical PATH ancestry has unsafe ownership mode"),
+            ("bin/npm", "trusted npm resolved path ancestry has unsafe ownership mode"),
+            ("lib/node_modules/npm/package.json", "trusted tool tree entry has unapproved ownership"),
+        ):
+            with self.subTest(foreign_entry=foreign_relative_path):
+                foreign_result, remaining = self.run_candidate_plan(
+                    cache_setup,
+                    "exit 0\n",
+                    **hosted_shape,
+                    foreign_entry=(foreign_relative_path, 1002),
+                )
+                self.assertNotEqual(0, foreign_result.returncode)
+                self.assertIn(expected_rejection, foreign_result.stderr)
+                self.assertEqual([], remaining)
+
+        # The descendant exemption is unlocked only by a root that matches the hosted
+        # convention exactly; a root-owned 0755 root with world-writable descendants
+        # is tampering, even at the hosted path.
+        strict_root_result, remaining = self.run_candidate_plan(
+            cache_setup,
+            "exit 0\n",
+            run=hosted_run,
+            tool_root_mode=0o755,
+            tool_bin_mode=0o777,
+            tool_tree_mode=0o777,
+        )
+        self.assertNotEqual(0, strict_root_result.returncode)
+        self.assertIn(
+            "setup-node lexical PATH ancestry has unsafe ownership mode", strict_root_result.stderr
+        )
+        self.assertEqual([], remaining)
 
     def test_nested_writable_tool_directory_rejects_replacement_executable(self):
         result, remaining = self.run_candidate_plan(

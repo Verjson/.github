@@ -58,8 +58,12 @@ if [ "$arm_run_path" = .github/workflows/gate-rearm.yml ] && [ "$(jq -r '.workfl
   arm_base_branch="$(<"$tmp/arm-base")"
   [[ "$arm_base_branch" =~ ^[A-Za-z0-9._/-]+$ ]] &&
     [[ "$arm_base_branch" != /* && "$arm_base_branch" != *..* && "$arm_base_branch" != *//* ]] || exit 1
+  # Spend the base ref as one percent-encoded path segment (#1470): the charset guard
+  # above rejects traversal, and the encoding keeps a `release/1.x` ref addressed as
+  # `release%2F1.x`, the form every other rules/branches/ reader in this repository uses.
+  arm_base_branch_path="$(jq -rn --arg value "$arm_base_branch" '$value|@uri')"
   workflow_api arm-rules "$tmp/arm-rules-pages.json" --paginate \
-    "repos/$TARGET_REPO/rules/branches/$arm_base_branch" || exit 1
+    "repos/$TARGET_REPO/rules/branches/$arm_base_branch_path" || exit 1
   jq -se '
     all(.[]; type == "array") and
     ([.[][]

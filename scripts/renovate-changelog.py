@@ -513,7 +513,11 @@ def apply(read_client: Any, write_client: Any, raw_plan: Any) -> str:
     if fragment_path != expected_path or fragment_content != expected_content:
         raise AutomationError("planned fragment does not match the admitted Renovate updates")
 
-    encoded_ref = urllib.parse.quote(f"heads/{live['head_ref']}", safe="/")
+    # `heads/<branch>` is a fixed prefix plus ONE branch path segment: encode the
+    # branch with no safe separators so a nested `renovate/x` travels as
+    # `renovate%2Fx`, matching release-propose.py's spelling of the same endpoint
+    # (#1458, ADR 0192's path rule).
+    encoded_ref = f"heads/{urllib.parse.quote(live['head_ref'], safe='')}"
     ref_path = f"repos/{repository}/git/ref/{encoded_ref}"
     current_ref = require_mapping(write_client.request("GET", ref_path), "head ref")
     ref_object = require_mapping(current_ref.get("object"), "head ref object")

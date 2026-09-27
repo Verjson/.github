@@ -1075,7 +1075,7 @@ jobs:
 
           for index, range_value in enumerate(request["ranges"]):
               versions = npm_json(
-                  ["view", "--json", f"{package}@{range_value}", "version"],
+                  ["view", package, "versions", "--json"],
                   range_value,
                   "range resolution",
               )
@@ -1084,7 +1084,14 @@ jobs:
               if (not isinstance(versions, list) or not versions
                       or any(not isinstance(version, str) for version in versions)):
                   raise SystemExit(f"compatibility range has no readable version: {range_value}")
-              version = versions[-1]
+              candidates = [
+                  version
+                  for version in versions
+                  if version_pattern.fullmatch(version) and satisfies_bounded_range(version, range_value)
+              ]
+              if not candidates:
+                  raise SystemExit(f"compatibility range returned no released version: {range_value}")
+              version = max(candidates, key=parse_core)
               if version_pattern.fullmatch(version) is None:
                   raise SystemExit("registry resolved an invalid package version")
               if not satisfies_bounded_range(version, range_value):

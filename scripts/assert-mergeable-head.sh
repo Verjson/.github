@@ -29,19 +29,18 @@
 # fault: a `::error::` naming the gate, and a distinct exit code — never a bare
 # "false", and never a zero exit on an unanswered question.
 #
-# PERMISSIONS. Gate A reads `repos/{owner}/{repo}/rules/branches/{base}`, and it
-# is the ONLY source of the required set. A caller whose token cannot read that
-# endpoint therefore cannot evaluate Gate A at all, and this script refuses
-# rather than falling back to the head's own reported checks. The read needs
-# ordinary repository read access and nothing more -- `administration` is NOT
-# required, and an organization-level ruleset is returned through this repository
+# PERMISSIONS. The script reads pull-request metadata, check runs, commit statuses,
+# and `repos/{owner}/{repo}/rules/branches/{base}`; the last is Gate A's ONLY source
+# of the required set. A caller missing any read cannot evaluate the assertion, and
+# this script refuses rather than falling back to partial data. `administration` is
+# NOT required, and an organization-level ruleset is returned through this repository
 # endpoint without organization read, verified against
 # `repos/Verjson/.github/rules/branches/main`, which returns its org-sourced
 # `required_status_checks` rule to a wholly unauthenticated caller.
 #
-# The exact grant per token type is stated ONCE, in `permission_help()` below, and
-# quoted into the refusal message; it is deliberately not repeated here, because a
-# second copy is a copy that drifts. An authorization refusal (401/403, or the 404
+# The complete grant per token type is stated in `permission_help()` below and quoted
+# into access-related failures. Each endpoint also names its specific fine-grained and
+# Actions grant so an early refusal is actionable. An authorization refusal (401/403, or the 404
 # GitHub substitutes when it masks an unauthorized read of a private repository)
 # exits 1 with a message naming the token as the cause and quoting that help; it is
 # never a silent pass and never an undifferentiated API error.
@@ -97,20 +96,25 @@ readonly PASSING='["SUCCESS","NEUTRAL","SKIPPED"]'
 
 fault() { echo "::error::$2" >&2; exit "$1"; }
 
-# The single statement of what Gate A's ruleset read needs. It is quoted into the refusal
-# message rather than restated there, and the PERMISSIONS header above points here rather
-# than repeating it, so the operator-facing text and the documentation cannot drift apart.
+# The complete caller permission set. Access-related failures append this list after naming
+# the endpoint-specific grant, and the PERMISSIONS header points here to avoid a second list
+# that could drift.
 # Printed as one line, because `fault` emits one `::error::` annotation.
 permission_help() {
   printf '%s' \
-    "fine-grained token: Repository permissions > Metadata (read); " \
+    "fine-grained token: Repository permissions > Metadata (read), Pull requests (read), Checks (read), Commit statuses (read); " \
     "classic OAuth token: 'repo' for a private repository, no scope at all for a public one; " \
-    "inside Actions: permissions.contents: read. " \
+    "inside Actions: permissions.contents: read, permissions.pull-requests: read, permissions.checks: read, permissions.statuses: read. " \
     "The 'administration' scope is NOT required, and an organization-level ruleset is " \
     "returned through this repository endpoint without organization read. " \
     "Note that GitHub masks an unauthorized read of a private repository as 404, so do " \
     "not conclude from a 404 that the repository or base ref is missing until the token " \
     "has been checked."
+}
+
+permission_fault() {
+  local message="$1" fine_grained="$2" actions="$3"
+  fault 1 "$message; if authorization failed, this endpoint needs fine-grained $fine_grained (read) or Actions permissions.$actions: read. Full caller requirements: $(permission_help)"
 }
 
 # Both inventory endpoints state how many entries exist. Reconciling that claim
@@ -135,7 +139,7 @@ reconcile_pages() {
 }
 
 pr_json="$(gh pr view "$pr" --repo "$repo" --json headRefOid,baseRefName </dev/null)" \
-  || fault 1 "failed to fetch pull request metadata for $repo#$pr"
+  || permission_fault "failed to fetch pull request metadata for $repo#$pr" "Pull requests" "pull-requests"
 
 head_sha="$(jq -r '.headRefOid // ""' <<<"$pr_json")"
 [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]] \
@@ -143,11 +147,6 @@ head_sha="$(jq -r '.headRefOid // ""' <<<"$pr_json")"
 base_ref="$(jq -r '.baseRefName // ""' <<<"$pr_json")"
 [ -n "$base_ref" ] \
   || fault 1 "could not resolve a base ref for $repo#$pr"
-# A ref name is a path segment sequence; percent-encode anything else so a
-# `release/1.x` base ref addresses the ruleset endpoint rather than a 404.
-base_ref_path="$(jq -rn --arg r "$base_ref" '$r | @uri' | sed 's|%2F|/|g')" \
-  || fault 1 "could not encode the base ref for $repo#$pr"
-
 # The head's checks are read from REST rather than from `gh pr view`'s
 # `statusCheckRollup`, because the rollup projection carries no app identity and
 # Gate A has to know WHO produced a required check, not merely that something
@@ -156,7 +155,7 @@ base_ref_path="$(jq -rn --arg r "$base_ref" '$r | @uri' | sed 's|%2F|/|g')" \
 # pagination would otherwise shrink the inventory silently, and a gate that
 # reasons over a short inventory is the failure this script exists to prevent.
 check_runs_raw="$(gh api --paginate "repos/$repo/commits/$head_sha/check-runs?per_page=100" </dev/null)" \
-  || fault 1 "failed to fetch check runs for $repo@$head_sha"
+  || permission_fault "failed to fetch check runs for $repo@$head_sha" "Checks" "checks"
 reconcile_pages "$check_runs_raw" check_runs \
   || fault 1 "the check-run inventory for $repo@$head_sha is incomplete or unattested; it cannot be reasoned over"
 check_runs="$(jq -s '[ .[].check_runs[]? | {
@@ -173,7 +172,7 @@ check_runs="$(jq -s '[ .[].check_runs[]? | {
 # statuses per page by default, and a `failure` stranded on page 2 would be
 # invisible to Gate C, which is the gate that exists to see it.
 statuses_raw="$(gh api --paginate "repos/$repo/commits/$head_sha/status?per_page=100" </dev/null)" \
-  || fault 1 "failed to fetch commit statuses for $repo@$head_sha"
+  || permission_fault "failed to fetch commit statuses for $repo@$head_sha" "Commit statuses" "statuses"
 reconcile_pages "$statuses_raw" statuses \
   || fault 1 "the commit-status inventory for $repo@$head_sha is incomplete or unattested; it cannot be reasoned over"
 statuses="$(jq -s '[ .[] | .statuses[]? | {
@@ -212,6 +211,16 @@ trap 'rm -f "$rules_err"' EXIT
 # empty body all into `[]` -- indistinguishable below from a genuine empty rule list, and
 # reported with that arm's remedies. Those are exactly the bodies a proxy or a cached
 # error page produces. Preserving the shape is what lets the discriminator name it.
+# The base ref is spent as ONE path segment of `rules/branches/<ref>`, so it is
+# percent-encoded in full: a `release/1.x` base ref travels as `release%2F1.x`.
+# Measured live on 2026-09-26 (#1470): `rules/branches/` resolves the same ruleset
+# for `release%2F2026.09` and `release/2026.09`, so the path form is the strictly
+# safer spelling, and it is the one every other `rules/branches/` reader here uses.
+# Keep this assignment bare (no `|| fault` guard, no continuation): the URI-encoding
+# scan recognizes the encoder only in this exact single-line shape, and a jq failure
+# here still fails closed below (an empty segment cannot read a ruleset).
+base_ref_path="$(jq -rn --arg r "$base_ref" '$r | @uri')"
+readonly base_ref_path
 rules_json="$(gh api --paginate "repos/$repo/rules/branches/$base_ref_path" </dev/null 2>"$rules_err" | jq -s 'add')"
 rules_rc=$?
 # Replay unconditionally, not only on failure. Capturing stderr to inspect the status
@@ -225,7 +234,7 @@ if [ "$rules_rc" -ne 0 ]; then
   rules_status="$(sed -n 's/.*(HTTP \([0-9]\{3\}\)).*/\1/p' "$rules_err" | tail -1)"
   case "$rules_status" in
     401 | 403 | 404)
-      fault 1 "Gate A cannot read the ruleset at repos/$repo/rules/branches/$base_ref (HTTP $rules_status): the token presented cannot read it. Gate A's required set comes only from this endpoint and is never inferred from the head, so this refusal is fatal rather than degraded. Grant the caller read access to $repo -- $(permission_help)" ;;
+      fault 1 "Gate A cannot read the ruleset at repos/$repo/rules/branches/$base_ref_path (HTTP $rules_status): the token presented cannot read it. Gate A's required set comes only from this endpoint and is never inferred from the head, so this refusal is fatal rather than degraded. Grant the caller read access to $repo -- $(permission_help)" ;;
   esac
   fault 1 "failed to read branch rules for $repo@$base_ref; cannot establish the required-check set"
 fi
@@ -337,7 +346,7 @@ while IFS= read -r id; do
     | jq -s -r --arg pat "$DEFERRED_ANNOTATION_PATTERN" '
         [.[][]? | select(.title != null and (.title | test($pat))) | .title] | join(", ")
       ')" \
-    || fault 1 "failed to fetch annotations for check-run $id on $repo"
+    || permission_fault "failed to fetch annotations for check-run $id on $repo" "Checks" "checks"
   [ -n "$titles" ] && deferred_annotations="${deferred_annotations:+$deferred_annotations; }check-run $id: $titles"
 done <<<"$check_run_ids"
 

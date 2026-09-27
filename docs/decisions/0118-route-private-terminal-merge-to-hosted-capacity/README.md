@@ -62,3 +62,43 @@ ineligible.
   is no automatic fallback to persistent capacity.
 - The live organization-variable mutation and representative canaries are separate
   rollout actions requiring live receipts after this code change lands.
+
+## Correction (2026-09-26) — validate_privileged_lane's own check was not failing closed on an empty or whitespace-only input (#1612)
+
+The Security analysis above claims a missing input "cannot make the terminal job
+eligible." The credentialless `validate_privileged_lane` step's own check did not
+independently hold that guarantee: it fed `PRIVILEGED_LANE` to `jq -e` through a bash
+here-string (`<<<"${PRIVILEGED_LANE:-}"`), which always appends a trailing newline —
+so an unset, empty, or whitespace-only input reached `jq` as a stream with no JSON
+values, never a genuine parse error. `jq`/`jq -e` treats a zero-value stream as "the
+filter never ran" and exits `0` regardless of `-e` (jq 1.6, reproduced locally),
+unlike a real parse error or a `null`/`false` result. The step therefore printed
+"privileged_lane validated: exact match" and returned success for exactly the input
+shape this step exists to catch first — a caller that never supplied a lane at all.
+
+**This did not enable a live privilege escalation.** The Decision above already
+requires a second, independent check: `privileged_merge`'s own scheduling-time `if:`
+separately compares `inputs.privileged_lane` to the literal string
+`'["ubuntu-24.04"]'` at the GitHub Actions expression level, with no dependency on
+`jq` or this step's diagnostic. For an empty or whitespace-only `privileged_lane`,
+that literal-equality conjunct is false, so `privileged_merge` never became
+schedulable regardless of `validate_privileged_lane`'s buggy success — the two-gate
+design this ADR specifies contained the practical impact. The credentialless
+admission step is still expected to fail closed on its own, independent of that
+second gate, which is why this is a correction and not a "no action needed."
+
+Fixed by requiring both `jq -e`'s exit status AND its stdout to be the literal string
+`"true"` before treating the input as validated, rather than trusting either signal
+alone: `-e`'s exit status is unreliable for a zero-value stream (the bug above), and
+stdout alone is unreliable for the mirror case — a valid value followed by trailing
+garbage (e.g. a second concatenated JSON value), where `jq` emits `"true"` for the
+first value before failing on the unparsed remainder, so a bare stdout comparison
+with stderr discarded would accept a string that is not actually an exact match.
+Checking both closes both gaps. The Decision and the other malformed-input
+guarantees in Security analysis above are unchanged; this restores the invariant
+they already state rather than superseding it.
+`scripts/ci-gate/privileged-lane-validation.test.sh` covers the missing-input and
+whitespace-only cases alongside the malformed/widened/legacy/shadowed cases already
+there.
+
+References: [#1612](https://github.com/Verjson/.github/issues/1612).

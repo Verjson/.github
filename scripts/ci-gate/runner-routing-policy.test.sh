@@ -66,7 +66,7 @@ literal_hosted_job_sites() {
 }
 
 literal_hosted_sites="$(literal_hosted_job_sites "${workflow_files[@]}")"
-expected_literal_hosted_sites=$'actions-ci.yml:hosted-compatibility-tests:    runs-on: ubuntu-24.04\ncontainer-deployment.yml:verify-default-branch:    runs-on: ubuntu-24.04\nai-privileged-merge.yml:invalid_verjson_route:    runs-on: ubuntu-24.04\nai-privileged-merge.yml:validate_privileged_lane:    runs-on: ubuntu-24.04\napp-key-environment.yml:validate:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:acquire-private-node-dependencies:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:attest-sbom:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:candidate-manifest:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:prepare:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:publish-base:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:publish-derived:    runs-on: ubuntu-24.04\ncontainer-release.yml:promote:    runs-on: ubuntu-24.04\nprivileged-merge-conformance.yml:audit:    runs-on: ubuntu-24.04'
+expected_literal_hosted_sites=$'actions-ci.yml:hosted-compatibility-tests:    runs-on: ubuntu-24.04\ncontainer-deployment.yml:verify-default-branch:    runs-on: ubuntu-24.04\nai-privileged-merge.yml:cleanup_arm_receipt:    runs-on: ubuntu-24.04\nai-privileged-merge.yml:invalid_verjson_route:    runs-on: ubuntu-24.04\nai-privileged-merge.yml:validate_privileged_lane:    runs-on: ubuntu-24.04\napp-key-environment.yml:validate:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:acquire-private-node-dependencies:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:attest-sbom:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:candidate-manifest:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:prepare:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:publish-base:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:publish-derived:    runs-on: ubuntu-24.04\ncontainer-release.yml:promote:    runs-on: ubuntu-24.04\nprivileged-merge-conformance.yml:audit:    runs-on: ubuntu-24.04'
 expected_literal_hosted_sites="$(printf '%s\n' \
   "$expected_literal_hosted_sites" \
   $'changelog-contract-fleet-report.yml:report:    runs-on: ubuntu-24.04' \
@@ -174,6 +174,10 @@ literal_hosted="$(
 #  * `privileged-merge-conformance.yml` — holds the privileged audit token, so
 #    its exact fixed hosted selector prevents mutable variables or a persistent
 #    worker from choosing the token's execution environment (ADR 0089).
+#  * `ai-privileged-merge.yml`'s one-minute `cleanup_arm_receipt` job — carries
+#    no secret or environment, receives only a validated artifact ID after the
+#    exact merged head is confirmed, and uses fixed hosted capacity to keep the
+#    deletion cleanup independent of persistent fleet state (ADR 0207).
 #  * `ai-privileged-merge.yml`'s invalid-route guard — deliberately carries no
 #    credential and uses fixed hosted capacity so unavailable visibility or an
 #    unregistered route produces an observable failure without trusting a
@@ -596,6 +600,7 @@ mutate_job_expression() {
 
 fixed_hosted_provenance_targets() {
   cat <<'TARGETS'
+ai-privileged-merge.yml cleanup_arm_receipt
 container-candidate-publish.yml prepare
 container-candidate-publish.yml acquire-private-node-dependencies
 container-candidate-publish.yml publish-base
@@ -689,9 +694,18 @@ fi
 # shellcheck disable=SC2043 # Keep this loop aligned with the privileged workflow set.
 for privileged_workflow in ai-privileged-merge.yml; do
   privileged_path="$workflows/$privileged_workflow"
-  ! grep -qE 'needs\..*outputs|resolve_privileged_route' "$privileged_path" \
+  privileged_runs_on="$(extract_runs_on "$privileged_path" privileged_merge)"
+  ! grep -qE 'needs\..*outputs|resolve_privileged_route' <<<"$privileged_runs_on" \
     && pass "$privileged_workflow terminal route trusts no runner-produced selector" \
     || fail "$privileged_workflow terminal route trusts runner-produced placement data"
+
+  mutate_job_expression "$privileged_path" privileged_merge \
+    "$privileged_runs_on" '${{ fromJSON(needs.route.outputs.selector) }}' \
+    "$mutated_workflow"
+  mutated_privileged_runs_on="$(extract_runs_on "$mutated_workflow" privileged_merge)"
+  grep -qE 'needs\..*outputs|resolve_privileged_route' <<<"$mutated_privileged_runs_on" \
+    && pass "$privileged_workflow rejects runner-produced secret-bearing selector" \
+    || fail "$privileged_workflow runner-produced selector mutation escaped"
 
   assert_route "$privileged_path" privileged_merge Verjson/.github '' false \
     '[]' '[]' \

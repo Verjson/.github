@@ -77,3 +77,54 @@ before either production-environment job starts. The controller validates all th
 review gates and reconstructs a submitted plan from reviewed configuration and
 admission evidence before persisting its receipt; a caller-supplied plan digest
 alone is not admission authority.
+
+## 2026-09-26 amendment: the generated caller inherits the secret context
+
+**Status:** Accepted. Amends the Decision above; #1451.
+
+The first genuinely CI-driven dry-run of `container-deployment.yml`
+([verjson-git-runners run 36279086275](https://github.com/Verjson/verjson-git-runners/actions/runs/36279086275),
+2026-09-26) reached the controller with all four `RUNNER_HOST_EVIDENCE_*` variables
+empty and failed closed with `read-only host observation authority not provisioned`,
+although every one of those secrets has existed in the caller repository's protected
+`production` environment since 2026-09-24. The environment's protection rule fired
+and was approved, so the job was bound to `production`; its secrets still did not
+resolve. That is the mechanism [ADR 0171](../0171-inherited-reusable-environment-context/README.md)
+recorded on 2026-09-15 for the App-key jobs, citing
+[actions/runner#4453](https://github.com/actions/runner/issues/4453): an environment
+binding inside a reusable workflow never resolves the caller repository's
+environment secrets unless the caller inherits its secret context.
+
+The Decision above said "do not ... pass them through a caller workflow", and the
+generator's contract test enforced it by forbidding any `secrets:` line in the caller.
+Read literally, that made the accepted design unrunnable. The intent — the caller
+never names, maps, stores, or forwards an individual credential — stands. What
+changes:
+
+- `scripts/gen-container-deployment.sh` emits exactly `secrets: inherit` on each
+  reusable edge it generates (the deployment caller's `deploy` job and the review
+  callers' `produce` job), per ADR 0171's rule that every reusable edge leading to an
+  App-key-consuming job inherits. No secret is named in a caller.
+- The generated contract test now rejects any `secrets.` reference, any
+  `RUNNER_HOST_EVIDENCE_` name, any `environment:` binding, any non-`inherit`
+  `secrets:` value, and a caller that lacks the inheritance; the meta-test
+  exercises each rejection.
+- Storage is unchanged: the four host-evidence secrets live only in `production`,
+  are mapped only onto controller collection and execution steps inside the
+  reusable workflow, and never enter a request or child environment.
+
+Inheritance widens what the called workflow *could* read to the caller's
+repository and organization secrets plus whatever the environment each job binds
+exposes. For the `production`-bound jobs that is, as read from the environment on
+2026-09-26, the fleet-write DigitalOcean token, the runner-registration App key,
+and the four host-evidence secrets; the review App keys live in their own
+`runner-deploy-*-review-publisher` environments and are reached only by the
+review callers' `produce` job. ADR 0171 accepted that trade-off for the same
+reason it applies here: the called workflow is pinned to one reviewed immutable
+contract SHA, references secrets only by fixed name on fixed steps, and never
+serializes the secrets context or exposes it to PR-controlled code. The narrower
+alternative — a named `secrets:` map on the caller — would put every credential
+name into the consumer file and still resolve the same values; it adds review
+surface without reducing access. Splitting `production` into per-purpose
+environments would reduce the inherited set and remains open under
+verjson-git-runners#197's Pulumi-managed environment policy.

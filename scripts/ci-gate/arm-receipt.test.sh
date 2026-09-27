@@ -43,14 +43,16 @@ case "$*" in
     esac ;;
   *"actions/runs/$ARM_RUN_ID/artifacts"*) cat "$ARTIFACTS_FILE" ;;
   *"actions/runs/$ARM_RUN_ID"*) cat "$RUN_FILE" ;;
-  *"rules/branches/"*) cat "$RULES_FILE" ;;
+  *"rules/branches/"*)
+    [ -z "${RULES_REQUEST_LOG:-}" ] || printf '%s\n' "$*" >>"$RULES_REQUEST_LOG"
+    cat "$RULES_FILE" ;;
   *"actions/artifacts/"*"/zip"*) cat "$ZIP_FILE" ;;
   *"--method DELETE"*"actions/artifacts/"*)
     [ "${DELETE_FAILURE:-false}" = false ] || exit 1
     printf '{}' ;;
   *"check-runs/$AUTHORIZATION_CHECK_ID"*) cat "$CHECK_FILE" ;;
   *"collaborators/maintainer/permission"*) printf '%s\n' "${CURRENT_PERMISSION:-maintain}" ;;
-  *"pulls/$PR_NUMBER"*".base.ref"*) printf '%s\n' main ;;
+  *"pulls/$PR_NUMBER"*".base.ref"*) printf '%s\n' "${BASE_REF:-main}" ;;
   *"repos/$TARGET_REPO --jq .default_branch // \"\""*) printf '%s\n' main ;;
   *"pulls/$PR_NUMBER"*"--jq"*)
     [ "${CURRENT_STATE:-open}" = open ] && printf '%s\n' "${CURRENT_HEAD:-$EXPECTED_HEAD_SHA}" ;;
@@ -252,6 +254,25 @@ else
   fi
   chmod 755 "$readonly_dir"
 fi
+
+# The base ref is spent as ONE percent-encoded path segment of rules/branches/ (#1470):
+# a nested ref must travel as release%2F1.x, never with a literal slash.
+write_ruleset_run
+export RULES_REQUEST_LOG="$tmp/rules-requests"; : >"$RULES_REQUEST_LOG"
+if BASE_REF="release/1.x" LOCAL_WORKFLOW_MISSING=true verify >"$tmp/out" 2>&1 \
+    && grep -qE -- "rules/branches/release%2F1\.x( |$)" "$RULES_REQUEST_LOG" \
+    && ! grep -qF -- "rules/branches/release/1.x" "$RULES_REQUEST_LOG"; then
+  pass "a slash-bearing base ref is requested as rules/branches/release%2F1.x (#1470)"
+else
+  fail "a slash-bearing base ref was not requested as rules/branches/release%2F1.x: $(cat "$RULES_REQUEST_LOG"; tail -1 "$tmp/out")"
+fi
+: >"$RULES_REQUEST_LOG"
+if LOCAL_WORKFLOW_MISSING=true verify >"$tmp/out" 2>&1 && grep -qE -- "rules/branches/main( |$)" "$RULES_REQUEST_LOG"; then
+  pass "a plain base ref is requested as rules/branches/main"
+else
+  fail "a plain base ref was not requested as rules/branches/main: $(cat "$RULES_REQUEST_LOG"; tail -1 "$tmp/out")"
+fi
+unset RULES_REQUEST_LOG
 
 [ "$fails" -eq 0 ] && { echo "All tests passed."; exit 0; }
 echo "$fails test(s) failed."

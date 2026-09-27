@@ -21,5 +21,61 @@
       "workflow_path": ".github/workflows/cli-projects-package-surface-required.yml",
       "workflow_ref": "refs/heads/main"
     }
+  ],
+  "bypass_actor_contracts": [
+    {
+      "ruleset_id": 20722935,
+      "name": "ai-authorization-arm-required",
+      "bypass_actors": [
+        {"actor_type": "OrganizationAdmin", "actor_id": null, "bypass_mode": "always"},
+        {"actor_type": "Integration", "actor_id": 2740, "bypass_mode": "always"},
+        {"actor_type": "Integration", "actor_id": 4583107, "bypass_mode": "always"},
+        {"actor_type": "Integration", "actor_id": 4693283, "bypass_mode": "always"}
+      ]
+    },
+    {
+      "ruleset_id": 21750617,
+      "name": "authn-type-surface-required-workflow",
+      "bypass_actors": [
+        {"actor_type": "Integration", "actor_id": 4583107, "bypass_mode": "always"}
+      ]
+    },
+    {
+      "ruleset_id": 20513599,
+      "name": "changelog-contract-required",
+      "bypass_actors": [
+        {"actor_type": "OrganizationAdmin", "actor_id": null, "bypass_mode": "always"},
+        {"actor_type": "Integration", "actor_id": 4583107, "bypass_mode": "always"},
+        {"actor_type": "Integration", "actor_id": 4693283, "bypass_mode": "always"}
+      ]
+    },
+    {
+      "ruleset_id": 20515822,
+      "name": "core-checks-actions",
+      "bypass_actors": [
+        {"actor_type": "OrganizationAdmin", "actor_id": null, "bypass_mode": "always"},
+        {"actor_type": "Integration", "actor_id": 4583107, "bypass_mode": "always"},
+        {"actor_type": "Integration", "actor_id": 4693283, "bypass_mode": "always"}
+      ]
+    },
+    {
+      "ruleset_id": 20515817,
+      "name": "core-checks-node",
+      "bypass_actors": [
+        {"actor_type": "OrganizationAdmin", "actor_id": null, "bypass_mode": "always"},
+        {"actor_type": "Integration", "actor_id": 4583107, "bypass_mode": "always"},
+        {"actor_type": "Integration", "actor_id": 4693283, "bypass_mode": "always"}
+      ]
+    },
+    {
+      "ruleset_id": 18098028,
+      "name": "main-protection",
+      "bypass_actors": [
+        {"actor_type": "OrganizationAdmin", "actor_id": null, "bypass_mode": "always"},
+        {"actor_type": "Integration", "actor_id": 2740, "bypass_mode": "always"},
+        {"actor_type": "Integration", "actor_id": 4583107, "bypass_mode": "always"},
+        {"actor_type": "Integration", "actor_id": 4693283, "bypass_mode": "always"}
+      ]
+    }
   ]
 }

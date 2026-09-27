@@ -95,9 +95,10 @@ on:
     types: [completed]
 
 permissions:
-  actions: read
+  actions: write
   checks: read
   contents: read
+  issues: read
   pull-requests: read
 
 jobs:
@@ -179,9 +180,10 @@ on:
         type: string
 
 permissions:
-  actions: read
+  actions: write
   checks: read
   contents: read
+  issues: read
   pull-requests: read
 
 # Deliberately distinct from the canonical workflow's concurrency group.

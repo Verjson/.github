@@ -64,7 +64,7 @@ def read_contract(path: Path = CONTRACT) -> dict:
     except (OSError, json.JSONDecodeError) as error:
         raise AuditError(f"cannot read rollout contract: {error}") from None
     require(isinstance(contract, dict), "rollout contract must be an object")
-    require(contract.get("schema_version") == 3, "unsupported rollout contract schema")
+    require(contract.get("schema_version") == 4, "unsupported rollout contract schema")
     organization = contract.get("organization")
     require(
         isinstance(organization, str)
@@ -90,9 +90,83 @@ def read_contract(path: Path = CONTRACT) -> dict:
             isinstance(contract.get(name), str) and contract[name],
             f"contract {name} is invalid",
         )
+    arm_property = contract.get("arm_property")
+    require(isinstance(arm_property, dict), "arm property contract is missing")
+    require(
+        set(arm_property) == {"name", "value", "definition"},
+        "arm property contract is incomplete",
+    )
+    require(
+        isinstance(arm_property["name"], str)
+        and re.fullmatch(r"[a-z][a-z0-9-]{0,74}", arm_property["name"]) is not None,
+        "arm property name is invalid",
+    )
+    require(
+        arm_property["name"] != contract["core_checks_property"],
+        "arm property must be independent of the deterministic-CI property",
+    )
+    require(
+        isinstance(arm_property["value"], str) and arm_property["value"],
+        "arm property value is invalid",
+    )
+    definition = arm_property["definition"]
+    require(
+        isinstance(definition, dict)
+        and set(definition)
+        == {
+            "value_type",
+            "required",
+            "default_value",
+            "description",
+            "allowed_values",
+            "values_editable_by",
+            "require_explicit_values",
+        },
+        "arm property definition is incomplete",
+    )
+    require(
+        definition["value_type"] == "single_select"
+        and definition["required"] is False
+        and definition["default_value"] is None
+        and isinstance(definition["description"], str)
+        and definition["description"]
+        and isinstance(definition["allowed_values"], list)
+        and definition["allowed_values"]
+        and all(isinstance(value, str) and value for value in definition["allowed_values"])
+        and len(definition["allowed_values"]) == len(set(definition["allowed_values"]))
+        and arm_property["value"] in definition["allowed_values"]
+        and definition["values_editable_by"] == "org_actors"
+        and definition["require_explicit_values"] is False,
+        "arm property definition is invalid",
+    )
+    migration = contract.get("arm_property_migration")
+    require(
+        isinstance(migration, dict)
+        and set(migration) == {"repositories"},
+        "arm property migration is incomplete",
+    )
+    repositories = migration["repositories"]
+    require(
+        isinstance(repositories, list)
+        and repositories
+        and repositories == sorted(set(repositories))
+        and all(
+            isinstance(repository, str)
+            and repository.startswith(f"{organization}/")
+            and len(repository.split("/", 1)[1]) > 0
+            for repository in repositories
+        ),
+        "arm property migration repositories are invalid",
+    )
 
     images = {}
-    for name in ("preimage", "postimage", "rollback_payload", "arm_ruleset"):
+    for name in (
+        "preimage",
+        "postimage",
+        "rollback_payload",
+        "legacy_arm_ruleset",
+        "arm_ruleset",
+    ):
         image = contract.get(name)
         require(isinstance(image, dict), f"contract {name} is missing")
         require(set(image) == set(RULESET_FIELDS), f"contract {name} is not a complete mutation payload")
@@ -114,23 +188,44 @@ def read_contract(path: Path = CONTRACT) -> dict:
     arm_name = contract.get("arm_ruleset_name")
     require(isinstance(arm_name, str) and arm_name, "arm ruleset name is invalid")
     require(images["arm_ruleset"]["name"] == arm_name, "arm ruleset payload name disagrees with the contract")
+    require(
+        images["legacy_arm_ruleset"]["name"] == arm_name,
+        "legacy arm ruleset payload name disagrees with the contract",
+    )
     require(images["arm_ruleset"]["enforcement"] == "active", "arm ruleset must be active")
+    require(images["legacy_arm_ruleset"]["enforcement"] == "active", "legacy arm ruleset must be active")
     require(workflow_path(images["arm_ruleset"]) == contract["replacement_path"], "arm ruleset does not select the replacement workflow")
+    require(
+        workflow_path(images["legacy_arm_ruleset"]) == contract["replacement_path"],
+        "legacy arm ruleset does not select the replacement workflow",
+    )
     # The moved rule must be the SAME rule, not a lookalike: same parameters,
     # same creation bypass, differing only in the selected path.
     moved = copy.deepcopy(next(rule for rule in images["preimage"]["rules"] if rule.get("type") == "workflows"))
     moved["parameters"]["workflows"][0]["path"] = contract["replacement_path"]
     require(images["arm_ruleset"]["rules"] == [moved], "arm ruleset rule is not the relocated workflows rule")
     require(
+        images["legacy_arm_ruleset"]["rules"] == [moved],
+        "legacy arm ruleset rule is not the relocated workflows rule",
+    )
+    require(
         images["arm_ruleset"]["bypass_actors"] == images["preimage"]["bypass_actors"],
         "arm ruleset bypass actors diverge from the protection ruleset",
     )
-    # Coverage is the whole point of the split: the arm is required exactly where
-    # the property that also gates deterministic CI is set, and nowhere else.
+    require(
+        images["legacy_arm_ruleset"]["bypass_actors"] == images["arm_ruleset"]["bypass_actors"],
+        "legacy arm ruleset bypass actors diverge from the target image",
+    )
+    # Authorization-arm enrollment is independent from deterministic-CI
+    # enrollment. The audit below still requires both on every armed repository.
     conditions = images["arm_ruleset"]["conditions"]
     require(
         conditions.get("ref_name") == images["preimage"]["conditions"]["ref_name"],
         "arm ruleset targets different refs than the protection ruleset",
+    )
+    require(
+        images["legacy_arm_ruleset"]["conditions"].get("ref_name") == conditions["ref_name"],
+        "legacy arm ruleset targets different refs than the target image",
     )
     require(
         "repository_name" not in conditions,
@@ -141,12 +236,24 @@ def read_contract(path: Path = CONTRACT) -> dict:
         == {
             "exclude": [],
             "include": [{
+                "name": contract["arm_property"]["name"],
+                "property_values": [contract["arm_property"]["value"]],
+                "source": "custom",
+            }],
+        },
+        "arm ruleset is not scoped to the dedicated authorization property",
+    )
+    require(
+        images["legacy_arm_ruleset"]["conditions"].get("repository_property")
+        == {
+            "exclude": [],
+            "include": [{
                 "name": contract["core_checks_property"],
                 "property_values": [contract["core_checks_value"]],
                 "source": "custom",
             }],
         },
-        "arm ruleset is not scoped to the deterministic-CI property",
+        "legacy arm ruleset is not scoped to the deterministic-CI property",
     )
 
     for name in ("forbidden_required_status_contexts", "deterministic_required_status_contexts"):
@@ -449,7 +556,11 @@ def verify_ruleset_state(contract: dict, read, expected: str | None = None) -> t
     return state, live
 
 
-def verify_ruleset_exclusivity(contract: dict, read, state: str) -> dict[int, dict]:
+def verify_ruleset_exclusivity(
+    contract: dict,
+    read,
+    state: str,
+) -> tuple[dict[int, dict], str]:
     organization = contract["organization"]
     recognized = []
     conflicts = []
@@ -482,19 +593,116 @@ def verify_ruleset_exclusivity(contract: dict, read, state: str) -> dict[int, di
             recognized == [(contract["ruleset_id"], contract["retired_path"])],
             f"retired and replacement workflow identities are not exclusive: {recognized}",
         )
+        selector = "legacy"
     else:
         require(len(named) == 1, f"split state must have exactly one arm ruleset, found {named}")
         require(
             recognized == [(named[0], contract["replacement_path"])],
             f"retired and replacement workflow identities are not exclusive: {recognized}",
         )
-        arm_mismatches = image_mismatches(normalize_ruleset(candidates[named[0]]), contract["arm_ruleset"])
-        require(
-            not arm_mismatches,
-            f"arm ruleset drifted from the fields its reviewed image asserts: {concise_mismatches(arm_mismatches)}",
-        )
+        live_arm = normalize_ruleset(candidates[named[0]])
+        target_mismatches = image_mismatches(live_arm, contract["arm_ruleset"])
+        legacy_mismatches = image_mismatches(live_arm, contract["legacy_arm_ruleset"])
+        if not target_mismatches:
+            selector = "target"
+        elif not legacy_mismatches:
+            selector = "legacy"
+        else:
+            nearest, mismatches = min(
+                (("target", target_mismatches), ("legacy", legacy_mismatches)),
+                key=lambda candidate: len(candidate[1]),
+            )
+            raise AuditError(
+                "arm ruleset drifted from both reviewed selector images: "
+                f"nearest {nearest}: {concise_mismatches(mismatches)}"
+            )
     require(not conflicts, f"retired or App authorization status is also required: {conflicts}")
-    return candidates
+    return candidates, selector
+
+
+def verify_arm_property_schema(contract: dict, read, required: bool) -> bool:
+    property_schema = paginated_items(
+        read,
+        f"orgs/{contract['organization']}/properties/schema",
+    )
+    require(
+        all(isinstance(item, dict) for item in property_schema),
+        "organization property schema inventory is invalid",
+    )
+    arm_property = contract["arm_property"]
+    schema_matches = [
+        item for item in property_schema
+        if item.get("property_name") == arm_property["name"]
+    ]
+    require(len(schema_matches) <= 1, "dedicated authorization property schema is ambiguous")
+    if required:
+        require(schema_matches, "dedicated authorization property schema is missing")
+    if not schema_matches:
+        return False
+    live_definition = {
+        key: schema_matches[0].get(key)
+        for key in arm_property["definition"]
+    }
+    require(
+        schema_matches[0].get("source_type") == "organization"
+        and live_definition == arm_property["definition"],
+        "dedicated authorization property schema drifted",
+    )
+    return True
+
+
+def read_repository_properties(contract: dict, read) -> dict[str, dict[str, object]]:
+    property_rows = paginated_items(
+        read,
+        f"orgs/{contract['organization']}/properties/values?per_page=100",
+    )
+    properties_by_repository = {}
+    for row in property_rows:
+        require(isinstance(row, dict), "organization property inventory is invalid")
+        full_name = row.get("repository_full_name")
+        values = row.get("properties")
+        require(
+            isinstance(full_name, str)
+            and full_name not in properties_by_repository
+            and isinstance(values, list),
+            "organization property inventory is invalid",
+        )
+        parsed = {}
+        for item in values:
+            require(
+                isinstance(item, dict)
+                and isinstance(item.get("property_name"), str)
+                and item["property_name"]
+                and item["property_name"] not in parsed,
+                f"organization property values are invalid for {full_name}",
+            )
+            parsed[item["property_name"]] = item.get("value")
+        properties_by_repository[full_name] = parsed
+    return properties_by_repository
+
+
+def target_arm_cohort(
+    contract: dict,
+    properties_by_repository: dict[str, dict[str, object]],
+) -> list[str]:
+    arm_property = contract["arm_property"]
+    return sorted(
+        full_name
+        for full_name, values in properties_by_repository.items()
+        if values.get(arm_property["name"]) == arm_property["value"]
+    )
+
+
+def verify_target_arm_cohort(
+    contract: dict,
+    properties_by_repository: dict[str, dict[str, object]],
+) -> list[str]:
+    cohort = target_arm_cohort(contract, properties_by_repository)
+    require(
+        cohort == contract["arm_property_migration"]["repositories"],
+        "authorization property cohort differs from the reviewed migration set",
+    )
+    return cohort
 
 
 def verify_deterministic_ci(
@@ -502,7 +710,8 @@ def verify_deterministic_ci(
     read,
     repositories: list[dict],
     candidates: dict[int, dict],
-) -> None:
+    selector: str,
+) -> list[str]:
     declarations = {}
     for declaration in contract["deterministic_rulesets"]:
         ruleset_id = declaration["id"]
@@ -514,44 +723,42 @@ def verify_deterministic_ci(
             f"{concise_mismatches(mismatches)}",
         )
         declarations[declaration["stack"]] = declaration
-    property_rows = paginated_items(
-        read,
-        f"orgs/{contract['organization']}/properties/values?per_page=100",
-    )
-    properties_by_repository = {}
-    for row in property_rows:
-        full_name = row.get("repository_full_name")
-        values = row.get("properties")
-        require(
-            isinstance(full_name, str)
-            and full_name not in properties_by_repository
-            and isinstance(values, list),
-            "organization property inventory is invalid",
-        )
-        properties_by_repository[full_name] = {
-            item.get("property_name"): item.get("value")
-            for item in values
-            if isinstance(item, dict)
-        }
-    # Scoped to the repositories the arm rule covers, which after the split is
-    # exactly those carrying the deterministic-CI property. A repository outside
-    # that set gets no arm, so the arm cannot become its only merge precondition
-    # — which is the hazard ADR 0091 guarded against with a fleet-wide demand it
-    # could not satisfy. Repositories with the property but no declared stack are
-    # still a hole: they would be armed with nothing deterministic behind them.
+    arm_property = contract["arm_property"]
+    verify_arm_property_schema(contract, read, required=selector == "target")
+    properties_by_repository = read_repository_properties(contract, read)
+    # The arm selector and the deterministic-CI selector have distinct meanings.
+    # Every armed repository must still opt into canonical deterministic CI, but
+    # a core-check adopter is not armed merely because it adopted that contract.
     covered = []
     missing = []
     for repository in repositories:
         full_name = repository["full_name"]
         values = properties_by_repository.get(full_name, {})
-        if values.get(contract["core_checks_property"]) != contract["core_checks_value"]:
+        selector_name = (
+            arm_property["name"] if selector == "target" else contract["core_checks_property"]
+        )
+        selector_value = (
+            arm_property["value"] if selector == "target" else contract["core_checks_value"]
+        )
+        if values.get(selector_name) != selector_value:
             continue
         covered.append(full_name)
-        if values.get("verjson-stack") not in declarations:
+        if (
+            values.get(contract["core_checks_property"]) != contract["core_checks_value"]
+            or values.get("verjson-stack") not in declarations
+        ):
             missing.append(full_name)
-    require(covered, "no repository carries the deterministic-CI property; the arm would govern nothing")
+    require(covered, "no repository carries the active arm selector; the arm would govern nothing")
+    covered = sorted(covered)
+    if selector == "target":
+        verify_target_arm_cohort(contract, properties_by_repository)
+    else:
+        require(
+            covered == contract["arm_property_migration"]["repositories"],
+            "legacy arm cohort differs from the reviewed migration set",
+        )
     concise_missing("armed default branches without canonical deterministic required CI", sorted(missing))
-    return sorted(covered)
+    return covered
 
 
 def verify_no_repository_shadowing(contract: dict, read, repositories: list[dict]) -> None:
@@ -796,7 +1003,13 @@ def candidate_by_name(candidates: dict[int, dict], name: str) -> dict:
     return named[0]
 
 
-def unpinned_live_fields(contract: dict, live: dict, candidates: dict[int, dict], state: str) -> list[str]:
+def unpinned_live_fields(
+    contract: dict,
+    live: dict,
+    candidates: dict[int, dict],
+    state: str,
+    selector: str,
+) -> list[str]:
     """Report, per contracted ruleset, the live fields no reviewed image pins.
 
     Every contracted ruleset carries the same residual, so a review fed only
@@ -817,7 +1030,7 @@ def unpinned_live_fields(contract: dict, live: dict, candidates: dict[int, dict]
         surfaces.append((
             contract["arm_ruleset_name"],
             candidate_by_name(candidates, contract["arm_ruleset_name"]),
-            contract["arm_ruleset"],
+            contract["arm_ruleset" if selector == "target" else "legacy_arm_ruleset"],
         ))
     for declaration in contract["deterministic_rulesets"]:
         surfaces.append((
@@ -836,7 +1049,7 @@ def unpinned_live_fields(contract: dict, live: dict, candidates: dict[int, dict]
 
 def audit(contract: dict, read=gh_pages, allow_unschedulable_selection: bool = False) -> dict:
     state, live = verify_ruleset_state(contract, read)
-    candidates = verify_ruleset_exclusivity(contract, read, state)
+    candidates, selector = verify_ruleset_exclusivity(contract, read, state)
     # Whichever ruleset carries the workflows rule right now is the one whose
     # selection has to be startable.
     carrier = live if state == "ready" else next(
@@ -866,7 +1079,7 @@ def audit(contract: dict, read=gh_pages, allow_unschedulable_selection: bool = F
         require(isinstance(full_name, str) and full_name, "organization repository has no full_name")
         require(full_name not in governed, f"duplicate organization repository {full_name}")
         governed[full_name] = bool(repository.get("private"))
-    covered = verify_deterministic_ci(contract, read, repositories, candidates)
+    covered = verify_deterministic_ci(contract, read, repositories, candidates, selector)
     verify_no_repository_shadowing(contract, read, repositories)
     # The App credential only has to reach where the arm actually runs. Demanding
     # organization-wide reach for a rule that governs a subset is what made the
@@ -875,14 +1088,20 @@ def audit(contract: dict, read=gh_pages, allow_unschedulable_selection: bool = F
     verify_adopter_conformance(contract, read, repositories, covered)
     verify_replacement_workflow(contract, read)
     return {
-        "unpinned_live_fields": unpinned_live_fields(contract, live, candidates, state),
+        "unpinned_live_fields": unpinned_live_fields(
+            contract,
+            live,
+            candidates,
+            state,
+            selector,
+        ),
         "organization": contract["organization"],
         "ruleset_id": contract["ruleset_id"],
         "current_path": current_path,
         "replacement_path": contract["replacement_path"],
         "governed_repositories": len(governed),
         "armed_repositories": len(covered),
-        "state": state,
+        "state": "split-legacy-selector" if state == "split" and selector == "legacy" else state,
     }
 
 
@@ -898,12 +1117,67 @@ def render_payload(contract: dict, mode: str, read=gh_pages) -> dict:
     return contract["rollback_payload"]
 
 
+def render_property_migration_payload(contract: dict, mode: str, read=gh_pages) -> dict:
+    if mode == "rollback":
+        state, _ = verify_ruleset_state(contract, read, "split")
+        _, selector = verify_ruleset_exclusivity(contract, read, state)
+        require(selector == "target", "property rollback requires the target selector")
+        return contract["legacy_arm_ruleset"]
+    if mode == "unset-values":
+        state, _ = verify_ruleset_state(contract, read, "split")
+        _, selector = verify_ruleset_exclusivity(contract, read, state)
+        require(selector == "legacy", "property cleanup requires the restored legacy selector")
+        verify_arm_property_schema(contract, read, required=True)
+        cohort = target_arm_cohort(contract, read_repository_properties(contract, read))
+        require(
+            set(cohort).issubset(contract["arm_property_migration"]["repositories"]),
+            "property cleanup cohort contains a repository outside the reviewed migration set",
+        )
+        return {
+            "repository_names": [
+                repository.split("/", 1)[1]
+                for repository in contract["arm_property_migration"]["repositories"]
+            ],
+            "properties": [{
+                "property_name": contract["arm_property"]["name"],
+                "value": None,
+            }],
+        }
+    report = audit(contract, read)
+    require(
+        report["state"] == "split-legacy-selector",
+        f"property migration requires the reviewed legacy selector, found {report['state']}",
+    )
+    if mode == "schema":
+        return contract["arm_property"]["definition"]
+    verify_arm_property_schema(contract, read, required=True)
+    if mode == "values":
+        return {
+            "repository_names": [
+                repository.split("/", 1)[1]
+                for repository in contract["arm_property_migration"]["repositories"]
+            ],
+            "properties": [{
+                "property_name": contract["arm_property"]["name"],
+                "value": contract["arm_property"]["value"],
+            }],
+        }
+    require(mode == "ruleset", f"unsupported property migration mode {mode}")
+    verify_target_arm_cohort(contract, read_repository_properties(contract, read))
+    return contract["arm_ruleset"]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Audit the AI authorization-arm ruleset rollout")
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--render-split-payload", action="store_true")
     modes.add_argument("--render-arm-ruleset-payload", action="store_true")
     modes.add_argument("--render-rollback-payload", action="store_true")
+    modes.add_argument("--render-arm-property-schema-payload", action="store_true")
+    modes.add_argument("--render-arm-property-values-payload", action="store_true")
+    modes.add_argument("--render-arm-property-ruleset-payload", action="store_true")
+    modes.add_argument("--render-arm-property-rollback-payload", action="store_true")
+    modes.add_argument("--render-arm-property-unset-values-payload", action="store_true")
     return parser.parse_args()
 
 
@@ -917,6 +1191,16 @@ def main() -> int:
             result = render_payload(contract, "arm-ruleset")
         elif args.render_rollback_payload:
             result = render_payload(contract, "rollback")
+        elif args.render_arm_property_schema_payload:
+            result = render_property_migration_payload(contract, "schema")
+        elif args.render_arm_property_values_payload:
+            result = render_property_migration_payload(contract, "values")
+        elif args.render_arm_property_ruleset_payload:
+            result = render_property_migration_payload(contract, "ruleset")
+        elif args.render_arm_property_rollback_payload:
+            result = render_property_migration_payload(contract, "rollback")
+        elif args.render_arm_property_unset_values_payload:
+            result = render_property_migration_payload(contract, "unset-values")
         else:
             result = audit(contract)
     except AuditError as error:

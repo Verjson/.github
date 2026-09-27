@@ -460,15 +460,15 @@ cat > "$tmp/resolve/bin/npm" <<'SH'
 #!/usr/bin/env bash
 set -eu
 printf '%s\n' "$*" >> "$NPM_STUB_LOG"
-spec="${3:-}"
+failure="${NPM_STUB_FAILURE:-}"
 for category in auth-fail access-fail missing empty; do
-  if [[ "$spec" == *"$category"* ]]; then
+  if [ "$failure" = "$category" ]; then
     case "$category" in auth-fail) code=E401;; access-fail) code=E403;; missing) code=E404;; empty) code=ETARGET;; esac
     echo "npm ERR! code $code token=$NODE_AUTH_TOKEN" >&2
     exit 1
   fi
 done
-if [ "${4:-}" = version ] && [ "$#" -eq 4 ]; then
+if [ "$#" -eq 4 ] && { [ "${4:-}" = version ] || [ "${3:-}" = versions ]; }; then
   printf '%s\n' '["0.2.1","0.2.2"]'
 else
   printf '%s\n' "{\"name\":\"@verjson/identity-contracts\",\"version\":\"0.2.2\",\"dist.integrity\":\"$NPM_STUB_INTEGRITY\",\"dist.tarball\":\"https://npm.pkg.github.com/download/@verjson/identity-contracts/0.2.2/archive\"}"
@@ -479,7 +479,8 @@ run_resolver() {
   rm -rf "$tmp/resolve/runner/_compatibility"
   : > "$tmp/resolve/private-entries"
   (cd "$tmp/resolve" && PATH="$tmp/resolve/bin:$PATH" NPM_STUB_LOG="$tmp/resolve/npm.log" \
-    NPM_STUB_INTEGRITY="$fixture_integrity" NODE_AUTH_TOKEN=runtime-package-token \
+    NPM_STUB_INTEGRITY="$fixture_integrity" NPM_STUB_FAILURE="${3:-}" \
+    NODE_AUTH_TOKEN=runtime-package-token \
     APPROVED_INTERNAL_SCOPES=@verjson COMPATIBILITY_RANGES="$1" \
     COMPATIBILITY_PROVENANCE="$tmp/resolve/runner/_compatibility/provenance.json" \
     PRIVATE_CACHE_ENTRIES="$tmp/resolve/private-entries" NPM_CONFIG_GLOBALCONFIG="$tmp/resolve/runner/global.npmrc" \
@@ -502,7 +503,7 @@ grep -Eq 'install|pack|run|exec' "$tmp/resolve/npm.log" \
   || pass "compatibility resolution uses metadata reads only"
 for case_name in auth-fail access-fail missing empty; do
   bad="{\"package\":\"@verjson/identity-contracts\",\"ranges\":[\"${case_name}1.0.0\"],\"script\":\"test:compat\"}"
-  if run_resolver "$bad" "$tmp/resolve/$case_name.log"; then
+  if run_resolver "$bad" "$tmp/resolve/$case_name.log" "$case_name"; then
     fail "$case_name registry failure was accepted"
   elif grep -qF runtime-package-token "$tmp/resolve/$case_name.log"; then
     fail "$case_name registry diagnostic leaked the package token"

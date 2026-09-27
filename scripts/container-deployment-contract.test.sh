@@ -297,6 +297,30 @@ assert_generated_contract_rejects_caller \
   '$a# runner image: ghcr.io/verjson/runner:latest' \
   'must not name secrets, environments, or mutable tags'
 assert_generated_contract_rejects_caller \
+  'a named secret map on the reusable edge' \
+  's|^    secrets: inherit$|    secrets:\n      RUNNER_HOST_EVIDENCE_SSH_PRIVATE_KEY: ${{ secrets.RUNNER_HOST_EVIDENCE_SSH_PRIVATE_KEY }}|' \
+  'must not name secrets, environments, or mutable tags'
+assert_generated_contract_rejects_caller \
+  'a non-inherit secrets clause' \
+  's|^    secrets: inherit$|    secrets: {}|' \
+  'may carry only `secrets: inherit`'
+assert_generated_contract_rejects_caller \
+  'a dropped secrets inheritance' \
+  '/^    secrets: inherit$/d' \
+  'must inherit the caller secret context'
+assert_generated_contract_rejects_caller \
+  'a duplicated secrets inheritance' \
+  '$a\    secrets: inherit' \
+  'must inherit the caller secret context'
+assert_generated_contract_rejects_caller \
+  'a mis-indented secrets inheritance' \
+  's|^    secrets: inherit$|  secrets: inherit|' \
+  'may carry only `secrets: inherit`'
+assert_generated_contract_rejects_caller \
+  'an environment binding' \
+  '$a\    environment: production' \
+  'must not name secrets, environments, or mutable tags'
+assert_generated_contract_rejects_caller \
   'a dropped permission' \
   's|^  checks: read$||' \
   'expected permissions'

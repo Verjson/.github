@@ -18,7 +18,7 @@ fails=0
 pass() { printf 'ok   - %s\n' "$1"; }
 fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 
-step_name="Confirm merge and consume the arm receipt"
+step_name="Delete consumed arm receipt artifact"
 anchor="# The receipt has now served its purpose:"
 
 extract_deletion_fragment() {
@@ -29,7 +29,7 @@ import sys
 import yaml
 
 workflow = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
-steps = workflow["jobs"]["privileged_merge"]["steps"]
+steps = workflow["jobs"]["cleanup_arm_receipt"]["steps"]
 matches = [step for step in steps if step.get("name") == sys.argv[2]]
 if len(matches) != 1:
     raise SystemExit(f"expected exactly one {sys.argv[2]!r} step, found {len(matches)}")
@@ -68,12 +68,12 @@ chmod +x "$tmp/bin/gh"
 
 run_case() {
   PATH="$tmp/bin:$PATH" RUNNER_TEMP="$tmp/run" TARGET_REPO=Verjson/example \
+    ARM_RECEIPT_ARTIFACT_ID=8001 \
     bash "$script" 2>&1
 }
 
 # --- deletion failure is non-fatal and redacts a leaked Authorization header -
 mkdir -p "$tmp/run"
-printf '8001\n' >"$tmp/run/arm-receipt-artifact-id"
 out="$(run_case)"; status=$?
 if [ "$status" -eq 0 ] \
     && grep -qF '::warning::failed to delete consumed arm receipt artifact 8001' <<<"$out" \

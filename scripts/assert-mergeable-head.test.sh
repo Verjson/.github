@@ -28,6 +28,8 @@ case "$args" in
     [ "${FAIL_PR_VIEW:-0}" -eq 0 ] || { echo "gh: some transient API error (HTTP 502)" >&2; exit 1; }
     printf '%s\n' "$PR_JSON_FIXTURE" ;;
   *"/rules/branches/"*)
+    # Record the exact requested path so a test can pin the ref spelling (#1470).
+    [ -z "${RULES_REQUEST_LOG:-}" ] || printf '%s\n' "$args" >>"$RULES_REQUEST_LOG"
     # `--paginate` walks several requests through one invocation, so stderr can carry
     # earlier lines before the one that ended the walk. This models that: a note emitted
     # ahead of whatever the request itself does, success or failure.
@@ -111,6 +113,8 @@ reset_env() {
   unset FAIL_PR_VIEW FAIL_RULES FAIL_RULES_HTTP RULES_STDERR_NOTE \
     FAIL_CHECK_RUNS FAIL_STATUS FAIL_ANNOTATIONS
   export RULES_FIXTURE="$rules_bound"
+  export RULES_REQUEST_LOG="$tmp/rules-requests"
+  : >"$RULES_REQUEST_LOG"
   export PR_JSON_FIXTURE
   PR_JSON_FIXTURE="$(printf '{"headRefOid":"%s","baseRefName":"main"}' "$HEAD_SHA")"
   export CHECK_RUNS_FIXTURE
@@ -277,6 +281,7 @@ expect "a queued advisory check blocks rather than being read as absent" 5 "mirr
 # --- unevaluable states fail closed, never green ----------------------------
 reset_env; FAIL_PR_VIEW=1 run
 expect "a pull-request metadata failure is a fault, not a pass" 1 "failed to fetch pull request metadata"
+expect "a pull-request metadata failure names its required read grant" 1 "Pull requests (read) or Actions permissions.pull-requests: read"
 
 reset_env; FAIL_RULES=1 run
 expect "an unreadable ruleset is a fault: the required set must never be inferred from the head" 1 "cannot establish the required-check set"
@@ -294,6 +299,14 @@ for code in 401 403; do
     1 "the token presented cannot read it"
   expect "an HTTP $code on the ruleset read states the read access Gate A requires" \
     1 "Metadata (read)"
+  expect "an HTTP $code on the ruleset read states pull-request metadata access" \
+    1 "Pull requests (read)"
+  expect "an HTTP $code on the ruleset read states check-run access" \
+    1 "Checks (read)"
+  expect "an HTTP $code on the ruleset read states commit-status access" \
+    1 "Commit statuses (read)"
+  expect "an HTTP $code on the ruleset read states Actions grants" \
+    1 "permissions.pull-requests: read, permissions.checks: read, permissions.statuses: read"
 done
 
 # GitHub masks an unauthorized read of a private repository as 404, so a 404
@@ -396,12 +409,15 @@ expect "a commit-status response that states no total_count is unattested, not e
 
 reset_env; FAIL_CHECK_RUNS=1 run
 expect "a check-runs failure is a fault, not a pass" 1 "failed to fetch check runs"
+expect "a check-runs failure names its required read grant" 1 "Checks (read) or Actions permissions.checks: read"
 
 reset_env; FAIL_STATUS=1 run
 expect "a commit-status failure is a fault, not a pass" 1 "failed to fetch commit statuses"
+expect "a commit-status failure names its required read grant" 1 "Commit statuses (read) or Actions permissions.statuses: read"
 
 reset_env; FAIL_ANNOTATIONS=1 run
 expect "an annotations failure is a fault, not a pass" 1 "failed to fetch annotations"
+expect "an annotations failure names its required read grant" 1 "Checks (read) or Actions permissions.checks: read"
 
 reset_env
 PR_JSON_FIXTURE='{"headRefOid":"","baseRefName":"main"}'
@@ -412,6 +428,25 @@ reset_env
 PR_JSON_FIXTURE="$(printf '{"headRefOid":"%s","baseRefName":""}' "$HEAD_SHA")"
 run
 expect "a missing base ref is a fault, since it names the governing ruleset" 1 "could not resolve a base ref"
+
+# --- ref spelling on the rules/branches/ path segment (#1470) --------------------
+reset_env
+run
+if [ "$RC" -eq 0 ] && grep -qE -- "repos/Verjson/verjson-ci/rules/branches/main$" "$RULES_REQUEST_LOG"; then
+  pass "a plain base ref is spent unchanged as the rules/branches/ path segment"
+else
+  fail "a plain base ref was not requested as rules/branches/main (rc=$RC, requests: $(cat "$RULES_REQUEST_LOG"))"
+fi
+
+reset_env
+PR_JSON_FIXTURE="$(printf '{"headRefOid":"%s","baseRefName":"release/1.x"}' "$HEAD_SHA")"
+run
+if [ "$RC" -eq 0 ] && grep -qE -- "repos/Verjson/verjson-ci/rules/branches/release%2F1\.x$" "$RULES_REQUEST_LOG" \
+    && ! grep -qF -- "rules/branches/release/1.x" "$RULES_REQUEST_LOG"; then
+  pass "a slash-bearing base ref is spent as ONE percent-encoded path segment (release%2F1.x), never with a literal slash (#1470)"
+else
+  fail "a slash-bearing base ref was not requested as rules/branches/release%2F1.x (rc=$RC, requests: $(cat "$RULES_REQUEST_LOG"))"
+fi
 
 # --- usage ------------------------------------------------------------------
 OUT="$("$script" 2>&1)"; RC=$?

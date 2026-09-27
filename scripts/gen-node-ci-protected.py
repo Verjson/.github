@@ -22,6 +22,325 @@ CREDENTIAL_ENV_KEYS = (
 
 CANDIDATE_CACHE_MAX_FILES = 4096
 CANDIDATE_CACHE_MAX_BYTES = 268435456
+# The complete set of keys a GitHub Actions step object may open with
+# (https://docs.github.com/actions/using-workflows/workflow-syntax-for-github-actions#jobsjob_idsteps).
+STEP_START_KEYS = (
+    "name",
+    "id",
+    "if",
+    "uses",
+    "run",
+    "shell",
+    "working-directory",
+    "env",
+    "with",
+    "continue-on-error",
+    "timeout-minutes",
+)
+
+PROTECTED_INPUTS = """      protected-type-surface-declaration-path:
+        description: Repository-relative declaration fetched from the authenticated pull-request base SHA.
+        required: false
+        type: string
+        default: ''
+      protected-type-surface-expected-package:
+        description: Protected package identity the base declaration must select.
+        required: false
+        type: string
+        default: ''
+      protected-type-surface-expected-script:
+        description: Protected compatibility script the base declaration must select.
+        required: false
+        type: string
+        default: ''
+      protected-type-surface-allow-prerelease:
+        description: Explicitly authorize a prerelease baseline; stable released versions are the default.
+        required: false
+        type: boolean
+        default: false
+"""
+
+PROTECTED_BASELINE_STEP = """      - name: Resolve protected type-surface baseline from the pull-request base
+        id: resolve-protected-type-surface
+        if: needs.eligibility.outputs.should-run != 'false' && inputs.protected-type-surface-declaration-path != ''
+        env:
+          ALLOW_PRERELEASE: ${{ inputs.protected-type-surface-allow-prerelease }}
+          DECLARATION_PATH: ${{ inputs.protected-type-surface-declaration-path }}
+          EXPECTED_PACKAGE: ${{ inputs.protected-type-surface-expected-package }}
+          EXPECTED_SCRIPT: ${{ inputs.protected-type-surface-expected-script }}
+          GH_TOKEN: ${{ github.token }}
+          PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_ID: ${{ github.run_id }}
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          repository = os.environ["REPOSITORY"]
+          declaration_path = os.environ["DECLARATION_PATH"]
+          expected_package = os.environ["EXPECTED_PACKAGE"]
+          expected_script = os.environ["EXPECTED_SCRIPT"]
+          pull_request_number = os.environ["PULL_REQUEST_NUMBER"]
+          if (
+              not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository)
+              or not re.fullmatch(r"[1-9][0-9]*", pull_request_number)
+              or not declaration_path
+              or declaration_path.startswith("/")
+              or "//" in declaration_path
+              or any(segment in ("", ".", "..") for segment in declaration_path.split("/"))
+              or not re.fullmatch(r"[A-Za-z0-9._/-]+", declaration_path)
+              or not expected_package
+              or not expected_script
+          ):
+              raise SystemExit("protected type-surface declaration inputs are malformed")
+
+          def github_api(arguments):
+              result = subprocess.run(
+                  ["gh", "api", *arguments],
+                  check=False,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.DEVNULL,
+              )
+              if result.returncode != 0:
+                  raise SystemExit("authenticated GitHub declaration lookup failed")
+              return result.stdout
+
+          # This is the sole pull-request lookup. The immutable base SHA it
+          # returns is the only ref used for the declaration request below.
+          base_sha = github_api(
+              [f"repos/{repository}/pulls/{pull_request_number}", "--jq", ".base.sha"]
+          ).decode("utf-8", errors="strict").strip()
+          if re.fullmatch(r"[0-9a-f]{40}", base_sha) is None:
+              raise SystemExit("pull-request base SHA is not an immutable commit")
+          declaration_bytes = github_api(
+              [
+                  "-H",
+                  "Accept: application/vnd.github.raw+json",
+                  f"repos/{repository}/contents/{declaration_path}?ref={base_sha}",
+              ]
+          )
+
+          class DuplicateObjectKeyError(ValueError):
+              pass
+
+          def reject_duplicate_object_keys(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise DuplicateObjectKeyError
+                  result[key] = value
+              return result
+
+          try:
+              declaration = json.loads(
+                  declaration_bytes.decode("utf-8"),
+                  object_pairs_hook=reject_duplicate_object_keys,
+              )
+          except (UnicodeDecodeError, json.JSONDecodeError, DuplicateObjectKeyError) as error:
+              raise SystemExit(f"protected type-surface declaration is invalid: {error}")
+          if not isinstance(declaration, dict) or set(declaration) != {"package", "version", "script"}:
+              raise SystemExit("protected type-surface declaration requires exactly package, version, and script")
+
+          package = declaration["package"]
+          version = declaration["version"]
+          script = declaration["script"]
+          package_pattern = r"@[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*"
+          version_core = r"(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)"
+          stable_version = re.compile(version_core)
+          prerelease_version = re.compile(
+              version_core + r"-(?:[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)"
+          )
+          if (
+              not isinstance(package, str)
+              or re.fullmatch(package_pattern, package) is None
+              or package != expected_package
+              or not isinstance(version, str)
+              or (stable_version.fullmatch(version) is None
+                  and not (os.environ["ALLOW_PRERELEASE"] == "true"
+                           and prerelease_version.fullmatch(version)))
+              or version == "latest"
+              or not isinstance(script, str)
+              or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9:._-]{0,127}", script) is None
+              or script != expected_script
+          ):
+              raise SystemExit("protected type-surface declaration is unauthorized")
+
+          receipt = {
+              "schemaVersion": 1,
+              "repository": repository,
+              "declarationPath": declaration_path,
+              "baseSha": base_sha,
+              "declarationSha256": hashlib.sha256(declaration_bytes).hexdigest(),
+              "package": package,
+              "version": version,
+              "script": script,
+          }
+          run_root = Path(os.environ["RUNNER_TEMP"]) / (
+              f"protected-type-surface-{os.environ['RUN_ID']}-{os.environ['RUN_ATTEMPT']}"
+          )
+          run_root.mkdir(mode=0o700, parents=True, exist_ok=False)
+          receipt_path = run_root / "receipt.json"
+          receipt_path.write_text(
+              json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\\n",
+              encoding="utf-8",
+          )
+          request = json.dumps(
+              {"package": package, "ranges": [version], "script": script},
+              separators=(",", ":"),
+          )
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+              output.write(f"compatibility-ranges={request}\\n")
+              output.write(f"receipt-path={receipt_path}\\n")
+              output.write(f"base-sha={base_sha}\\n")
+              output.write(f"declaration-sha256={receipt['declarationSha256']}\\n")
+              output.write(f"package={package}\\n")
+              output.write(f"version={version}\\n")
+              output.write(f"script={script}\\n")
+          PY
+"""
+
+PROTECTED_BASELINE_BIND_STEP = """      - name: Bind protected baseline receipt to verified artifact provenance
+        if: inputs.protected-type-surface-declaration-path != ''
+        env:
+          COMPATIBILITY_PROVENANCE: ${{ runner.temp }}/secretless-compatibility-${{ github.run_id }}-${{ github.run_attempt }}/_compatibility/provenance.json
+          PROTECTED_BASELINE_RECEIPT: ${{ steps.resolve-protected-type-surface.outputs.receipt-path }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          class DuplicateObjectKeyError(ValueError):
+              pass
+
+          def reject_duplicate_object_keys(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise DuplicateObjectKeyError
+                  result[key] = value
+              return result
+
+          def read_json(path):
+              try:
+                  return json.loads(
+                      Path(path).read_text(encoding="utf-8"),
+                      object_pairs_hook=reject_duplicate_object_keys,
+                  )
+              except (OSError, UnicodeDecodeError, json.JSONDecodeError, DuplicateObjectKeyError) as error:
+                  raise SystemExit(f"protected baseline receipt is invalid: {error}")
+
+          receipt = read_json(os.environ["PROTECTED_BASELINE_RECEIPT"])
+          receipt_fields = {
+              "schemaVersion", "repository", "declarationPath", "baseSha",
+              "declarationSha256", "package", "version", "script",
+          }
+          if not isinstance(receipt, dict) or set(receipt) != receipt_fields or receipt["schemaVersion"] != 1:
+              raise SystemExit("protected baseline receipt has an invalid shape")
+          provenance_path = Path(os.environ["COMPATIBILITY_PROVENANCE"])
+          provenance = read_json(provenance_path)
+          if (
+              not isinstance(provenance, dict)
+              or set(provenance) != {"schemaVersion", "request", "lanes"}
+              or provenance["schemaVersion"] != 1
+              or not isinstance(provenance["request"], dict)
+              or not isinstance(provenance["lanes"], list)
+              or len(provenance["lanes"]) != 1
+          ):
+              raise SystemExit("protected baseline compatibility provenance has an invalid shape")
+          request = provenance["request"]
+          if (
+              set(request) != {"package", "ranges", "script"}
+              or request["package"] != receipt["package"]
+              or request["ranges"] != [receipt["version"]]
+              or request["script"] != receipt["script"]
+          ):
+              raise SystemExit("protected baseline receipt does not match the compatibility request")
+          lane = provenance["lanes"][0]
+          if (
+              not isinstance(lane, dict)
+              or lane.get("package") != receipt["package"]
+              or lane.get("range") != receipt["version"]
+              or lane.get("version") != receipt["version"]
+              or lane.get("script") != receipt["script"]
+              or not all(isinstance(lane.get(key), str) and lane[key] for key in ("integrity", "tarball", "sha512"))
+          ):
+              raise SystemExit("protected baseline artifact provenance does not match the declaration")
+          protected_baseline = dict(receipt)
+          protected_baseline["artifact"] = {
+              "integrity": lane["integrity"],
+              "tarball": lane["tarball"],
+              "sha512": lane["sha512"],
+          }
+          provenance["protectedBaseline"] = protected_baseline
+          provenance_path.write_text(
+              json.dumps(provenance, sort_keys=True, separators=(",", ":")) + "\\n",
+              encoding="utf-8",
+          )
+          PY
+"""
+
+PROTECTED_BASELINE_TRANSFER_VALIDATION = """          protected_baseline = provenance.get("protectedBaseline")
+          expected_path = os.environ.get("PROTECTED_BASELINE_DECLARATION_PATH", "")
+          if expected_path:
+              receipt_fields = {
+                  "schemaVersion", "repository", "declarationPath", "baseSha",
+                  "declarationSha256", "package", "version", "script", "artifact",
+              }
+              if not isinstance(protected_baseline, dict) or set(protected_baseline) != receipt_fields:
+                  raise SystemExit("protected baseline receipt is missing or malformed")
+              if (
+                  protected_baseline["schemaVersion"] != 1
+                  or protected_baseline["repository"] != os.environ["PROTECTED_BASELINE_REPOSITORY"]
+                  or protected_baseline["declarationPath"] != expected_path
+                  or protected_baseline["baseSha"] != os.environ["EXPECTED_PROTECTED_BASELINE_BASE_SHA"]
+                  or protected_baseline["declarationSha256"] != os.environ["EXPECTED_PROTECTED_BASELINE_DECLARATION_SHA256"]
+                  or protected_baseline["package"] != os.environ["PROTECTED_BASELINE_EXPECTED_PACKAGE"]
+                  or protected_baseline["script"] != os.environ["PROTECTED_BASELINE_EXPECTED_SCRIPT"]
+                  or not isinstance(protected_baseline["version"], str)
+                  or request != {
+                      "package": protected_baseline["package"],
+                      "ranges": [protected_baseline["version"]],
+                      "script": protected_baseline["script"],
+                  }
+                  or not isinstance(protected_baseline["artifact"], dict)
+                  or set(protected_baseline["artifact"]) != {"integrity", "tarball", "sha512"}
+                  or len(provenance.get("lanes", [])) != 1
+                  or not isinstance(provenance["lanes"][0], dict)
+                  or any(
+                      protected_baseline["artifact"][key] != provenance["lanes"][0].get(key)
+                      for key in ("integrity", "tarball", "sha512")
+                  )
+                  or provenance["lanes"][0].get("package") != protected_baseline["package"]
+                  or provenance["lanes"][0].get("version") != protected_baseline["version"]
+                  or provenance["lanes"][0].get("script") != protected_baseline["script"]
+              ):
+                  raise SystemExit("protected baseline receipt does not bind declaration, base, and artifact")
+          elif protected_baseline is not None:
+              raise SystemExit("unexpected protected baseline receipt")
+"""
+
+PROTECTED_BASELINE_REF_STEP = """      - name: Export protected type-surface base SHA
+        if: needs.eligibility.outputs.should-run != 'false' && inputs.protected-type-surface-declaration-path != ''
+        env:
+          BASE_SHA: ${{ needs.acquire-secretless-dependencies.outputs.protected-baseline-base-sha }}
+        run: |
+          set -euo pipefail
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::protected type-surface base SHA is unavailable"
+            exit 1
+          }
+          echo "VERJSON_TYPE_SURFACE_BASE_SHA=$BASE_SHA" >> "$GITHUB_ENV"
+"""
 
 INPUTS = """      event-name:\n        description: Authenticated pull-request event identity.\n        required: true\n        type: string\n+      head-repository:\n        description: Authenticated pull-request head repository.\n        required: true\n        type: string\n+      head-sha:\n        description: Authenticated immutable pull-request head SHA.\n        required: true\n        type: string\n+"""
 
@@ -68,6 +387,63 @@ def remove_candidate_credentials(document: str, step_name: str) -> str:
     unset = "          unset -v " + " ".join(CREDENTIAL_ENV_KEYS) + "\n"
     protected_step = step.replace(run_marker, run_marker + unset, 1)
     return document[:step_start] + protected_step + document[step_end:]
+
+
+def move_step_before_guard(
+    document: str,
+    moving_name: str,
+    before_name: str,
+    guard_name: str,
+) -> str:
+    lines = document.splitlines(keepends=True)
+    moving_marker = f"      - name: {moving_name}\n"
+    before_marker = f"      - name: {before_name}\n"
+    guard_marker = f"      - name: {guard_name}\n"
+    moving_indexes = [
+        index for index, line in enumerate(lines) if line == moving_marker
+    ]
+    before_indexes = [index for index, line in enumerate(lines) if line == before_marker]
+    guard_indexes = [index for index, line in enumerate(lines) if line == guard_marker]
+    target_guard_indexes = [
+        index for index in guard_indexes if index < before_indexes[0]
+    ] if len(before_indexes) == 1 else []
+    if len(moving_indexes) != 1 or len(before_indexes) != 1 or not target_guard_indexes:
+        raise SystemExit(
+            f"protected node-ci step ordering boundary drifted: {moving_name!r}, "
+            f"{guard_name!r}, {before_name!r}"
+        )
+    moving_start = moving_indexes[0]
+    before_index = before_indexes[0]
+    guard_index = max(target_guard_indexes)
+    def is_step_start(line: str) -> bool:
+        if len(line) - len(line.lstrip()) != 6:
+            return False
+        rest = line.lstrip()
+        if not rest.startswith("- "):
+            return False
+        key = rest[2:]
+        return any(key.startswith(f"{start_key}:") for start_key in STEP_START_KEYS)
+
+    moving_end = next(
+        (
+            index
+            for index in range(moving_start + 1, len(lines))
+            if is_step_start(lines[index])
+        ),
+        None,
+    )
+    if moving_end is None:
+        raise SystemExit(
+            f"protected node-ci step ordering boundary drifted: no step marker "
+            f"found after {moving_name!r} (before {before_name!r}, guard "
+            f"{guard_name!r})"
+        )
+    moving_step = lines[moving_start:moving_end]
+    del lines[moving_start:moving_end]
+    if guard_index > moving_start:
+        guard_index -= moving_end - moving_start
+    lines[guard_index:guard_index] = moving_step
+    return "".join(lines)
 
 
 def isolate_candidate_runtime_cache(document: str) -> str:
@@ -139,15 +515,20 @@ def isolate_candidate_runtime_cache(document: str) -> str:
           ):
               sys.exit("RUNNER_TEMP is not a canonical directory")
           runner_temp = runner_temp_input
-          baseline = Path(os.path.abspath(os.environ["npm_config_cache"]))
-          if not baseline.is_absolute() or baseline.is_symlink() or not baseline.is_dir():
-              sys.exit("verified runtime cache is not an absolute regular directory")
-          if baseline.resolve() != baseline:
-              sys.exit("verified runtime cache path contains a symlink")
-          try:
-              baseline.resolve().relative_to(runner_temp)
-          except ValueError:
-              sys.exit("verified runtime cache escapes RUNNER_TEMP")
+          baseline_value = os.environ.get("npm_config_cache", "").strip()
+          baseline = None
+          if baseline_value:
+              candidate_baseline = Path(os.path.abspath(baseline_value))
+              if candidate_baseline.exists() or candidate_baseline.is_symlink():
+                baseline = candidate_baseline
+                if not baseline.is_absolute() or baseline.is_symlink() or not baseline.is_dir():
+                  sys.exit("verified runtime cache is not an absolute regular directory")
+                if baseline.resolve() != baseline:
+                  sys.exit("verified runtime cache path contains a symlink")
+                try:
+                  baseline.resolve().relative_to(runner_temp)
+                except ValueError:
+                  sys.exit("verified runtime cache escapes RUNNER_TEMP")
 
           bubblewrap = Path("/usr/bin/bwrap")
           try:
@@ -209,7 +590,7 @@ def isolate_candidate_runtime_cache(document: str) -> str:
                       files.append((relative, size, digest.hexdigest()))
               return tuple(sorted(files))
 
-          baseline_inventory = inventory(baseline)
+          baseline_inventory = inventory(baseline) if baseline is not None else ()
           cache_root = Path(os.environ["CANDIDATE_CACHE_ROOT"])
           if (
               not cache_root.is_absolute()
@@ -231,9 +612,9 @@ def isolate_candidate_runtime_cache(document: str) -> str:
             sys.exit("candidate workspace is not a canonical directory")
           if workspace == runner_temp or workspace in runner_temp.parents or runner_temp in workspace.parents:
               sys.exit("candidate workspace and RUNNER_TEMP overlap")
-          if baseline.parent != runner_temp or cache_root.parent != runner_temp:
+          if (baseline is not None and baseline.parent != runner_temp) or cache_root.parent != runner_temp:
               sys.exit("candidate cache roots are not exact RUNNER_TEMP children")
-          if baseline == cache_root or baseline in cache_root.parents or cache_root in baseline.parents:
+          if baseline is not None and (baseline == cache_root or baseline in cache_root.parents or cache_root in baseline.parents):
               sys.exit("candidate cache baseline and isolation root overlap")
           if any(os.environ.get(name) for name in ("DB_HOST", "DB_PORT", "CACHE_PORT")):
               sys.exit("protected candidate scripts do not permit shared service networking")
@@ -247,12 +628,21 @@ def isolate_candidate_runtime_cache(document: str) -> str:
           ):
               sys.exit("trusted setup-node tool root unavailable or noncanonical")
           trusted_tool_root = trusted_tool_root_input
+          hosted_tool_cache_root = Path("/opt/hostedtoolcache")
+          # uid 0 is root; uid 1001 is the "runner" account GitHub-hosted
+          # images provision and run Actions steps as.
+          hosted_tool_cache_uids = (0, 1001)
 
           def paths_overlap(left, right):
             return left == right or left in right.parents or right in left.parents
 
           def validate_trusted_ancestry(
-            root, target, allowed_uids, label, include_target=True, require_unwritable=True
+            root,
+            target,
+            allowed_uids,
+            label,
+            include_target=True,
+            require_unwritable=True,
           ):
             try:
               relative = target.relative_to(root)
@@ -278,17 +668,39 @@ def isolate_candidate_runtime_cache(document: str) -> str:
               ):
                 sys.exit(f"{{label}} ancestry has unsafe ownership mode")
 
-          candidate_controlled_roots = (workspace, runner_temp, baseline, cache_root)
+          candidate_controlled_roots = tuple(
+              root for root in (workspace, runner_temp, baseline, cache_root) if root is not None
+          )
           if any(paths_overlap(trusted_tool_root, path) for path in candidate_controlled_roots):
               sys.exit("trusted setup-node tool root overlaps candidate-controlled paths")
           trusted_root_metadata = trusted_tool_root.stat(follow_symlinks=False)
+          allow_hosted_tool_cache_root = (
+            trusted_tool_root == hosted_tool_cache_root
+            and stat.S_IMODE(trusted_root_metadata.st_mode) == 0o777
+            and trusted_root_metadata.st_uid in hosted_tool_cache_uids
+            and trusted_root_metadata.st_gid == 0
+          )
           if (
             not stat.S_ISDIR(trusted_root_metadata.st_mode)
-            or trusted_root_metadata.st_uid != 0
-            or trusted_root_metadata.st_mode & 0o022
+            or trusted_root_metadata.st_uid not in (
+              hosted_tool_cache_uids if allow_hosted_tool_cache_root else (0,)
+            )
+            or (
+              trusted_root_metadata.st_mode & 0o022
+              and not allow_hosted_tool_cache_root
+            )
           ):
             sys.exit("trusted setup-node tool root has unsafe ownership mode")
-          trusted_tool_uids = (0,)
+          trusted_tool_uids = hosted_tool_cache_uids if allow_hosted_tool_cache_root else (0,)
+          # GitHub-hosted images provision every entry under /opt/hostedtoolcache
+          # (directories, files, and symlinks alike) as uid 1001 mode 0777 -- the
+          # same convention as the root, measured on ubuntu-latest for #1599 -- so
+          # an unwritable requirement on any descendant can never pass there. The
+          # trust anchor for that tree is the owner allowlist plus the fact that
+          # nothing PR-controlled runs before this check (npm ci uses
+          # --ignore-scripts): the write bit is unexploited capability, not
+          # evidence of tampering. Every other tool root stays strict.
+          trusted_tool_tree_requires_unwritable = not allow_hosted_tool_cache_root
 
           trusted_search_directories = []
           for entry in os.environ.get("PATH", "").split(os.pathsep):
@@ -311,12 +723,14 @@ def isolate_candidate_runtime_cache(document: str) -> str:
               lexical_directory,
               trusted_tool_uids,
               "setup-node lexical PATH",
+              require_unwritable=trusted_tool_tree_requires_unwritable,
             )
             validate_trusted_ancestry(
               trusted_tool_root,
               resolved_directory,
               trusted_tool_uids,
               "setup-node resolved PATH",
+              require_unwritable=trusted_tool_tree_requires_unwritable,
             )
             if resolved_directory not in trusted_search_directories:
               trusted_search_directories.append(resolved_directory)
@@ -366,6 +780,7 @@ def isolate_candidate_runtime_cache(document: str) -> str:
                 trusted_tool_uids,
                 f"trusted {{tool_name}} lexical path",
                 include_target=False,
+                require_unwritable=trusted_tool_tree_requires_unwritable,
               )
               try:
                 resolved_candidate.relative_to(trusted_tool_root)
@@ -376,6 +791,7 @@ def isolate_candidate_runtime_cache(document: str) -> str:
                 resolved_candidate,
                 trusted_tool_uids,
                 f"trusted {{tool_name}} resolved path",
+                require_unwritable=trusted_tool_tree_requires_unwritable,
               )
               if resolved_candidate.is_file() and os.access(resolved_candidate, os.X_OK):
                 candidates.append(resolved_candidate)
@@ -394,12 +810,16 @@ def isolate_candidate_runtime_cache(document: str) -> str:
             # untampered system pwsh there. Root ownership alone still holds for that
             # one location: nothing PR-controlled runs outside this sandbox before this
             # check (npm ci uses --ignore-scripts), so the write bit is unexploited
-            # capability, not evidence of tampering. npm/node stay strict since their
-            # trusted tool root is not expected to be world-writable.
+            # capability, not evidence of tampering. npm/node under an admitted hosted
+            # tool cache carry the same image convention (see
+            # trusted_tool_tree_requires_unwritable); every other root stays strict.
+            executable_in_hosted_tool_cache = tool_executable.is_relative_to(hosted_tool_cache_root)
             executable_requires_unwritable = not (
-              tool_name == "pwsh" and tool_executable.is_relative_to("/opt/microsoft/powershell")
+              (tool_name == "pwsh" and tool_executable.is_relative_to("/opt/microsoft/powershell"))
+              or (executable_in_hosted_tool_cache and not trusted_tool_tree_requires_unwritable)
             )
-            if executable_metadata.st_uid != 0 or (
+            executable_uids = trusted_tool_uids if executable_in_hosted_tool_cache else (0,)
+            if executable_metadata.st_uid not in executable_uids or (
               executable_requires_unwritable and executable_metadata.st_mode & 0o022
             ):
               sys.exit(f"trusted {{tool_name}} executable has unsafe ownership mode")
@@ -413,21 +833,21 @@ def isolate_candidate_runtime_cache(document: str) -> str:
           tool_prefixes = []
           tool_prefix_identities = {{}}
 
-          def validate_root_owned_tool_tree(root, require_unwritable=True):
+          def validate_trusted_tool_tree(root, allowed_uids=(0,), require_unwritable=True):
             for directory, directory_names, file_names in os.walk(root, followlinks=False):
               directory_path = Path(directory)
               directory_metadata = directory_path.stat(follow_symlinks=False)
               if (
                 not stat.S_ISDIR(directory_metadata.st_mode)
-                or directory_metadata.st_uid != 0
+                or directory_metadata.st_uid not in allowed_uids
                 or (require_unwritable and directory_metadata.st_mode & 0o022)
               ):
                 sys.exit("trusted tool tree directory has unsafe ownership mode")
               for name in (*directory_names, *file_names):
                 entry = directory_path / name
                 entry_metadata = entry.stat(follow_symlinks=False)
-                if entry_metadata.st_uid != 0:
-                  sys.exit("trusted tool tree entry is not root owned")
+                if entry_metadata.st_uid not in allowed_uids:
+                  sys.exit("trusted tool tree entry has unapproved ownership")
                 if stat.S_ISLNK(entry_metadata.st_mode):
                   resolved_entry = entry.resolve()
                   if resolved_entry.is_relative_to(root):
@@ -466,17 +886,27 @@ def isolate_candidate_runtime_cache(document: str) -> str:
               sys.exit("trusted tool prefix overlaps candidate-controlled paths")
             if tool_prefix.is_relative_to(trusted_tool_root):
               validate_trusted_ancestry(
-                trusted_tool_root, tool_prefix, trusted_tool_uids, "trusted tool prefix"
+                trusted_tool_root,
+                tool_prefix,
+                trusted_tool_uids,
+                "trusted tool prefix",
+                require_unwritable=trusted_tool_tree_requires_unwritable,
               )
             prefix_metadata = tool_prefix.stat(follow_symlinks=False)
             if not stat.S_ISDIR(prefix_metadata.st_mode):
               sys.exit("trusted tool prefix is not a directory")
             # See the pwsh discovery comment above: the Microsoft-shipped runtime tree
-            # under GitHub-hosted /opt is root-owned but world-writable throughout, so
-            # only that prefix relaxes the write-bit requirement; npm/node stay strict.
-            validate_root_owned_tool_tree(
+            # under GitHub-hosted /opt is root-owned but world-writable throughout, and
+            # the admitted hosted tool cache is world-writable throughout by the same
+            # image convention; only those prefixes relax the write-bit requirement.
+            prefix_in_hosted_tool_cache = tool_prefix.is_relative_to(hosted_tool_cache_root)
+            validate_trusted_tool_tree(
               tool_prefix,
-              require_unwritable=not tool_prefix.is_relative_to("/opt/microsoft/powershell"),
+              allowed_uids=trusted_tool_uids if prefix_in_hosted_tool_cache else (0,),
+              require_unwritable=not (
+                tool_prefix.is_relative_to("/opt/microsoft/powershell")
+                or (prefix_in_hosted_tool_cache and not trusted_tool_tree_requires_unwritable)
+              ),
             )
             tool_prefix_identities[tool_prefix] = (
               prefix_metadata.st_dev,
@@ -538,7 +968,7 @@ def isolate_candidate_runtime_cache(document: str) -> str:
               signal.signal(caught_signal, handle_signal)
           try:
               for index, (script_directory, name, unset_env) in enumerate(normalized):
-                  if inventory(baseline) != baseline_inventory:
+                  if baseline is not None and inventory(baseline) != baseline_inventory:
                       sys.exit("verified runtime cache changed before candidate script")
                   script_cache = cache_root / str(index)
                   script_cache.mkdir(mode=0o700)
@@ -546,23 +976,26 @@ def isolate_candidate_runtime_cache(document: str) -> str:
                   script_home = cache_root / f"home-{{index}}"
                   script_tmp.mkdir(mode=0o700)
                   script_home.mkdir(mode=0o700)
-                  for relative, _size, _digest in baseline_inventory:
-                      source = baseline / relative
-                      target = script_cache / relative
-                      target.parent.mkdir(parents=True, exist_ok=True)
-                      try:
-                          source_descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
-                      except OSError:
-                          sys.exit("verified runtime cache changed during isolated copy")
-                      if not stat.S_ISREG(os.fstat(source_descriptor).st_mode):
-                          os.close(source_descriptor)
-                          sys.exit("verified runtime cache copy source is not a regular file")
-                      with (
-                          os.fdopen(source_descriptor, "rb") as source_stream,
-                          target.open("xb") as target_stream,
-                      ):
-                          shutil.copyfileobj(source_stream, target_stream, length=1024 * 1024)
-                  if inventory(baseline) != baseline_inventory or inventory(script_cache) != baseline_inventory:
+                  if baseline is not None:
+                      for relative, _size, _digest in baseline_inventory:
+                          source = baseline / relative
+                          target = script_cache / relative
+                          target.parent.mkdir(parents=True, exist_ok=True)
+                          try:
+                              source_descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
+                          except OSError:
+                              sys.exit("verified runtime cache changed during isolated copy")
+                          if not stat.S_ISREG(os.fstat(source_descriptor).st_mode):
+                              os.close(source_descriptor)
+                              sys.exit("verified runtime cache copy source is not a regular file")
+                          with (
+                              os.fdopen(source_descriptor, "rb") as source_stream,
+                              target.open("xb") as target_stream,
+                          ):
+                              shutil.copyfileobj(source_stream, target_stream, length=1024 * 1024)
+                  if (baseline is not None and inventory(baseline) != baseline_inventory) or (
+                      inventory(script_cache) != baseline_inventory
+                  ):
                       sys.exit("isolated candidate cache copy failed integrity verification")
                   script_env = os.environ.copy()
                   for env_name in unset_env:
@@ -695,14 +1128,14 @@ def isolate_candidate_runtime_cache(document: str) -> str:
                   script_cache.exists()
                   or script_tmp.exists()
                   or script_home.exists()
-                  or inventory(baseline) != baseline_inventory
+                  or (baseline is not None and inventory(baseline) != baseline_inventory)
                 ):
                   sys.exit("candidate script cache cleanup or baseline integrity check failed")
           finally:
               cleanup_cache_root()
               for caught_signal, previous_handler in previous_handlers.items():
                   signal.signal(caught_signal, previous_handler)
-          if cache_root.exists() or inventory(baseline) != baseline_inventory:
+          if cache_root.exists() or (baseline is not None and inventory(baseline) != baseline_inventory):
               sys.exit("candidate cache root cleanup or final baseline integrity check failed")
 """
     if step.count(execution) != 1:
@@ -767,10 +1200,183 @@ def remove_step(document: str, step_name: str) -> str:
     return document[:step_start] + document[step_end + 1:]
 
 
+def insert_protected_baseline_step(document: str) -> str:
+    acquisition_start = document.index("  acquire-secretless-dependencies:\n")
+    checkout_marker = "      - uses: actions/checkout@"
+    checkout_start = document.index(checkout_marker, acquisition_start)
+    return document[:checkout_start] + PROTECTED_BASELINE_STEP + document[checkout_start:]
+
+
+def configure_protected_baseline(document: str) -> str:
+    def insert_after_signature(source: str, signature: str, body: str) -> str:
+        lines = source.splitlines(keepends=True)
+        matches = [index for index, line in enumerate(lines) if line.strip() == signature]
+        if len(matches) != 1:
+            raise SystemExit(f"protected node-ci expected one {signature!r} boundary")
+        index = matches[0]
+        indentation = lines[index][: len(lines[index]) - len(lines[index].lstrip())]
+        body_lines = [
+            f"{indentation}    {line}\n" for line in body.splitlines()
+        ]
+        lines[index + 1 : index + 1] = body_lines
+        return "".join(lines)
+
+    document = insert_after_signature(
+        document,
+        "def is_bounded_range(value):",
+        'if os.environ.get("ALLOW_PRERELEASE") == "true" and re.fullmatch('
+        'rf"{core_pattern}-(?:[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)", value):\n'
+        "  return True",
+    )
+    document = insert_after_signature(
+        document,
+        "def satisfies_bounded_range(version, range_value):",
+        'if (\n'
+        'os.environ.get("ALLOW_PRERELEASE") == "true"\n'
+        "and \"-\" in range_value\n"
+        "and version == range_value\n"
+        "and version_pattern.fullmatch(version)\n"
+        "):\n"
+        "  return True",
+    )
+    acquisition_end = document.index("  build-test:\n")
+    acquisition = document[:acquisition_end]
+    remainder = document[acquisition_end:]
+    dynamic_request = (
+        "COMPATIBILITY_RANGES: ${{ steps.resolve-protected-type-surface.outputs.compatibility-ranges "
+        "|| inputs.secretless-compatibility-ranges }}"
+    )
+    if "COMPATIBILITY_RANGES: ${{ inputs.secretless-compatibility-ranges }}" not in acquisition:
+        raise SystemExit("protected node-ci compatibility input boundary drifted")
+    acquisition = acquisition.replace(
+        "COMPATIBILITY_RANGES: ${{ inputs.secretless-compatibility-ranges }}",
+        dynamic_request,
+    )
+
+    acquisition_gate = "if: inputs.secretless-compatibility-ranges != ''"
+    if acquisition.count(acquisition_gate) != 1:
+        raise SystemExit("protected node-ci compatibility acquisition gate drifted")
+    acquisition = acquisition.replace(
+        acquisition_gate,
+        "if: inputs.protected-type-surface-declaration-path != '' || "
+        "inputs.secretless-compatibility-ranges != ''",
+        1,
+    )
+
+    compatibility_marker = dynamic_request
+    if acquisition.count(compatibility_marker) < 1:
+        raise SystemExit("protected node-ci compatibility environment drifted")
+    environment_lines = []
+    for line in acquisition.splitlines(keepends=True):
+        environment_lines.append(line)
+        if line.lstrip().startswith(compatibility_marker):
+            indentation = line[: len(line) - len(line.lstrip())]
+            environment_lines.append(
+                indentation
+                + "ALLOW_PRERELEASE: ${{ inputs.protected-type-surface-allow-prerelease }}\n"
+            )
+    acquisition = "".join(environment_lines)
+    provenance_env = (
+        "          COMPATIBILITY_PROVENANCE: ${{ runner.temp }}/secretless-compatibility-"
+        "${{ github.run_id }}-${{ github.run_attempt }}/_compatibility/provenance.json\n"
+    )
+    if acquisition.count(provenance_env) != 1:
+        raise SystemExit("protected node-ci compatibility provenance environment drifted")
+    acquisition = acquisition.replace(
+        provenance_env,
+        provenance_env
+        + "          PROTECTED_BASELINE_RECEIPT_PATH: ${{ steps.resolve-protected-type-surface.outputs.receipt-path }}\n",
+        1,
+    )
+    auxiliary_marker = "      - name: Resolve immutable auxiliary source\n"
+    if acquisition.count(auxiliary_marker) != 1:
+        raise SystemExit("protected node-ci auxiliary boundary drifted")
+    acquisition = acquisition.replace(
+        auxiliary_marker,
+        PROTECTED_BASELINE_BIND_STEP + auxiliary_marker,
+        1,
+    )
+    outputs_marker = (
+        "      compatibility-provenance-sha256: ${{ steps.package-secretless-transfer.outputs.compatibility-provenance-sha256 }}\n"
+    )
+    if acquisition.count(outputs_marker) != 1:
+        raise SystemExit("protected node-ci acquisition outputs drifted")
+    acquisition = acquisition.replace(
+        outputs_marker,
+        outputs_marker
+        + "      protected-baseline-request: ${{ steps.resolve-protected-type-surface.outputs.compatibility-ranges }}\n"
+        + "      protected-baseline-base-sha: ${{ steps.resolve-protected-type-surface.outputs.base-sha }}\n"
+        + "      protected-baseline-declaration-sha256: ${{ steps.resolve-protected-type-surface.outputs.declaration-sha256 }}\n",
+        1,
+    )
+
+    build = remainder
+    build_request = (
+        "COMPATIBILITY_RANGES: ${{ needs.acquire-secretless-dependencies.outputs.protected-baseline-request "
+        "|| inputs.secretless-compatibility-ranges }}"
+    )
+    if "COMPATIBILITY_RANGES: ${{ inputs.secretless-compatibility-ranges }}" not in build:
+        raise SystemExit("protected node-ci build compatibility input boundary drifted")
+    build = build.replace(
+        "COMPATIBILITY_RANGES: ${{ inputs.secretless-compatibility-ranges }}",
+        build_request,
+    )
+    expected_provenance = (
+        "          EXPECTED_COMPATIBILITY_PROVENANCE_SHA256: ${{ needs.acquire-secretless-dependencies.outputs.compatibility-provenance-sha256 }}\n"
+    )
+    if build.count(expected_provenance) < 1:
+        raise SystemExit("protected node-ci expected provenance environment drifted")
+    build = build.replace(
+        expected_provenance,
+        expected_provenance
+        + "          EXPECTED_PROTECTED_BASELINE_BASE_SHA: ${{ needs.acquire-secretless-dependencies.outputs.protected-baseline-base-sha }}\n"
+        + "          EXPECTED_PROTECTED_BASELINE_DECLARATION_SHA256: ${{ needs.acquire-secretless-dependencies.outputs.protected-baseline-declaration-sha256 }}\n"
+        + "          PROTECTED_BASELINE_DECLARATION_PATH: ${{ inputs.protected-type-surface-declaration-path }}\n"
+        + "          PROTECTED_BASELINE_EXPECTED_PACKAGE: ${{ inputs.protected-type-surface-expected-package }}\n"
+        + "          PROTECTED_BASELINE_EXPECTED_SCRIPT: ${{ inputs.protected-type-surface-expected-script }}\n"
+        + "          PROTECTED_BASELINE_REPOSITORY: ${{ github.repository }}\n",
+        1,
+    )
+    baseline_shape = (
+        '                      or set(provenance) != {"schemaVersion", "request", "lanes"}\n'
+    )
+    if build.count(baseline_shape) < 1:
+        raise SystemExit("protected node-ci provenance shape guard drifted")
+    build = build.replace(
+        baseline_shape,
+        '                      or set(provenance) not in ({"schemaVersion", "request", "lanes"}, {"schemaVersion", "request", "lanes", "protectedBaseline"})\n',
+        1,
+    )
+    baseline_parse = "              provenance = json.loads(provenance_bytes)\n"
+    if build.count(baseline_parse) < 1:
+        raise SystemExit("protected node-ci provenance parser drifted")
+    build = build.replace(
+        baseline_parse,
+        baseline_parse
+        + "".join(
+            f"    {line}"
+            for line in PROTECTED_BASELINE_TRANSFER_VALIDATION.splitlines(keepends=True)
+        ),
+        1,
+    )
+    return acquisition + build
+
+
 def render() -> str:
     document = SOURCE.read_text(encoding="utf-8")
-    document = replace_once(document, "# Reusable CI for the verJSON Node libraries:", "# Generated by scripts/gen-node-ci-protected.py; do not edit.\n# Protected required-workflow Node.js CI variant:")
-    document = replace_once(document, "      db-image:\n", INPUTS + "      db-image:\n")
+    document = replace_once(
+        document,
+        "# Reusable CI for the verJSON Node libraries:",
+        "# Generated by scripts/gen-node-ci-protected.py; do not edit.\n"
+        "# Protected required-workflow Node.js CI variant:",
+    )
+    document = replace_once(
+        document,
+        "      db-image:\n",
+        INPUTS + PROTECTED_INPUTS + "      db-image:\n",
+    )
+    document = insert_protected_baseline_step(document)
+    document = configure_protected_baseline(document)
     document = replace_once(document, "          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}", "          HEAD_SHA: ${{ inputs.head-sha }}")
     document = replace_once(document, "    permissions:\n      contents: read\n      packages: read\n", "    permissions:\n      actions: read\n      contents: read\n      packages: read\n      pull-requests: read\n")
     document = replace_once(document, "          EVENT_NAME: ${{ github.event_name }}\n          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}", "          EVENT_NAME: ${{ inputs.event-name }}\n          HEAD_REPOSITORY: ${{ inputs.head-repository }}")
@@ -793,7 +1399,13 @@ def render() -> str:
     plan_if = "needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && (inputs.secretless-ci-script-plan != '' || inputs.secretless-nested-manifests != '')"
     default_if = "needs.eligibility.outputs.should-run != 'false' && (!(inputs.secretless-pr || inputs.secretless-trusted-ref) || inputs.secretless-ci-script-plan == '')"
     document = replace_once(document, "      - name: Rebuild exact approved lifecycle packages without credentials\n", verifier_step(rebuild_if) + "      - name: Rebuild exact approved lifecycle packages without credentials\n")
-    document = replace_once(document, "      - name: Run exact credentialless consumer script plan\n", verifier_step(plan_if) + "      - name: Run exact credentialless consumer script plan\n")
+    document = replace_once(
+        document,
+        "      - name: Run exact credentialless consumer script plan\n",
+        PROTECTED_BASELINE_REF_STEP
+        + verifier_step(plan_if)
+        + "      - name: Run exact credentialless consumer script plan\n",
+    )
     default_commands = """      - run: npm run build
         if: needs.eligibility.outputs.should-run != 'false' && (!(inputs.secretless-pr || inputs.secretless-trusted-ref) || inputs.secretless-ci-script-plan == '')
       - run: npm run typecheck --if-present
@@ -812,9 +1424,32 @@ def render() -> str:
           npm run lint --if-present
 """
     document = replace_once(document, default_commands, verifier_step(default_if) + grouped_default)
-    compatibility_if = "needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.secretless-compatibility-ranges != ''"
+    compatibility_if = (
+        "needs.eligibility.outputs.should-run != 'false' && "
+        "(inputs.secretless-pr || inputs.secretless-trusted-ref) && "
+        "(inputs.protected-type-surface-declaration-path != '' || "
+        "inputs.secretless-compatibility-ranges != '')"
+    )
+    legacy_compatibility_if = (
+        "needs.eligibility.outputs.should-run != 'false' && "
+        "(inputs.secretless-pr || inputs.secretless-trusted-ref) && "
+        "inputs.secretless-compatibility-ranges != ''"
+    )
+    if document.count(legacy_compatibility_if) != 2:
+        raise SystemExit("protected node-ci compatibility runtime gate drifted")
+    document = document.replace(legacy_compatibility_if, compatibility_if)
     document = replace_once(document, "      - name: Run runtime-resolved compatibility lanes without credentials\n", verifier_step(compatibility_if) + "      - name: Run runtime-resolved compatibility lanes without credentials\n")
     document = remove_step(document, "Install schema submodule deps")
+    document = document.replace(
+        "          ref: ${{ inputs.head-sha }}\n          persist-credentials: false\n",
+        "          ref: ${{ inputs.head-sha }}\n          fetch-depth: 0\n          persist-credentials: false\n",
+        1,
+    )
+    document = document.replace(
+        "          ref: ${{ inputs.head-sha }}\n          submodules: ${{ (inputs.secretless-pr || inputs.secretless-trusted-ref) && 'false' || 'recursive' }}\n",
+        "          ref: ${{ inputs.head-sha }}\n          fetch-depth: 0\n          submodules: ${{ (inputs.secretless-pr || inputs.secretless-trusted-ref) && 'false' || 'recursive' }}\n",
+        1,
+    )
     for step_name in (
         "Rebuild exact approved lifecycle packages without credentials",
         "Run exact credentialless consumer script plan",
@@ -823,6 +1458,12 @@ def render() -> str:
     ):
         document = remove_candidate_credentials(document, step_name)
     document = isolate_candidate_runtime_cache(document)
+    document = move_step_before_guard(
+        document,
+        "Provision trusted compatibility sandbox",
+        "Run exact credentialless consumer script plan",
+        "Revalidate protected pull-request identity",
+    )
     return document
 
 
