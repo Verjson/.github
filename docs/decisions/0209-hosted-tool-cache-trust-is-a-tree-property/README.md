@@ -91,3 +91,26 @@ Alternatives considered:
   recover their hosted protected type-surface lane.
 - If GitHub changes the image convention, the exact-root admission fails closed again and
   this decision must be revisited with a fresh probe rather than a wider exemption.
+
+## 2026-09-27 amendment: the hosted sandbox is provisioned for every protected lane
+
+**Status:** Accepted; #1423.
+
+Activating the cli-projects required workflow (ruleset 21830367 at `ebe574b`) produced
+the first hosted run of a protected lane that declares neither a type surface nor
+compatibility ranges (verjson-cli-projects#142, run 36283749779). Both lanes failed
+closed with `verified bubblewrap namespace boundary is unavailable`: the protected
+script plan requires `/usr/bin/bwrap` unconditionally, but the `Provision trusted
+compatibility sandbox` step ran on GitHub-hosted runners only when
+`protected-type-surface-declaration-path` or `secretless-compatibility-ranges` was set.
+The authn and customer-lifecycle callers pass a declaration path, which is why they
+were green at the same SHA and the defect stayed hidden.
+
+The provisioning gate now matches the consumers: on `runner.environment ==
+'github-hosted'` the sandbox is provisioned for every lane that will execute the
+script plan (`secretless-ci-script-plan` or `secretless-nested-manifests` set) or the
+compatibility lanes (declaration path or compatibility ranges set), under the same
+`should-run` and secretless-PR/trusted-ref conditions. A lane that passes none of the
+four does not pay for provisioning it would never use. Self-hosted runners are
+unchanged because they carry the sandbox as a fleet property. Nothing about what the
+sandbox admits changes; only when it is present.

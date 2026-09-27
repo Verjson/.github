@@ -1438,6 +1438,27 @@ def render() -> str:
     if document.count(legacy_compatibility_if) != 2:
         raise SystemExit("protected node-ci compatibility runtime gate drifted")
     document = document.replace(legacy_compatibility_if, compatibility_if)
+    # The protected script plan requires the bubblewrap namespace boundary
+    # whenever it runs (a script plan or nested manifests are set), so on
+    # GitHub-hosted runners the sandbox must be provisioned for every lane that
+    # will execute it, not only for lanes that declare a type surface or
+    # compatibility ranges. verjson-cli-projects' lanes pass a script plan and
+    # neither of those, and failed closed with "verified bubblewrap namespace
+    # boundary is unavailable" the moment their required workflow was
+    # activated (#1423).
+    hosted_provisioning_if = compatibility_if + " && runner.environment == 'github-hosted'"
+    if document.count(hosted_provisioning_if) != 1:
+        raise SystemExit("protected node-ci hosted sandbox provisioning gate drifted")
+    document = document.replace(
+        hosted_provisioning_if,
+        "needs.eligibility.outputs.should-run != 'false' && "
+        "(inputs.secretless-pr || inputs.secretless-trusted-ref) && "
+        "(inputs.protected-type-surface-declaration-path != '' || "
+        "inputs.secretless-compatibility-ranges != '' || "
+        "inputs.secretless-ci-script-plan != '' || "
+        "inputs.secretless-nested-manifests != '') && "
+        "runner.environment == 'github-hosted'",
+    )
     document = replace_once(document, "      - name: Run runtime-resolved compatibility lanes without credentials\n", verifier_step(compatibility_if) + "      - name: Run runtime-resolved compatibility lanes without credentials\n")
     document = remove_step(document, "Install schema submodule deps")
     document = document.replace(
