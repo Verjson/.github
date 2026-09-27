@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import importlib.util
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -67,8 +68,16 @@ class CodeownersTests(unittest.TestCase):
     def test_generator_embedded_copy_matches_the_reviewed_source(self):
         # gen-changelog-caller.sh embeds the bytes (the audit materializes only the
         # generator at a pin); config/codeowners/CODEOWNERS is the reviewed source.
+        # The generator resolves the changelog engine digest at the given commit
+        # before any mode runs, so the pin must be a real commit: HEAD of this
+        # checkout, or the commit CI materialized when no repository is present.
+        head = subprocess.run(
+            ['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], capture_output=True, text=True,
+        )
+        pin = head.stdout.strip() if head.returncode == 0 else os.environ.get('GITHUB_SHA', '')
+        self.assertRegex(pin, r'^[0-9a-f]{40}$', 'no resolvable contract commit for the drift check')
         emitted = subprocess.run(
-            ['bash', str(ROOT / 'scripts/gen-changelog-caller.sh'), 'codeowners', '0' * 40],
+            ['bash', str(ROOT / 'scripts/gen-changelog-caller.sh'), 'codeowners', pin],
             check=True, capture_output=True, text=True,
         ).stdout
         self.assertEqual(emitted, owners.CONTENT)
