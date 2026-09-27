@@ -1907,7 +1907,11 @@ ${release_plan_step}
           ref: \${{ steps.release-version.outputs.version }}
           fetch-depth: 0
           persist-credentials: false
+      # A snapshot-only adopter publishes nothing and need not be a Node project
+      # (#1206): the Node steps run only when a package.json exists, and a
+      # repository without one must verify through its own verify hook below.
       - uses: ${release_setup_node}
+        if: steps.release-version.outputs.selected == 'true' && hashFiles('package.json') != ''
         with:
           # Keep the literal inside an expression so Renovate's uses-with
           # extractor leaves it alone while setup-node receives the same value.
@@ -1916,7 +1920,7 @@ ${release_plan_step}
           scope: '${release_scope}'
           package-manager-cache: false
       - name: Install dependencies
-        if: steps.release-version.outputs.selected == 'true'
+        if: steps.release-version.outputs.selected == 'true' && hashFiles('package.json') != ''
         run: npm ci
         env:
           # NOT GITHUB_TOKEN (#465). A repository-scoped GITHUB_TOKEN cannot read
@@ -1937,7 +1941,7 @@ ${release_plan_step}
             scripts/release-prepare-packages.sh "\$PACKAGE_VERSION"
           fi
       - name: Stamp the dispatched package versions
-        if: steps.release-version.outputs.selected == 'true'
+        if: steps.release-version.outputs.selected == 'true' && hashFiles('package.json') != ''
         env:
           PACKAGE_VERSION: \${{ steps.release-version.outputs.package-version }}
         run: |
@@ -1964,6 +1968,9 @@ ${release_plan_step}
             echo "Running this repository's scripts/release-verify.sh"
             verification_status=0
             scripts/release-verify.sh || verification_status=\$?
+          elif [ ! -f package.json ]; then
+            echo "::error::No package.json and no executable scripts/release-verify.sh: nothing verifies this tree before the snapshot. Commit scripts/release-verify.sh (#1206)."
+            exit 1
           else
             verification_status=0
             npm run build --if-present &&

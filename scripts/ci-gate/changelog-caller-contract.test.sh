@@ -2836,6 +2836,15 @@ grep -qE '^  verify:$' <<<"$snapshot_release" \
 # Regression: publish's tag/note verification step once read the version from
 # `steps.release-version.outputs.version` (always empty there), so the exact-tag
 # check failed on every release.
+# A snapshot-only adopter need not be a Node project (#1206): the Node steps are
+# guarded on package.json and a repository without one must verify through its
+# own scripts/release-verify.sh rather than falling back to npm test.
+snapshot_verify_job="$(awk '/^  verify:[[:space:]]*$/{seen=1} /^  snapshot:[[:space:]]*$/{seen=0} seen' <<<"$snapshot_release")"
+[ "$(grep -cF "&& hashFiles('package.json') != ''" <<<"$snapshot_verify_job")" -eq 3 ] \
+  && grep -qF 'elif [ ! -f package.json ]; then' <<<"$snapshot_verify_job" \
+  && grep -qF 'No package.json and no executable scripts/release-verify.sh' <<<"$snapshot_verify_job" \
+  && pass "release-snapshot guards setup-node, npm ci, and version stamping on package.json and fails closed without a verify hook (#1206)" \
+  || fail "release-snapshot still assumes a Node project: a non-npm adopter would fail at npm ci or verify nothing"
 snapshot_publish_job="$(awk '/^  publish:[[:space:]]*$/{seen=1} seen' <<<"$snapshot_release")"
 grep -qF 'VERSION: ${{ needs.verify.outputs.version }}' <<<"$snapshot_publish_job" \
   && ! grep -qF 'steps.release-version' <<<"$snapshot_publish_job" \
