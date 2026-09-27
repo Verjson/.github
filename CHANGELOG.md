@@ -1,3 +1,23 @@
+# v3.0.1
+
+## Bind the authorization check by its stored page, not the arm-run details_url
+
+Since ADR 0203 the arm creates `AI review authorization` with the Actions token, and GitHub replaces the `details_url` of an Actions-owned check with the check's own `/runs/<id>` page. Every predicate that bound the check to the arm run through that field failed, so every review dispatched after #1569 merged (2026-09-27 02:02 UTC; first failure 02:07 UTC) stopped at preflight with `authorization check is not receipt-bound`. `verify-arm-receipt.sh`, both re-verification steps in `ai-review-merge.yml`, orphan recovery and re-promotion in `gate-rearm.yml`, and `ai-promotion-retry.yml` now bind the check to its stored page and take the arm run from `external_id`; the receipt keeps the arm-run URL. Live only after ruleset 20722935 rotates to the merge commit and adopters repin through the next contract release (ADR 0203 amendment).
+
+_Date: 2026-09-27; issue #1648_
+
+## Repository notes record the tracked CHANGELOG snapshots and prune closed Active Issues
+
+`CLAUDE.md` states that since v3.0.0 the repository tracks `CHANGELOG/<version>.md` and the release-written aggregate `CHANGELOG.md`, which no pull request edits; the Active Issues list drops the closed #1540, #1612, and #1617 and refreshes #1363 and #1451 with their 2026-09-27 verified state.
+
+_Date: 2026-09-27; id:20260927T060000Z_
+
+## Repin the cli-projects required workflow to the hosted sandbox-provisioning fix (#1423)
+
+`cli-projects-package-surface-required.yml` calls `node-ci-protected.yml@4a08c756547ccaf8977eda692e14eff56fddaf15` (#1636) on both lanes, and `config/cli-projects-package-surface-ruleset.json` records the currently active image (`ebe574b`) as the previous workflow so ruleset 21830367 can be rotated to this commit. The consumer `ci.yml` is regenerated to the same commit before rotation because admission compares its bytes.
+
+_Date: 2026-09-27; id:20260927T020500Z_
+
 # v3.0.0
 
 ## Ruleset verify-run accepts the offset-form updated_at GitHub actually returns
