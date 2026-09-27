@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import argparse
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import re
@@ -489,11 +489,17 @@ def promote_reviewed_org_rule(
 
 
 def parse_timestamp(value):
-    require(isinstance(value, str) and value.endswith("Z"), "ruleset timestamp is invalid")
+    # GitHub returns run timestamps as `...Z` and ruleset `updated_at` as an
+    # offset form (`2026-09-26T20:50:34.908-04:00`); accept any timezone-aware
+    # ISO 8601 value and compare in UTC (#1630). A naive value is rejected.
+    require(isinstance(value, str) and value, "ruleset timestamp is invalid")
     try:
-        return datetime.fromisoformat(value[:-1] + "+00:00")
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
     except ValueError:
         raise ContractError("ruleset timestamp is invalid") from None
+    require(parsed.tzinfo is not None and parsed.utcoffset() is not None,
+            "ruleset timestamp is invalid")
+    return parsed.astimezone(timezone.utc)
 
 
 def validate_required_run(run, contract, workflow_sha, head_sha, minimum_run_id, not_before):
