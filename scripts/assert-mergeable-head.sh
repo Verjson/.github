@@ -216,6 +216,9 @@ trap 'rm -f "$rules_err"' EXIT
 # Measured live on 2026-09-26 (#1470): `rules/branches/` resolves the same ruleset
 # for `release%2F2026.09` and `release/2026.09`, so the path form is the strictly
 # safer spelling, and it is the one every other `rules/branches/` reader here uses.
+# Keep this assignment bare (no `|| fault` guard, no continuation): the URI-encoding
+# scan recognizes the encoder only in this exact single-line shape, and a jq failure
+# here still fails closed below (an empty segment cannot read a ruleset).
 base_ref_path="$(jq -rn --arg r "$base_ref" '$r | @uri')"
 readonly base_ref_path
 rules_json="$(gh api --paginate "repos/$repo/rules/branches/$base_ref_path" </dev/null 2>"$rules_err" | jq -s 'add')"
