@@ -88,7 +88,8 @@ else fail 'accepted-but-lost activation was not recovered'; fi
 
 genuine_check_json="$CURRENT_CHECK_JSON"
 for forged_url in https://github.com/Verjson/example/actions/runs/7001 https://github.com/Verjson/example/runs/9002; do
-  export CURRENT_CHECK_JSON="$(jq -c --arg url "$forged_url" '.details_url=$url' <<<"$genuine_check_json")"
+  forged_check_json="$(jq -c --arg url "$forged_url" '.details_url=$url' <<<"$genuine_check_json")"
+  export CURRENT_CHECK_JSON="$forged_check_json"
   if ! run_case >/dev/null 2>&1 && ! grep -q 'method PATCH' "$CALLS"; then
     pass "a live check whose details_url is not its own stored page is not recovered ($forged_url) (#1648)"
   else fail "a check with a forged details_url was recovered ($forged_url)"; fi
