@@ -49,7 +49,7 @@ jobs:
           [[ "$EXPECTED_APP_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$EXPECTED_APP_SLUG" =~ ^[A-Za-z0-9-]+$ ]]
           authorization="$(gh api "repos/$TARGET_REPO/commits/$MERGED_HEAD_SHA/check-runs" \
-            --jq "[.check_runs[] | select(.name == \"AI review authorization\" and .head_sha == \"$MERGED_HEAD_SHA\" and ((.app.id == $EXPECTED_APP_ID and .app.slug == \"$EXPECTED_APP_SLUG\") or (.app.id == 15368 and .app.slug == \"github-actions\")))] | sort_by(.id) | last // {}")"
+            --jq "[.check_runs[] | select(.name == \"AI review authorization\" and .head_sha == \"$MERGED_HEAD_SHA\" and .app.id == 15368 and .app.slug == \"github-actions\")] | sort_by(.id) | last // {}")"
           check_id="$(jq -r '.id // ""' <<<"$authorization")"
           if [ -z "$check_id" ] && jq -e 'type == "object" and length == 0' <<<"$authorization" >/dev/null; then
             echo 'eligible=false' >>"$GITHUB_OUTPUT"
@@ -64,10 +64,10 @@ jobs:
             echo 'eligible=false' >>"$GITHUB_OUTPUT"
             exit 0
           fi
-          jq -e --arg head "$MERGED_HEAD_SHA" --arg slug "$EXPECTED_APP_SLUG" --argjson app "$EXPECTED_APP_ID" '
+          jq -e --arg head "$MERGED_HEAD_SHA" '
             .name == "AI review authorization" and .head_sha == $head
             and .status == "completed" and .conclusion == "success"
-            and ((.app.id == $app and .app.slug == $slug) or (.app.id == 15368 and .app.slug == "github-actions"))
+            and .app.id == 15368 and .app.slug == "github-actions"
           ' <<<"$authorization" >/dev/null
           ai_approve_marker="<!-- ai-review-authorized:v1:${check_id}:${MERGED_HEAD_SHA}:ai-approve -->"
           ai_merge_marker="<!-- ai-review-authorized:v1:${check_id}:${MERGED_HEAD_SHA}:ai-merge -->"

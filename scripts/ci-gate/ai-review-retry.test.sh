@@ -33,7 +33,7 @@ check_contract() {
   grep -qF 'ai-review-explicit:v1 pr:${PR_NUMBER} check:${AUTHORIZATION_CHECK_ID} head:${EXPECTED_HEAD_SHA}' "$candidate" || return 1
   grep -qF '[ "$marker_check" = "$AUTHORIZATION_CHECK_ID" ]' "$candidate" || return 1
   grep -qF '[ "$explicit_receipt_consumed" = true ]' "$candidate" || return 1
-  grep -qF '.app.id == $app_id and .app.slug == $slug' "$candidate" || return 1
+  grep -qF '.app.id == 15368 and .app.slug == "github-actions"' "$candidate" || return 1
   reserve_one=$(awk '/id: reserve_1$/{found=1} found{print} found&&/^      - name: Prepare bounded review context/{exit}' "$candidate")
   exact_head_line=$(grep -nF '[ "$marker_head" = "$EXPECTED_HEAD_SHA" ] || continue' <<<"$reserve_one" | cut -d: -f1)
   check_lookup_line=$(grep -nF 'check-runs/$marker_check' <<<"$reserve_one" | cut -d: -f1)
@@ -78,7 +78,11 @@ printf '%s\n' "$*" >>"$CALLS_FILE"
 case "$*" in
   *"pulls/7/reviews?per_page=100"*) cat "$REVIEWS_FILE" ;;
   *"pulls/7 --jq .head.sha"*) printf '%s\n' "$CURRENT_HEAD" ;;
-  *"check-runs/8001"*) exit 91 ;;
+  *"check-runs/8001"*)
+    jq -nc --arg head "$CURRENT_HEAD" --argjson app_id "${CHECK_APP_ID:-15368}" \
+      --arg app_slug "${CHECK_APP_SLUG:-github-actions}" \
+      '{id:8001,name:"AI review authorization",head_sha:$head,status:"completed",conclusion:"success",app:{id:$app_id,slug:$app_slug},external_id:("ai-review:v1:Verjson/example:7:"+$head+":101:1:nonce")}'
+    ;;
   *"--method POST"*"pulls/7/reviews"*)
     body='' commit=''
     args=("$@")
@@ -107,6 +111,41 @@ if PATH="$tmp/bin:$PATH" CALLS_FILE="$tmp/calls" REVIEWS_FILE="$tmp/reviews.json
   pass "superseded reservation markers are filtered before any stale check lookup"
 else
   fail "a stale reservation can still trigger check validation or block current-head admission"
+fi
+
+current_marker="<!-- ai-review-pass:v2:1/2 pr:7 check:8001 head:$current_head run:101 attempt:1 provider:deepseek model:deepseek-v4-pro -->"
+jq -nc --arg login 'ai-review-authorization[bot]' --arg head "$current_head" --arg body "$current_marker" \
+  '[{user:{login:$login},state:"COMMENTED",commit_id:$head,body:$body}]' >"$tmp/reviews.json"
+: >"$tmp/calls"
+: >"$tmp/reserve-output"
+if PATH="$tmp/bin:$PATH" CALLS_FILE="$tmp/calls" REVIEWS_FILE="$tmp/reviews.json" CURRENT_HEAD="$current_head" \
+  CHECK_APP_ID=15368 CHECK_APP_SLUG=github-actions RUNNER_TEMP="$tmp/runner" GITHUB_OUTPUT="$tmp/reserve-output" \
+  TARGET_REPO=Verjson/example PR_NUMBER=7 EXPECTED_HEAD_SHA="$current_head" \
+  EXPECTED_APP_SLUG=ai-review-authorization EXPECTED_APP_ID=4528902 AUTHORIZATION_CHECK_ID=8001 \
+  ACTIONS_TOKEN=actions-token PROVIDER=deepseek MODEL=deepseek-v4-pro EXPLICIT_REREVIEW=false \
+  GITHUB_RUN_ID=202 GITHUB_RUN_ATTEMPT=1 bash "$reserve_one_script" \
+  && grep -q 'check-runs/8001' "$tmp/calls" \
+  && grep -qF 'allowed=true' "$tmp/reserve-output" \
+  && grep -qF 'count=2' "$tmp/reserve-output"; then
+  pass "same-head retry accepts an Actions-owned authorization check"
+else
+  fail "same-head retry rejected an Actions-owned authorization check"
+fi
+
+: >"$tmp/calls"
+: >"$tmp/reserve-output"
+if PATH="$tmp/bin:$PATH" CALLS_FILE="$tmp/calls" REVIEWS_FILE="$tmp/reviews.json" CURRENT_HEAD="$current_head" \
+  CHECK_APP_ID=4528902 CHECK_APP_SLUG=ai-review-authorization RUNNER_TEMP="$tmp/runner" \
+  GITHUB_OUTPUT="$tmp/reserve-output" TARGET_REPO=Verjson/example PR_NUMBER=7 \
+  EXPECTED_HEAD_SHA="$current_head" EXPECTED_APP_SLUG=ai-review-authorization EXPECTED_APP_ID=4528902 \
+  AUTHORIZATION_CHECK_ID=8001 ACTIONS_TOKEN=actions-token PROVIDER=deepseek MODEL=deepseek-v4-pro \
+  EXPLICIT_REREVIEW=false GITHUB_RUN_ID=202 GITHUB_RUN_ATTEMPT=1 bash "$reserve_one_script" \
+  >"$tmp/legacy-owner.out" 2>&1; then
+  fail "same-head retry accepted a legacy review-App-owned authorization check"
+elif grep -qF 'App review reservation is not bound to a trusted exact-head authorization check' "$tmp/legacy-owner.out"; then
+  pass "same-head retry rejects a legacy review-App-owned authorization check"
+else
+  fail "legacy authorization ownership failed without the expected diagnostic"
 fi
 
 grep -q 'deepseek-v4-pro then deepseek-v4-flash' "$arm" \

@@ -66,10 +66,9 @@ jq -e --arg head "$EXPECTED_HEAD_SHA" '
   }
 
 api authorization-check "$tmp/check.json" "repos/$TARGET_REPO/check-runs/$AUTHORIZATION_CHECK_ID"
-jq -e --argjson id "$AUTHORIZATION_CHECK_ID" --arg head "$EXPECTED_HEAD_SHA" \
-  --argjson app "$EXPECTED_APP_ID" --arg slug "$EXPECTED_APP_SLUG" '
+jq -e --argjson id "$AUTHORIZATION_CHECK_ID" --arg head "$EXPECTED_HEAD_SHA" '
     .id == $id and .name == "AI review authorization" and .head_sha == $head and
-    .app.id == $app and .app.slug == $slug
+    .app.id == 15368 and .app.slug == "github-actions"
   ' "$tmp/check.json" >/dev/null || {
     echo "::error::zero-provider recovery check or App identity mismatch"
     exit 1

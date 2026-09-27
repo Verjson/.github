@@ -430,10 +430,8 @@ jobs:
           fi
 
           latest="$(gh api "repos/$TARGET_REPO/commits/$head_sha/check-runs" -H 'Accept: application/vnd.github+json' --jq \
-            "[.check_runs[] | select(.name == \"AI review authorization\" and ((.app.id == 15368 and .app.slug == \"github-actions\") or (.app.id == $APP_ID and .app.slug == \"$APP_SLUG\")))] | sort_by(.id) | last // {}")"
+            "[.check_runs[] | select(.name == \"AI review authorization\" and .app.id == 15368 and .app.slug == \"github-actions\")] | sort_by(.id) | last // {}")"
           latest_id="$(jq -r '.id // ""' <<<"$latest")"
-          latest_app_id="$(jq -r '.app.id // ""' <<<"$latest")"
-          latest_app_slug="$(jq -r '.app.slug // ""' <<<"$latest")"
           latest_status="$(jq -r '.status // ""' <<<"$latest")"
           latest_conclusion="$(jq -r '.conclusion // ""' <<<"$latest")"
           latest_title="$(jq -r '.output.title // ""' <<<"$latest")"
@@ -448,10 +446,7 @@ jobs:
             check_id="$(jq -er '.id | select(type == "number" and . > 0)' <<<"$check_json")" || return 1
           check_app_id="$(jq -er '.app.id | select(type == "number" and . > 0)' <<<"$check_json")" || return 1
           check_app_slug="$(jq -er '.app.slug | select(type == "string" and test("^[A-Za-z0-9-]+$"))' <<<"$check_json")" || return 1
-          case "$check_app_id:$check_app_slug" in
-            15368:github-actions|"$APP_ID:$APP_SLUG") ;;
-            *) return 1 ;;
-          esac
+          [ "$check_app_id:$check_app_slug" = 15368:github-actions ] || return 1
             external_id="$(jq -er '.external_id | select(type == "string")' <<<"$check_json")" || return 1
             details_url="$(jq -er '.details_url | select(type == "string")' <<<"$check_json")" || return 1
             IFS=: read -r scheme version receipt_repo receipt_pr receipt_head source_run_id source_attempt nonce extra <<<"$external_id"
@@ -505,7 +500,8 @@ jobs:
                 .schema == (if $source_path == ".github/workflows/ai-review-label-rearm.yml" then 2 else 1 end) and
                   .repository == $repo and .pr_number == $pr and .head_sha == $head and
                   .check_run_id == $check and .arm_run_id == $run and .arm_run_attempt == $attempt and
-                  .external_id == $external and .details_url == $url and .app_id == $app and .app_slug == $slug and (.check_app_id // .app_id) == $check_app_id and (.check_app_slug // .app_slug) == $check_app_slug
+                .external_id == $external and .details_url == $url and .app_id == $app and .app_slug == $slug and
+                .check_app_id == $check_app_id and .check_app_slug == $check_app_slug
                 ' "$receipt_dir/receipt.json" >/dev/null || { rm -rf "$receipt_dir"; return 1; }
               if [ "$(jq -r .path <<<"$source_run")" = .github/workflows/ai-review-label-rearm.yml ]; then
                 local receipt_workflow_sha protected_blob receipt_blob branch_ref
@@ -583,11 +579,7 @@ jobs:
                 echo "Existing authorization is not provably orphaned; duplicate event is a no-op."
                 exit 0
               fi
-            if [ "$latest_app_id" = "$APP_ID" ] && [ "$latest_app_slug" = "$APP_SLUG" ]; then
-              echo "::error::legacy AI App-owned authorization could not be safely recovered; no duplicate review was dispatched. Restore AI_REVIEW_APP_PRIVATE_KEY before retrying recovery."
-            else
-              echo "::error::pending authorization recovery state is malformed, ambiguous, or unverifiable; no duplicate review was dispatched"
-            fi
+            echo "::error::pending authorization recovery state is malformed, ambiguous, or unverifiable; no duplicate review was dispatched"
               exit 1
             fi
           elif [ "$hold_removed" = false ] && [ "$explicit_rereview" = false ] && [ "$explicit_ai_review" = false ] \

@@ -63,14 +63,14 @@ chmod +x "$tmp/bin/gh"
 export PATH="$tmp/bin:$PATH" CALLS="$tmp/calls" RUNNER_TEMP="$tmp"
 export TARGET_REPO=Verjson/example PR_NUMBER=7 REPOSITORY_ID=42 DEFAULT_BRANCH=main
 export head_sha=0123456789abcdef0123456789abcdef01234567 APP_ID=4528902 APP_SLUG=ai-review-authorization
-export ACTIONS_TOKEN=actions-token GH_TOKEN=app-token GITHUB_RUN_ID=8002 GITHUB_RUN_ATTEMPT=1
+export ACTIONS_TOKEN=actions-token GH_TOKEN=actions-token GITHUB_RUN_ID=8002 GITHUB_RUN_ATTEMPT=1
 export GITHUB_SERVER_URL=https://github.com explicit_rereview=false explicit_ai_review=false
 export hold_removed=false
 external_id="ai-review:v1:Verjson/example:7:$head_sha:7001:1:$(printf 'a%.0s' {1..64})"
 export SOURCE_RUN_JSON='{"id":7001,"run_attempt":1,"status":"completed","event":"pull_request_target","path":".github/workflows/gate-rearm.yml","completed_at":"2020-01-01T00:00:00Z","head_repository":{"full_name":"Verjson/example"},"repository":{"id":42}}'
-export CURRENT_CHECK_JSON="{\"id\":9001,\"status\":\"in_progress\",\"conclusion\":null,\"head_sha\":\"$head_sha\",\"external_id\":\"$external_id\",\"details_url\":\"https://github.com/Verjson/example/actions/runs/7001\",\"app\":{\"id\":4528902,\"slug\":\"ai-review-authorization\"}}"
-export PATCH_JSON="{\"id\":9001,\"status\":\"completed\",\"conclusion\":\"failure\",\"head_sha\":\"$head_sha\",\"external_id\":\"$external_id\",\"details_url\":\"https://github.com/Verjson/example/actions/runs/7001\",\"app\":{\"id\":4528902,\"slug\":\"ai-review-authorization\"},\"output\":{\"title\":\"Orphaned authorization recovered\"}}"
-export RECEIPT_JSON="{\"schema\":1,\"repository\":\"Verjson/example\",\"pr_number\":7,\"head_sha\":\"$head_sha\",\"check_run_id\":9001,\"arm_run_id\":7001,\"arm_run_attempt\":1,\"external_id\":\"$external_id\",\"details_url\":\"https://github.com/Verjson/example/actions/runs/7001\",\"app_id\":4528902,\"app_slug\":\"ai-review-authorization\"}"
+export CURRENT_CHECK_JSON="{\"id\":9001,\"status\":\"in_progress\",\"conclusion\":null,\"head_sha\":\"$head_sha\",\"external_id\":\"$external_id\",\"details_url\":\"https://github.com/Verjson/example/actions/runs/7001\",\"app\":{\"id\":15368,\"slug\":\"github-actions\"}}"
+export PATCH_JSON="{\"id\":9001,\"status\":\"completed\",\"conclusion\":\"failure\",\"head_sha\":\"$head_sha\",\"external_id\":\"$external_id\",\"details_url\":\"https://github.com/Verjson/example/actions/runs/7001\",\"app\":{\"id\":15368,\"slug\":\"github-actions\"},\"output\":{\"title\":\"Orphaned authorization recovered\"}}"
+export RECEIPT_JSON="{\"schema\":1,\"repository\":\"Verjson/example\",\"pr_number\":7,\"head_sha\":\"$head_sha\",\"check_run_id\":9001,\"arm_run_id\":7001,\"arm_run_attempt\":1,\"external_id\":\"$external_id\",\"details_url\":\"https://github.com/Verjson/example/actions/runs/7001\",\"app_id\":4528902,\"app_slug\":\"ai-review-authorization\",\"check_app_id\":15368,\"check_app_slug\":\"github-actions\"}"
 
 write_latest(){
   export latest="$CURRENT_CHECK_JSON" latest_id=9001 latest_status=in_progress latest_conclusion='' latest_title=''

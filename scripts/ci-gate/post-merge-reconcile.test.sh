@@ -27,11 +27,10 @@ run = next(run for run in runs if 'authorization="$(gh api "repos/$TARGET_REPO/c
 match = re.search(r'jq -e --arg head "\$EXPECTED_HEAD_SHA" \'(.*?)\' <<<"\$authorization"', run, re.S)
 assert match, "privileged merge must validate the authorization check identity"
 
-environment = os.environ | {"EXPECTED_APP_ID": "4242", "EXPECTED_APP_SLUG": "ai-review-authorization"}
 head = "1" * 40
 for app_id, slug, accepted in (
     (15368, "github-actions", True),
-    (4242, "ai-review-authorization", True),
+    (4242, "ai-review-authorization", False),
     (9999, "untrusted-app", False),
 ):
     check = {
@@ -46,7 +45,7 @@ for app_id, slug, accepted in (
         input=json.dumps(check),
         text=True,
         capture_output=True,
-        env=environment,
+        env=os.environ,
         check=False,
     )
     assert (result.returncode == 0) == accepted, (app_id, slug, result.stderr)
@@ -91,7 +90,7 @@ export DEFAULT_BRANCH=main RUNNER_TEMP="$tmp" GITHUB_OUTPUT="$tmp/evidence-outpu
 
 write_check() {
   local summary="$1" status="${2:-completed}" conclusion="${3:-success}"
-  local app_id="${4:-$EXPECTED_APP_ID}" app_slug="${5:-$EXPECTED_APP_SLUG}"
+  local app_id="${4:-15368}" app_slug="${5:-github-actions}"
   jq -nc --arg head "$MERGED_HEAD_SHA" --arg summary "$summary" --arg status "$status" \
     --arg conclusion "$conclusion" --argjson app_id "$app_id" --arg app_slug "$app_slug" \
     '{id:9001,name:"AI review authorization",head_sha:$head,status:$status,conclusion:$conclusion,
@@ -180,6 +179,10 @@ else
   echo 'FAIL - Actions-owned authorization check did not reach attestation processing'
   exit 1
 fi
+
+write_valid_ai_evidence
+write_check $'AI approval persisted.\n<!-- ai-review-authorized:v1:9001:1111111111111111111111111111111111111111:ai-merge -->' completed success "$EXPECTED_APP_ID" "$EXPECTED_APP_SLUG"
+expect_rejected "legacy review-App-owned authorization is rejected after compatibility retirement"
 
 write_valid_ai_evidence
 write_check $'Legacy AI approval persisted.\n<!-- ai-review-authorized:v1:9001:1111111111111111111111111111111111111111 -->'
