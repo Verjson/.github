@@ -43,6 +43,7 @@ permissions:
 jobs:
   produce:
     uses: Verjson/.github/.github/workflows/container-deployment-review-producer.yml@$ref
+    secrets: inherit
     with:
       kind: $review_kind
       pull-request: \${{ inputs.pull-request }}
@@ -91,6 +92,7 @@ permissions:
 jobs:
   deploy:
     uses: Verjson/.github/.github/workflows/container-deployment.yml@$ref
+    secrets: inherit
     with:
       manifest-identity: \${{ inputs.manifest-identity }}
       fleet-selector: \${{ inputs.fleet-selector }}
@@ -225,10 +227,21 @@ while IFS= read -r adapter; do
 done < <(jq -r '.evidenceCommand[1], .probeCommand[1]' "$config")
 assert_contains .github/workflows/container-deployment.yml 'container-deployment.yml@$ref'
 assert_contains .github/workflows/container-deployment.yml 'contract-ref: $ref'
-if forbidden="\$(grep -En 'secrets:|environment:|RUNNER_DEPLOY_TOKEN|DIGITALOCEAN_RUNNER_FLEET_TOKEN|GH_RUNNER_REGISTRATION_APP_PRIVATE_KEY|:latest|:stable' \\
+# The reusable jobs bind the caller's protected \`production\` environment, but an
+# environment binding alone never resolves that environment's secrets inside a
+# called workflow (ADR 0171, actions/runner#4453; git-runners run 36279086275
+# reproduced it for the host-export credentials). The caller therefore carries
+# exactly \`secrets: inherit\` on each reusable edge and still never names,
+# maps, or forwards an individual secret (ADR 0198).
+if forbidden="\$(grep -En 'secrets\\.|environment:|RUNNER_DEPLOY_TOKEN|DIGITALOCEAN_RUNNER_FLEET_TOKEN|GH_RUNNER_REGISTRATION_APP_PRIVATE_KEY|RUNNER_HOST_EVIDENCE_|:latest|:stable' \\
   .github/workflows/container-deployment.yml)"; then
   contract_fail "\$(printf '.github/workflows/container-deployment.yml must not name secrets, environments, or mutable tags; observed:\\n%s' "\$forbidden")"
 fi
+if named_secrets="\$(grep -En 'secrets:' .github/workflows/container-deployment.yml | grep -Ev '^[0-9]+:    secrets: inherit\$')"; then
+  contract_fail "\$(printf '.github/workflows/container-deployment.yml may carry only \`secrets: inherit\` on a reusable edge, never a named secret map; observed:\\n%s' "\$named_secrets")"
+fi
+[ "\$(grep -Ec '^    secrets: inherit\$' .github/workflows/container-deployment.yml)" = 1 ] || contract_fail \\
+  '.github/workflows/container-deployment.yml must inherit the caller secret context on exactly its one reusable edge (ADR 0171/0198)'
 python3 -m py_compile scripts/container_deployment_controller.py scripts/container_deployment_preflight.py scripts/container_deployment_transport.py \\
   || contract_fail "a pinned deployment python module failed to compile (see the traceback above)"
 python3 -m json.tool scripts/deployment-receipt.schema.json >/dev/null \\
@@ -244,8 +257,11 @@ assert set(trigger) == {"workflow_dispatch"}, (
     f"{sys.argv[1]}: expected exactly the workflow_dispatch trigger, observed {sorted(trigger)}"
 )
 job = workflow["jobs"]["deploy"]
-assert set(job) == {"uses", "with"}, (
-    f"{sys.argv[1]}: deploy job expected exactly the keys ['uses', 'with'], observed {sorted(job)}"
+assert set(job) == {"uses", "secrets", "with"}, (
+    f"{sys.argv[1]}: deploy job expected exactly the keys ['secrets', 'uses', 'with'], observed {sorted(job)}"
+)
+assert job["secrets"] == "inherit", (
+    f"{sys.argv[1]}: deploy job must inherit the caller secret context verbatim (ADR 0171/0198), observed {job['secrets']!r}"
 )
 assert job["uses"].startswith("Verjson/.github/.github/workflows/container-deployment.yml@"), (
     f"{sys.argv[1]}: deploy job expected to call the canonical container-deployment.yml, observed {job['uses']!r}"
