@@ -122,6 +122,7 @@ jobs:
                 (.external_id // "" | split(":")) as $p |
                 if ($p | length) == 8 and $p[0] == "ai-review" and $p[1] == "v1" and
                    $p[2] == $repo and $p[3] == $pr and $p[4] == $head and
+                   ($p[5] | test("^[1-9][0-9]*$")) and
                    ($p[6] | test("^[1-9][0-9]*$")) and ($p[7] | test("^[0-9a-f]{64}$")) then $p[5] else "" end' <<<"$check")"
           if ! [[ "$check_id" =~ ^[1-9][0-9]*$ ]] || ! [[ "$arm_run_id" =~ ^[1-9][0-9]*$ ]]; then
             echo 'ready=false' >>"$GITHUB_OUTPUT"

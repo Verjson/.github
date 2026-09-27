@@ -621,6 +621,7 @@ jobs:
                 (.external_id // "" | split(":")) as $p |
                 if ($p | length) == 8 and $p[0] == "ai-review" and $p[1] == "v1" and
                    $p[2] == $repo and $p[3] == $pr and $p[4] == $head and
+                   ($p[5] | test("^[1-9][0-9]*$")) and
                    ($p[6] | test("^[1-9][0-9]*$")) and ($p[7] | test("^[0-9a-f]{64}$")) then $p[5] else "" end' <<<"$latest")"
             [[ "$arm_run_id" =~ ^[1-9][0-9]*$ ]] || exit 1
             arm_run_attempt="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/actions/runs/$arm_run_id" --jq '.run_attempt // ""')"
@@ -652,6 +653,7 @@ jobs:
                 (.external_id // "" | split(":")) as $p |
                 if ($p | length) == 8 and $p[0] == "ai-review" and $p[1] == "v1" and
                    $p[2] == $repo and $p[3] == $pr and $p[4] == $head and
+                   ($p[5] | test("^[1-9][0-9]*$")) and
                    ($p[6] | test("^[1-9][0-9]*$")) and ($p[7] | test("^[0-9a-f]{64}$")) then $p[5] else "" end' <<<"$latest")"
               if [[ "$arm_run_id" =~ ^[1-9][0-9]*$ ]]; then
                 arm_run="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/actions/runs/$arm_run_id")"
