@@ -70,6 +70,7 @@ mkdir -p "$tmp/adopter/.github/workflows" "$tmp/adopter/scripts" \
   "$tmp/adopter/NEXT" "$tmp/bin"
 cp "$tmp/render-next.sh" "$tmp/adopter/scripts/render-next.sh"
 cp "$tmp/contract-test.sh" "$tmp/adopter/scripts/changelog-contract.test.sh"
+"$generator" codeowners "$ref" >"$tmp/adopter/.github/CODEOWNERS"
 "$generator" workflow "$ref" >"$tmp/adopter/.github/workflows/changelog.yml"
 "$generator" pr-gate "$ref" >"$tmp/adopter/.github/workflows/changelog-contract.yml"
 chmod +x "$tmp/adopter/scripts/changelog-contract.test.sh"

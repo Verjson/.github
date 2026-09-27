@@ -337,6 +337,7 @@ options to both coupled outputs:
 scripts/gen-changelog-caller.sh release-node "$PIN" --scope @acme --node-version 22 > .github/workflows/release.yml
 scripts/gen-changelog-caller.sh contract-test "$PIN" --scope @acme --node-version 22 > scripts/changelog-contract.test.sh
 scripts/gen-changelog-caller.sh pr-gate "$PIN" > .github/workflows/changelog-contract.yml
+scripts/gen-changelog-caller.sh codeowners "$PIN" > .github/CODEOWNERS   # required member (ADR 0210)
 ```
 
 The generated contract test then rejects drift in either release job. Do not
@@ -524,6 +525,7 @@ scripts/gen-changelog-caller.sh generated-artifacts "$PIN" > .github/workflows/c
 scripts/gen-changelog-caller.sh renderer "$PIN" > scripts/render-next.sh
 scripts/gen-changelog-caller.sh contract-test "$PIN" > scripts/changelog-contract.test.sh
 scripts/gen-changelog-caller.sh pr-gate "$PIN" > .github/workflows/changelog-contract.yml
+scripts/gen-changelog-caller.sh codeowners "$PIN" > .github/CODEOWNERS   # required member (ADR 0210)
 # Hosted Renovate repositories add this trusted pull_request_target caller. It
 # adds a fragment through the Git Data API when the bot did not provide one.
 scripts/gen-changelog-caller.sh renovate-attribution "$PIN" > .github/workflows/renovate-changelog.yml

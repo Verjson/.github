@@ -64,6 +64,15 @@ class CodeownersTests(unittest.TestCase):
                 with self.assertRaises(owners.OwnershipError):
                     owners.check(self.root)
 
+    def test_generator_embedded_copy_matches_the_reviewed_source(self):
+        # gen-changelog-caller.sh embeds the bytes (the audit materializes only the
+        # generator at a pin); config/codeowners/CODEOWNERS is the reviewed source.
+        emitted = subprocess.run(
+            ['bash', str(ROOT / 'scripts/gen-changelog-caller.sh'), 'codeowners', '0' * 40],
+            check=True, capture_output=True, text=True,
+        ).stdout
+        self.assertEqual(emitted, owners.CONTENT)
+
     def test_competing_fallback_locations_fail(self):
         for path in ('CODEOWNERS', 'docs/CODEOWNERS'):
             candidate = self.root / path
