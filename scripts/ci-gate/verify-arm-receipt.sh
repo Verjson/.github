@@ -181,8 +181,12 @@ jq -e \
 ' "$tmp/receipt.json" >/dev/null || { echo "::error::arm receipt content mismatch"; exit 1; }
 
 receipt_external_id="$(jq -r .external_id "$tmp/receipt.json")"
+# An Actions-owned check does not keep the details_url it was created with: GitHub
+# stores the check's own page (#1648). The receipt still names the arm run; the live
+# check is bound through its ID, the nonce-bearing external_id, and that stored page.
+check_details_url="$GITHUB_SERVER_URL/$TARGET_REPO/runs/$AUTHORIZATION_CHECK_ID"
 jq -e --arg head "$EXPECTED_HEAD_SHA" --argjson check_id "$AUTHORIZATION_CHECK_ID" \
-  --arg external_id "$receipt_external_id" --arg details_url "$details_url" \
+  --arg external_id "$receipt_external_id" --arg details_url "$check_details_url" \
   --argjson check_app_id "$receipt_check_app_id" --arg check_app_slug "$receipt_check_app_slug" '
   .id == $check_id and .name == "AI review authorization" and .head_sha == $head and
   .external_id == $external_id and .details_url == $details_url and

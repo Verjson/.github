@@ -72,7 +72,7 @@ write_check() {
   local summary="$1" head="${2:-$HEAD_SHA}" app_id="${3:-15368}" app_slug="${4:-github-actions}"
   jq -nc --arg head "$head" --arg summary "$summary" --argjson app_id "$app_id" \
     --arg slug "$app_slug" \
-    '{id:9001,name:"AI review authorization",head_sha:$head,status:"completed",conclusion:"success",details_url:"https://github.com/Verjson/example/actions/runs/7001",app:{id:$app_id,slug:$slug},output:{summary:$summary}}' \
+    '{id:9001,name:"AI review authorization",head_sha:$head,status:"completed",conclusion:"success",external_id:"ai-review:v1:Verjson/example:7:0123456789abcdef0123456789abcdef01234567:7001:2:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",details_url:"https://github.com/Verjson/example/runs/9001",app:{id:$app_id,slug:$slug},output:{summary:$summary}}' \
     >"$CHECK_FILE"
 }
 
@@ -174,6 +174,18 @@ fi
 
 write_check $'The opted-in AI review approved this exact head.\n\n<!-- ai-review-authorized:v1:9001:0123456789abcdef0123456789abcdef01234567:ai-merge -->' "$HEAD_SHA" "$EXPECTED_APP_ID" "$EXPECTED_APP_SLUG"
 expect_noop "legacy review-App-owned authorization cannot trigger promotion retry"
+
+write_check $'The opted-in AI review approved this exact head.\n\n<!-- ai-review-authorized:v1:9001:0123456789abcdef0123456789abcdef01234567:ai-merge -->'
+jq 'del(.external_id)' "$CHECK_FILE" >"$tmp/x" && mv "$tmp/x" "$CHECK_FILE"
+expect_noop "an authorization check that carries no arm identity in external_id cannot trigger promotion retry (#1648)"
+
+write_check $'The opted-in AI review approved this exact head.\n\n<!-- ai-review-authorized:v1:9001:0123456789abcdef0123456789abcdef01234567:ai-merge -->'
+jq '.external_id |= sub(":7:"; ":8:")' "$CHECK_FILE" >"$tmp/x" && mv "$tmp/x" "$CHECK_FILE"
+expect_noop "an external_id bound to another pull request cannot trigger promotion retry (#1648)"
+
+write_check $'The opted-in AI review approved this exact head.\n\n<!-- ai-review-authorized:v1:9001:0123456789abcdef0123456789abcdef01234567:ai-merge -->'
+jq '.external_id |= sub(":2:a{64}$"; ":0:" + ("a" * 64))' "$CHECK_FILE" >"$tmp/x" && mv "$tmp/x" "$CHECK_FILE"
+expect_noop "an external_id with a non-positive arm attempt cannot trigger promotion retry (#1648)"
 
 write_check $'The opted-in AI review approved this exact head.\n\n<!-- ai-review-authorized:v1:9001:0123456789abcdef0123456789abcdef01234567:ai-approve -->'
 expect_noop "ai-approve marker cannot satisfy an ai-merge receipt"

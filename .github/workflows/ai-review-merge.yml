@@ -2121,7 +2121,8 @@ jobs:
           GH_TOKEN="$ACTIONS_TOKEN" gh api \
             "repos/$TARGET_REPO/check-runs/$AUTHORIZATION_CHECK_ID" >"$check_file"
           external_prefix="ai-review:v1:$TARGET_REPO:$PR_NUMBER:$EXPECTED_HEAD_SHA:"
-          expected_details_url="$GITHUB_SERVER_URL/$TARGET_REPO/actions/runs/$ARM_RUN_ID"
+          # Actions-owned checks store their own page as details_url (#1648).
+          expected_details_url="$GITHUB_SERVER_URL/$TARGET_REPO/runs/$AUTHORIZATION_CHECK_ID"
           jq -e --arg head "$EXPECTED_HEAD_SHA" --arg prefix "$external_prefix" \
             --arg details_url "$expected_details_url" --argjson id "$AUTHORIZATION_CHECK_ID" \
             '.id == $id and .name == "AI review authorization" and .head_sha == $head and
@@ -2306,7 +2307,8 @@ jobs:
           check_file="$RUNNER_TEMP/authorization-check-finalizer.json"
           GH_TOKEN="$ACTIONS_TOKEN" gh api \
             "repos/$TARGET_REPO/check-runs/$AUTHORIZATION_CHECK_ID" >"$check_file"
-          expected_details_url="$GITHUB_SERVER_URL/$TARGET_REPO/actions/runs/$ARM_RUN_ID"
+          # Actions-owned checks store their own page as details_url (#1648).
+          expected_details_url="$GITHUB_SERVER_URL/$TARGET_REPO/runs/$AUTHORIZATION_CHECK_ID"
           jq -e --arg repo "$TARGET_REPO" --arg pr "$PR_NUMBER" \
             --arg run "$ARM_RUN_ID" --arg attempt "$ARM_RUN_ATTEMPT" \
             --arg details_url "$expected_details_url" --argjson id "$AUTHORIZATION_CHECK_ID" '

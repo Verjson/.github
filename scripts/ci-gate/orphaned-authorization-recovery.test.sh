@@ -68,8 +68,8 @@ export GITHUB_SERVER_URL=https://github.com explicit_rereview=false explicit_ai_
 export hold_removed=false
 external_id="ai-review:v1:Verjson/example:7:$head_sha:7001:1:$(printf 'a%.0s' {1..64})"
 export SOURCE_RUN_JSON='{"id":7001,"run_attempt":1,"status":"completed","event":"pull_request_target","path":".github/workflows/gate-rearm.yml","completed_at":"2020-01-01T00:00:00Z","head_repository":{"full_name":"Verjson/example"},"repository":{"id":42}}'
-export CURRENT_CHECK_JSON="{\"id\":9001,\"status\":\"in_progress\",\"conclusion\":null,\"head_sha\":\"$head_sha\",\"external_id\":\"$external_id\",\"details_url\":\"https://github.com/Verjson/example/actions/runs/7001\",\"app\":{\"id\":15368,\"slug\":\"github-actions\"}}"
-export PATCH_JSON="{\"id\":9001,\"status\":\"completed\",\"conclusion\":\"failure\",\"head_sha\":\"$head_sha\",\"external_id\":\"$external_id\",\"details_url\":\"https://github.com/Verjson/example/actions/runs/7001\",\"app\":{\"id\":15368,\"slug\":\"github-actions\"},\"output\":{\"title\":\"Orphaned authorization recovered\"}}"
+export CURRENT_CHECK_JSON="{\"id\":9001,\"status\":\"in_progress\",\"conclusion\":null,\"head_sha\":\"$head_sha\",\"external_id\":\"$external_id\",\"details_url\":\"https://github.com/Verjson/example/runs/9001\",\"app\":{\"id\":15368,\"slug\":\"github-actions\"}}"
+export PATCH_JSON="{\"id\":9001,\"status\":\"completed\",\"conclusion\":\"failure\",\"head_sha\":\"$head_sha\",\"external_id\":\"$external_id\",\"details_url\":\"https://github.com/Verjson/example/runs/9001\",\"app\":{\"id\":15368,\"slug\":\"github-actions\"},\"output\":{\"title\":\"Orphaned authorization recovered\"}}"
 export RECEIPT_JSON="{\"schema\":1,\"repository\":\"Verjson/example\",\"pr_number\":7,\"head_sha\":\"$head_sha\",\"check_run_id\":9001,\"arm_run_id\":7001,\"arm_run_attempt\":1,\"external_id\":\"$external_id\",\"details_url\":\"https://github.com/Verjson/example/actions/runs/7001\",\"app_id\":4528902,\"app_slug\":\"ai-review-authorization\",\"check_app_id\":15368,\"check_app_slug\":\"github-actions\"}"
 
 write_latest(){
@@ -85,6 +85,16 @@ if output="$(run_case 2>&1)" && grep -q '^latest_id=$' <<<"$output" \
    && grep -q 'method PATCH.*check-runs/9001' "$CALLS"; then
   pass 'a terminal source with accepted-but-lost activation and no dispatch owner is recovered'
 else fail 'accepted-but-lost activation was not recovered'; fi
+
+genuine_check_json="$CURRENT_CHECK_JSON"
+for forged_url in https://github.com/Verjson/example/actions/runs/7001 https://github.com/Verjson/example/runs/9002; do
+  forged_check_json="$(jq -c --arg url "$forged_url" '.details_url=$url' <<<"$genuine_check_json")"
+  export CURRENT_CHECK_JSON="$forged_check_json"
+  if ! run_case >/dev/null 2>&1 && ! grep -q 'method PATCH' "$CALLS"; then
+    pass "a live check whose details_url is not its own stored page is not recovered ($forged_url) (#1648)"
+  else fail "a check with a forged details_url was recovered ($forged_url)"; fi
+done
+export CURRENT_CHECK_JSON="$genuine_check_json"
 
 export RECEIPT_COUNT=1
 export REVIEW_RUNS_JSON='[{"display_title":"AI review authorization 9001 from arm 7001.1","event":"workflow_dispatch","path":".github/workflows/ai-review-merge.yml","head_branch":"main","status":"completed","conclusion":"failure","head_repository":{"full_name":"Verjson/example"},"repository":{"full_name":"Verjson/example"}}]'

@@ -465,7 +465,9 @@ jobs:
             [[ "$source_run_id" =~ ^[1-9][0-9]*$ ]] && [[ "$source_attempt" =~ ^[1-9][0-9]*$ ]] \
               && [[ "$nonce" =~ ^[0-9a-f]{64}$ ]] || return 1
             [ "$source_run_id" != "$GITHUB_RUN_ID" ] || return 10
-            [ "$details_url" = "$GITHUB_SERVER_URL/$TARGET_REPO/actions/runs/$source_run_id" ] || return 1
+            # GitHub stores an Actions-owned check's own page as its details_url (#1648);
+            # the arm run is named by external_id and by the receipt, never by this field.
+            [ "$details_url" = "$GITHUB_SERVER_URL/$TARGET_REPO/runs/$check_id" ] || return 1
 
             source_run="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/actions/runs/$source_run_id")" || return 1
             jq -e --arg repo "$TARGET_REPO" --argjson repo_id "$REPOSITORY_ID" \
@@ -505,7 +507,7 @@ jobs:
               fi
               jq -e --arg repo "$TARGET_REPO" --argjson pr "$PR_NUMBER" --arg head "$head_sha" \
                 --argjson check "$check_id" --argjson run "$source_run_id" --argjson attempt "$source_attempt" \
-                --arg external "$external_id" --arg url "$details_url" --argjson app "$APP_ID" --arg slug "$APP_SLUG" --argjson check_app_id "$check_app_id" --arg check_app_slug "$check_app_slug" \
+                --arg external "$external_id" --arg url "$GITHUB_SERVER_URL/$TARGET_REPO/actions/runs/$source_run_id" --argjson app "$APP_ID" --arg slug "$APP_SLUG" --argjson check_app_id "$check_app_id" --arg check_app_slug "$check_app_slug" \
                 --arg source_path "$(jq -r .path <<<"$source_run")" '
                 .schema == (if $source_path == ".github/workflows/ai-review-label-rearm.yml" then 2 else 1 end) and
                   .repository == $repo and .pr_number == $pr and .head_sha == $head and
@@ -605,7 +607,7 @@ jobs:
                 $parts[2] == $repo and $parts[3] == $pr and $parts[4] == $head and
                 ($parts[5] | test("^[1-9][0-9]*$")) and ($parts[6] | test("^[1-9][0-9]*$")) and
                 ($parts[7] | test("^[0-9a-f]{64}$")) and
-                .details_url == ($server + "/" + $repo + "/actions/runs/" + $parts[5])
+                .details_url == ($server + "/" + $repo + "/runs/" + (.id | tostring))
               ' <<<"$latest" >/dev/null || {
                 echo "::error::authorization recovery marker is malformed or not bound to the exact head"
                 exit 1
@@ -614,9 +616,14 @@ jobs:
           fi
           # END CROSS-RUN ORPHAN RECOVERY
           if [ "$hold_removed" = true ] && [[ "$latest_id" =~ ^[1-9][0-9]*$ ]] && [ "$latest_conclusion" = success ]; then
-            details_url="$(jq -r '.details_url // ""' <<<"$latest")"
-            [[ "$details_url" =~ /actions/runs/([1-9][0-9]*)$ ]] || exit 1
-            arm_run_id="${BASH_REMATCH[1]}"
+            # The arm run is carried by external_id; details_url is the check's own page (#1648).
+            arm_run_id="$(jq -r --arg repo "$TARGET_REPO" --arg pr "$PR_NUMBER" --arg head "$head_sha" '
+                (.external_id // "" | split(":")) as $p |
+                if ($p | length) == 8 and $p[0] == "ai-review" and $p[1] == "v1" and
+                   $p[2] == $repo and $p[3] == $pr and $p[4] == $head and
+                   ($p[5] | test("^[1-9][0-9]*$")) and
+                   ($p[6] | test("^[1-9][0-9]*$")) and ($p[7] | test("^[0-9a-f]{64}$")) then $p[5] else "" end' <<<"$latest")"
+            [[ "$arm_run_id" =~ ^[1-9][0-9]*$ ]] || exit 1
             arm_run_attempt="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/actions/runs/$arm_run_id" --jq '.run_attempt // ""')"
             [[ "$arm_run_attempt" =~ ^[1-9][0-9]*$ ]] || exit 1
             receipt_name="ai-review-arm-$arm_run_id-$arm_run_attempt"
@@ -642,9 +649,13 @@ jobs:
           if [ "$hold_removed" = true ]; then
             if [[ "$latest_id" =~ ^[1-9][0-9]*$ ]] && [ "$latest_status" = in_progress ]; then
               pending_guidance='The existing AI review authorization for this exact head is still in progress. Wait for that review; do not add re-review, because it could incur a second model charge. If the linked arm run is stalled, an administrator must recover it without dispatching another model review.'
-              details_url="$(jq -r '.details_url // ""' <<<"$latest")"
-              if [[ "$details_url" =~ ^${GITHUB_SERVER_URL}/${TARGET_REPO}/actions/runs/([1-9][0-9]*)$ ]]; then
-                arm_run_id="${BASH_REMATCH[1]}"
+              arm_run_id="$(jq -r --arg repo "$TARGET_REPO" --arg pr "$PR_NUMBER" --arg head "$head_sha" '
+                (.external_id // "" | split(":")) as $p |
+                if ($p | length) == 8 and $p[0] == "ai-review" and $p[1] == "v1" and
+                   $p[2] == $repo and $p[3] == $pr and $p[4] == $head and
+                   ($p[5] | test("^[1-9][0-9]*$")) and
+                   ($p[6] | test("^[1-9][0-9]*$")) and ($p[7] | test("^[0-9a-f]{64}$")) then $p[5] else "" end' <<<"$latest")"
+              if [[ "$arm_run_id" =~ ^[1-9][0-9]*$ ]]; then
                 arm_run="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/actions/runs/$arm_run_id")"
                 arm_run_attempt="$(jq -r '.run_attempt // ""' <<<"$arm_run")"
                 receipt_name="ai-review-arm-$arm_run_id-$arm_run_attempt"
@@ -685,6 +696,8 @@ jobs:
           nonce="$(openssl rand -hex 32)"
           [[ "$nonce" =~ ^[0-9a-f]{64}$ ]] || exit 1
           external_id="ai-review:v1:$TARGET_REPO:$PR_NUMBER:$head_sha:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT:$nonce"
+          # Recorded in the receipt as the arm-run URL; GitHub replaces it on the stored
+          # Actions-owned check with the check's own page, so verifiers never read it back (#1648).
           details_url="$GITHUB_SERVER_URL/$TARGET_REPO/actions/runs/$GITHUB_RUN_ID"
           payload="$(jq -nc --arg name 'AI review authorization' --arg sha "$head_sha" \
             --arg external_id "$external_id" --arg url "$details_url" \
