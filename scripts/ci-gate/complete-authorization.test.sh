@@ -196,7 +196,7 @@ case "$*" in
   "api repos/Verjson/example/check-runs/9001")
     jq -nc --argjson id "$AUTHORIZATION_CHECK_ID" --arg head "$EXPECTED_AUTHORIZED_HEAD_SHA" \
             --arg repo "$TARGET_REPO" --arg pr "$PR_NUMBER" --arg run "$ARM_RUN_ID" --arg attempt "$ARM_RUN_ATTEMPT" \
-            --arg url "$GITHUB_SERVER_URL/$TARGET_REPO/runs/$AUTHORIZATION_CHECK_ID" \
+            --arg url "${FORGED_DETAILS_URL:-$GITHUB_SERVER_URL/$TARGET_REPO/runs/$AUTHORIZATION_CHECK_ID}" \
             --argjson check_app_id "${CHECK_APP_ID:-15368}" --arg check_app_slug "${CHECK_APP_SLUG:-github-actions}" \
             '{id:$id,name:"AI review authorization",head_sha:$head,
              external_id:("ai-review:v1:"+$repo+":"+$pr+":"+$head+":"+$run+":"+$attempt+":"+("a"*64)),
@@ -259,6 +259,21 @@ if ! CHECK_APP_ID=4242 CHECK_APP_SLUG=verjson-ai-review run_complete >"$tmp/out"
 else
   fail "legacy review-App-owned authorization check reached a mutation path"
 fi
+
+# #1648: details_url is an anti-forgery binding to the check's own page, not the
+# arm-run URL GitHub no longer stores there. Neither shape may substitute for it.
+for forged_url in "https://github.com/Verjson/example/actions/runs/$ARM_RUN_ID" \
+                   "https://github.com/Verjson/example/runs/9002"; do
+  : >"$CALLS"; : >"$GITHUB_OUTPUT"
+  if ! FORGED_DETAILS_URL="$forged_url" run_complete >"$tmp/out" 2>&1 \
+    && ! grep -q 'api --method PATCH' "$CALLS" \
+    && ! grep -q 'api --method POST' "$CALLS" \
+    && ! grep -q 'ai_authorized=true' "$GITHUB_OUTPUT"; then
+    pass "a check whose details_url is not its own stored page is rejected before completion ($forged_url)"
+  else
+    fail "a check with a forged details_url ($forged_url) reached a mutation path"
+  fi
+done
 
 : >"$CALLS"; : >"$GITHUB_OUTPUT"; APPROVAL_RC=1 run_complete >"$tmp/out" 2>&1
 if [ "$?" -eq 0 ] && grep -q 'conclusion=neutral' "$CALLS" \
@@ -417,6 +432,18 @@ fi
 
 # The fallback must reject a legacy review-App-owned check without attempting
 # any mutation through either token.
+for forged_url in "https://github.com/Verjson/example/actions/runs/$ARM_RUN_ID" \
+                   "https://github.com/Verjson/example/runs/9002"; do
+  : >"$CALLS"
+  if ! FORGED_DETAILS_URL="$forged_url" run_finalizer >"$tmp/out" 2>&1 \
+    && ! grep -q 'api --method PATCH' "$CALLS" \
+    && ! grep -q 'api --method POST' "$CALLS"; then
+    pass "a check with a forged details_url ($forged_url) is outside the finalizer contract"
+  else
+    fail "a forged details_url ($forged_url) reached the finalizer's mutation path"
+  fi
+done
+
 : >"$CALLS"
 if ! CHECK_APP_ID=4242 CHECK_APP_SLUG=verjson-ai-review run_finalizer >"$tmp/out" 2>&1 \
   && ! grep -q 'api --method PATCH' "$CALLS" \
