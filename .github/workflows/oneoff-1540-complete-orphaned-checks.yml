@@ -37,6 +37,11 @@ jobs:
     with:
       role: ai-review
       environment: ${{ inputs.ai_review_environment || 'ai-review-app' }}
+    # The ai-review role's policy job validates the key itself inside the
+    # environment (ADR 0171); a reusable call delivers nothing without this
+    # explicit grant, so mirror the canonical ai-review-merge.yml edge exactly.
+    secrets:
+      AI_REVIEW_APP_PRIVATE_KEY: ${{ secrets.AI_REVIEW_APP_PRIVATE_KEY }}
   complete:
     needs: app-key-policy
     if: github.ref == 'refs/heads/main' && inputs.acknowledgement == 'COMPLETE-ORPHANED-AUTHORIZATION-CHECKS-1540'
