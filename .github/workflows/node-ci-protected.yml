@@ -3490,7 +3490,7 @@ jobs:
           }
           echo "VERJSON_TYPE_SURFACE_BASE_SHA=$BASE_SHA" >> "$GITHUB_ENV"
       - name: Provision trusted compatibility sandbox
-        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && (inputs.protected-type-surface-declaration-path != '' || inputs.secretless-compatibility-ranges != '') && runner.environment == 'github-hosted'
+        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && (inputs.protected-type-surface-declaration-path != '' || inputs.secretless-compatibility-ranges != '' || inputs.secretless-ci-script-plan != '' || inputs.secretless-nested-manifests != '') && runner.environment == 'github-hosted'
         env:
           ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''
           ACTIONS_ID_TOKEN_REQUEST_URL: ''
