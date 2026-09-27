@@ -1,0 +1,135 @@
+{
+  "schema_version": 1,
+  "source": {
+    "issue": "Verjson/.github#1339",
+    "captured_at": "2026-09-27",
+    "repository": "Verjson/demo-repository",
+    "pull_request": 13,
+    "run_id": 36288038538,
+    "required_workflow_url": "https://api.github.com/repos/Verjson/demo-repository/actions/required_workflows/368060021",
+    "temporary_ruleset_id": 24059547,
+    "probe_workflow_commit": "948cc641a0612822c916924d4c88f0d6f668cf0c",
+    "redaction": "token, header segments, and signature masked at capture; jti, exp, iat, nbf removed; exp - iat was 300 seconds",
+    "head_sha": "d66f63e8e8cc5ffaac73081b838e55a824b5d6d1",
+    "merge_commit_sha": "286094eac902e831f23be20bce44e9d0fbf62ee2",
+    "note": "the token's `sha` is the ephemeral pull_request merge commit, not the PR head; the gate receipt's expected_head_sha is not in the token"
+  },
+  "genuine": {
+    "actor": "pyousefi",
+    "actor_id": "1360670",
+    "aud": "verjson-merge-gate-provenance-probe",
+    "base_ref": "main",
+    "check_run_id": "108532473858",
+    "event_name": "pull_request",
+    "head_ref": "probe/1339-oidc-claims",
+    "iss": "https://token.actions.githubusercontent.com",
+    "job_workflow_ref": "Verjson/.github/.github/workflows/oidc-claims-probe-1339.yml@refs/heads/main",
+    "job_workflow_sha": "948cc641a0612822c916924d4c88f0d6f668cf0c",
+    "ref": "refs/pull/13/merge",
+    "ref_protected": "false",
+    "ref_type": "branch",
+    "repository": "Verjson/demo-repository",
+    "repository_id": "1281540063",
+    "repository_owner": "Verjson",
+    "repository_owner_id": "279365001",
+    "repository_visibility": "private",
+    "run_attempt": "1",
+    "run_id": "36288038538",
+    "run_number": "1",
+    "runner_environment": "github-hosted",
+    "sha": "286094eac902e831f23be20bce44e9d0fbf62ee2",
+    "sub": "repo:Verjson/demo-repository:pull_request",
+    "workflow": "oidc-claims-probe-1339",
+    "workflow_ref": "Verjson/.github/.github/workflows/oidc-claims-probe-1339.yml@refs/heads/main",
+    "workflow_sha": "948cc641a0612822c916924d4c88f0d6f668cf0c"
+  },
+  "expected": {
+    "canonical_workflow_path": ".github/workflows/oidc-claims-probe-1339.yml",
+    "canonical_workflow_sha": "948cc641a0612822c916924d4c88f0d6f668cf0c",
+    "runner_environments": [
+      "github-hosted",
+      "self-hosted"
+    ]
+  },
+  "tampered": {
+    "consumer_authored_workflow": {
+      "job_workflow_ref": "Verjson/demo-repository/.github/workflows/oidc-claims-probe-1339.yml@refs/heads/main",
+      "workflow_ref": "Verjson/demo-repository/.github/workflows/oidc-claims-probe-1339.yml@refs/heads/main"
+    },
+    "reusable_call_from_consumer": {
+      "workflow_ref": "Verjson/demo-repository/.github/workflows/ci.yml@refs/pull/13/merge",
+      "workflow_sha": "286094eac902e831f23be20bce44e9d0fbf62ee2"
+    },
+    "stale_canonical_sha": {
+      "job_workflow_sha": "ebe574b639ff5ffc1dfb5cf935014c5c7ad5d081",
+      "workflow_sha": "ebe574b639ff5ffc1dfb5cf935014c5c7ad5d081"
+    },
+    "branch_only_ref_without_sha": {
+      "job_workflow_sha": ""
+    },
+    "foreign_owner_same_name": {
+      "repository_owner": "Verjson",
+      "repository_owner_id": "279365002"
+    },
+    "foreign_issuer": {
+      "iss": "https://token.actions.githubusercontent.com.example"
+    },
+    "push_event": {
+      "event_name": "push",
+      "sub": "repo:Verjson/demo-repository:ref:refs/heads/main",
+      "ref": "refs/heads/main"
+    },
+    "unreviewed_runner_environment": {
+      "runner_environment": "partner-hosted"
+    },
+    "canonical_path_swapped": {
+      "job_workflow_ref": "Verjson/.github/.github/workflows/node-ci.yml@refs/heads/main",
+      "workflow_ref": "Verjson/.github/.github/workflows/node-ci.yml@refs/heads/main"
+    },
+    "pull_request_target_sub_names_another_ref": {
+      "event_name": "pull_request_target",
+      "sub": "repo:Verjson/demo-repository:ref:refs/heads/main",
+      "ref": "refs/heads/release"
+    },
+    "reusable_call_pinned_to_canonical_sha": {
+      "job_workflow_ref": "Verjson/.github/.github/workflows/oidc-claims-probe-1339.yml@948cc641a0612822c916924d4c88f0d6f668cf0c",
+      "workflow_ref": "Verjson/demo-repository/.github/workflows/ci.yml@refs/pull/13/merge",
+      "workflow_sha": "286094eac902e831f23be20bce44e9d0fbf62ee2"
+    },
+    "repository_outside_owner": {
+      "repository": "Evil/demo-repository",
+      "repository_id": "1",
+      "sub": "repo:Evil/demo-repository:pull_request"
+    }
+  },
+  "genuine_pull_request_target_shape": {
+    "derived_from": "GitHub's documented pull_request_target token shape (sub binds the base ref), NOT a capture; provisional until a gate-rearm run is captured (#1339)",
+    "actor": "pyousefi",
+    "actor_id": "1360670",
+    "aud": "verjson-merge-gate-provenance-probe",
+    "base_ref": "main",
+    "check_run_id": "108532473858",
+    "event_name": "pull_request_target",
+    "head_ref": "probe/1339-oidc-claims",
+    "iss": "https://token.actions.githubusercontent.com",
+    "job_workflow_ref": "Verjson/.github/.github/workflows/oidc-claims-probe-1339.yml@refs/heads/main",
+    "job_workflow_sha": "948cc641a0612822c916924d4c88f0d6f668cf0c",
+    "ref": "refs/heads/main",
+    "ref_protected": "false",
+    "ref_type": "branch",
+    "repository": "Verjson/demo-repository",
+    "repository_id": "1281540063",
+    "repository_owner": "Verjson",
+    "repository_owner_id": "279365001",
+    "repository_visibility": "private",
+    "run_attempt": "1",
+    "run_id": "36288038538",
+    "run_number": "1",
+    "runner_environment": "github-hosted",
+    "sha": "286094eac902e831f23be20bce44e9d0fbf62ee2",
+    "sub": "repo:Verjson/demo-repository:ref:refs/heads/main",
+    "workflow": "oidc-claims-probe-1339",
+    "workflow_ref": "Verjson/.github/.github/workflows/oidc-claims-probe-1339.yml@refs/heads/main",
+    "workflow_sha": "948cc641a0612822c916924d4c88f0d6f668cf0c"
+  }
+}

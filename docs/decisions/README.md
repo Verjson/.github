@@ -12,6 +12,7 @@ Reverse-chronological index of org-level decisions.
 <!-- prettier-ignore -->
 | # | Date | Decision |
 |---|------|----------|
+| [0211](0211-signed-merge-gate-provenance-binds-the-canonical-required-workflow/README.md) | 2026-09-27 | Signed merge-gate provenance binds the canonical required workflow through captured claim predicates |
 | [0210](0210-code-owner-review-is-real-through-a-generated-codeowners-member/README.md) | 2026-09-27 | Code-owner review is real: the generated CODEOWNERS is a required member of the adopter contract |
 | [0209](0209-hosted-tool-cache-trust-is-a-tree-property/README.md) | 2026-09-26 | Hosted tool-cache trust is a property of the admitted tree, not its root component |
 | [0208](0208-independent-review-eligibility-is-collaborator-permission-not-association/README.md) | 2026-09-26 | Independent-review eligibility is the live collaborator permission, not `author_association` |
