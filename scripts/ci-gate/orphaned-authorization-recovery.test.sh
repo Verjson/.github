@@ -86,6 +86,19 @@ if output="$(run_case 2>&1)" && grep -q '^latest_id=$' <<<"$output" \
   pass 'a terminal source with accepted-but-lost activation and no dispatch owner is recovered'
 else fail 'accepted-but-lost activation was not recovered'; fi
 
+# GitHub can report a source run status=completed with completed_at still
+# null (an observed API anomaly, not evidence the run might still be
+# active); fall back to updated_at for the eventual-consistency buffer
+# rather than refusing to recover forever.
+source_run_json_saved="$SOURCE_RUN_JSON"
+export SOURCE_RUN_JSON='{"id":7001,"run_attempt":1,"status":"completed","event":"pull_request_target","path":".github/workflows/gate-rearm.yml","completed_at":null,"updated_at":"2020-01-01T00:00:00Z","head_repository":{"full_name":"Verjson/example"},"repository":{"id":42}}'
+export RECEIPT_COUNT=0 REVIEW_RUNS_JSON='[]'
+if output="$(run_case 2>&1)" && grep -q '^latest_id=$' <<<"$output" \
+   && grep -q 'method PATCH.*check-runs/9001' "$CALLS"; then
+  pass 'a completed source run with an anomalous null completed_at is still recovered via updated_at'
+else fail 'null completed_at on a completed source run blocked recovery'; fi
+export SOURCE_RUN_JSON="$source_run_json_saved"
+
 genuine_check_json="$CURRENT_CHECK_JSON"
 for forged_url in https://github.com/Verjson/example/actions/runs/7001 https://github.com/Verjson/example/runs/9002; do
   forged_check_json="$(jq -c --arg url "$forged_url" '.details_url=$url' <<<"$genuine_check_json")"

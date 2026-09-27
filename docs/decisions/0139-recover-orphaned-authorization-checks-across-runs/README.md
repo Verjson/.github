@@ -111,3 +111,27 @@ untouched or fails the arm visibly.
   repository-, App-, and receipt-bound audit trail.
 - **Leave all orphans for manual recovery:** permanent pending checks are an availability
   defect with a deterministic fail-closed repair path.
+
+## Amendment — 2026-09-27: a completed source run can report `completed_at: null`
+
+Discovered recovering `verjson-compliance-schema#23`'s canary re-arm: source arm run
+`36298196886` (`status: "completed"`) has `completed_at: null` on GitHub's own API,
+static for hours (not a propagation delay). Condition 3's live-state check required
+`completed_at` to be a valid timestamp string, so it returned the ambiguous-fail-closed
+result (`return 10`, "not provably orphaned") indefinitely — an availability defect this
+ADR's own "permanent pending checks" alternative-rejection was meant to close, now
+reopened by a GitHub-side data anomaly this contract didn't anticipate.
+
+`status: "completed"` is itself the authoritative terminal signal condition 2 already
+requires; a missing `completed_at` under that status is GitHub's own inconsistency, not
+evidence of continued activity. The five-minute floor's only purpose is bounding listing
+eventual-consistency, so `updated_at` — which a terminal run reliably carries — is an
+equally valid clock for that floor when `completed_at` is absent. The live-state check now
+accepts `completed_at` when present, else `updated_at` (only when `completed_at` is
+exactly `null`, not merely absent or malformed); the same fallback resolves the run's
+completion timestamp for the floor computation. Every other binding in this ADR
+(App/external-ID/details-URL/receipt/repository identity) is unchanged. Verified against
+`scripts/ci-gate/orphaned-authorization-recovery.test.sh`'s new case; the check that
+originally surfaced this (`verjson-compliance-schema` check-run `108560905178`) requires
+its own repository's `gen-privileged-merge-caller.sh`/ruleset pin to reach this fixed
+commit before a later arm run can apply it.
