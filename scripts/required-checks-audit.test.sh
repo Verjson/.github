@@ -89,6 +89,7 @@ jq -e '.changelog_contract == "valid" and .pull_request == true and .path_filter
 run_generator generated-artifacts "$contract_pin" >"$content_root/.github/workflows/changelog.yml"
 run_generator renderer "$contract_pin" >"$content_root/scripts/render-next.sh"
 run_generator contract-test "$contract_pin" >"$content_root/scripts/changelog-contract.test.sh"
+run_generator codeowners "$contract_pin" >"$content_root/.github/CODEOWNERS"
 run_generator release-node "$contract_pin" >"$content_root/.github/workflows/release.yml"
 run_generator pr-gate "$contract_pin" >"$content_root/.github/workflows/changelog-contract.yml"
 mkdir -p "$tmp/artifact-baseline/.github/workflows" "$tmp/artifact-baseline/scripts"
