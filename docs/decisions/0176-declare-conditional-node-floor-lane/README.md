@@ -1,7 +1,7 @@
 # 0176 — Declare the conditional Node-floor lane in the canonical required-check contract
 
 - **Date:** 2026-09-14
-- **Status:** Accepted for declaration and preparation; live rollout still separately authorized
+- **Status:** Accepted; live since 2026-09-27 (see the rollout amendment below)
 - **Issue:** [#1274](https://github.com/Verjson/.github/issues/1274)
 - **Amends:** [ADR 0172](../0172-opt-in-node-floor-preparation/README.md)
 - **Category:** organization required checks and branch protection — **sensitive class**
@@ -119,3 +119,61 @@ The 2026-09-14 authenticated read of `orgs/Verjson/rulesets/20515817` that the r
 baseline records matched ADR 0173's activation postimage exactly, including its
 `2026-09-10T15:24:16.455Z` update time. Rendering the pre-activation preimage now fails
 closed, which is the regression this ADR's producer guard exists to catch.
+
+## 2026-09-27 amendment: live rollout applied
+
+**Status:** Accepted; the lane is live. Owner-authorized on 2026-09-26 (#1274).
+
+**Failing control.** [verjson-object-storage#147](https://github.com/Verjson/verjson-object-storage/pull/147)
+(head `5403f41`, never merged) added one vitest case that fails only on Node 22: every other
+required context stayed `SUCCESS`, `ci-node22 / build-test` was `FAILURE` (run 36282960942),
+and `mergeStateStatus` was `BLOCKED` — first under the repository ruleset, then again under
+the organization lane alone before the PR was closed.
+
+**Non-opted-in control.** `verjson-authn` (`verjson-stack=node`, `verjson-core-checks=enforced`,
+`verjson-node-floor=disabled` by the schema default) shows zero `ci-node22` contexts in
+`rules/branches/main`.
+
+**Applied transaction**, with readback after each step:
+
+1. Property schema `verjson-node-floor` created exactly as `scripts/node-floor-ruleset.py
+   render` declares it (`single_select`, required, default `disabled`, allowed
+   `disabled|node22`, `org_actors`).
+2. Organization ruleset **24056850 `core-checks-node-floor`** created from the rendered
+   candidate with `enforcement: active`: `~DEFAULT_BRANCH`, selected by
+   `verjson-stack=node` **and** `verjson-core-checks=enforced` **and**
+   `verjson-node-floor=node22`, requiring `ci-node22 / build-test` and
+   `ci-node22 / eligibility` from integration 15368, bypass actors mirrored from
+   `core-checks-node` (20515817). `config/org-ruleset-conformance-policy.json` carries its
+   bypass contract so the scheduled audit reviews it.
+3. `verjson-object-storage` set to `verjson-node-floor=node22`; `rules/branches/main` listed
+   the floor contexts from both 24056850 and the hand-built repository ruleset 22590648.
+4. Repository ruleset 22590648 deleted; readback shows the floor contexts sourced only from
+   24056850, and #147 still `BLOCKED` with only `ci-node22 / build-test` red.
+
+**Correction during rollout.** The first application on 2026-09-27 used an ad-hoc shape
+(`enforced|exempt` values, no `verjson-stack=node` selector) instead of the declared one;
+the independent review caught the divergence from this ADR and
+`.github/required-check-contract.json`, and the live schema, value, and ruleset were rewritten
+to the rendered candidate the same night before any repository other than object-storage
+carried a value. The canonical contract needed no change.
+
+Retired repository ruleset 22590648, for the record:
+
+```json
+{"name":"core-checks-node-floor","target":"branch","enforcement":"active",
+ "conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"],"exclude":[]}},
+ "bypass_actors":[{"actor_type":"OrganizationAdmin","actor_id":null,"bypass_mode":"always"},
+  {"actor_type":"Integration","actor_id":4583107,"bypass_mode":"always"},
+  {"actor_type":"Integration","actor_id":4693283,"bypass_mode":"always"}],
+ "rules":[{"type":"required_status_checks","parameters":{"do_not_enforce_on_create":true,
+  "strict_required_status_checks_policy":false,
+  "required_status_checks":[{"context":"ci-node22 / build-test","integration_id":15368},
+   {"context":"ci-node22 / eligibility","integration_id":15368}]}}]}
+```
+
+This section satisfies the live-acceptance gates ADR 0172 enumerates (failing and
+non-opted-in controls, exact producer/head identity, coordinated cutover).
+Duplicate-context cutover was momentary (step 3 to step 4) and observed on one PR only;
+`scripts/node-floor-ruleset.py` remains preparation-only and its `liveAcceptanceVerified`
+flag is not a live probe.

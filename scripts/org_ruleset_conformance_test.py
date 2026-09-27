@@ -244,6 +244,15 @@ class OrgRulesetConformanceTest(unittest.TestCase):
                         ],
                     },
                     {
+                        "ruleset_id": 24056850,
+                        "name": "core-checks-node-floor",
+                        "bypass_actors": [
+                            {"actor_type": "OrganizationAdmin", "actor_id": None, "bypass_mode": "always"},
+                            {"actor_type": "Integration", "actor_id": 4583107, "bypass_mode": "always"},
+                            {"actor_type": "Integration", "actor_id": 4693283, "bypass_mode": "always"},
+                        ],
+                    },
+                    {
                         "ruleset_id": 18098028,
                         "name": "main-protection",
                         "bypass_actors": [
