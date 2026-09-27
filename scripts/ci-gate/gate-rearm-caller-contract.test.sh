@@ -113,7 +113,7 @@ assert "legacy AI App-owned authorization could not be safely recovered" not in 
 assert "no duplicate review was dispatched" in arm_run
 assert arm["needs"] == ["event-policy", "app-key-policy"]
 app_key_policy = doc["jobs"]["app-key-policy"]
-assert app_key_policy["uses"] == "Verjson/.github/.github/workflows/app-key-environment.yml@f56af66cc14f3bdc7697e527df4c8c4d04ab5935"
+assert app_key_policy["uses"] == "Verjson/.github/.github/workflows/app-key-environment.yml@ebe23fafbdb77dd2cca6f1862d932fde881b80d7"
 assert app_key_policy["needs"] == "event-policy"
 assert not any(step.get("uses", "").startswith("actions/checkout@") for step in arm["steps"])
 assert not any(".gate-trust" in str(step) for step in arm["steps"])

@@ -96,3 +96,25 @@ environment-only key or inheritance decisions above.
 
 An adopter's re-arm run showed that the nested key-validation job paired the shared workflow repository with the outer caller's commit SHA. GitHub rejected that checkout (`upload-pack: not our ref`), so the intended App-key validation never ran. The direct reusable-workflow identity pattern recorded above did not hold for this nested invocation. The key validator now runs inline in the pinned shared workflow; the existing helper remains the tested source, and the contract test requires the workflow block to match it exactly. This removes the cross-repository checkout and keeps validation tied to the workflow revision that the caller selected.
 The nested `gate-rearm.yml` call pins the inline implementation at `f56af66cc14f3bdc7697e527df4c8c4d04ab5935` so re-arm jobs use the corrected validator as well.
+
+## 2026-09-27 amendment: the injected arm's policy edge is key-consuming and needs a ref-reachable pin
+
+Rotating organization ruleset 20722935 from `gate-rearm.yml@c597d69` (2026-09-09) to
+`main` produced required-workflow runs with **zero jobs**: the 2026-09-22 amendment above
+pinned the nested validator at `f56af66…`, the pre-squash head of #1544 which lives on no
+ref once its branch was deleted. The pin now names `ebe23fa…`, the #1544 squash commit on
+`main` (identical bytes, blob `d1072b1`). An injected required workflow must reference
+only commits reachable from refs.
+
+With jobs running, `app-key-policy / validate-ai-review-key` reported the key empty (run
+36289883288). Since e7db320 (2026-09-21) that validator job is key-bearing, so
+`gate-rearm`'s edge is no longer the "policy-only call" this ADR exempts from a grant; it
+had none because the organization copy of `AI_REVIEW_APP_PRIVATE_KEY` masked the gap
+until that copy was withdrawn on 2026-09-27 (#1385). The edge now carries the narrow named
+grant `AI_REVIEW_APP_PRIVATE_KEY: ${{ secrets.AI_REVIEW_APP_PRIVATE_KEY }}`, the same
+transport e7db320 gave `ai-review-merge.yml`, which run 36290560349 proved resolves the
+environment secret inside the environment-bound validator after the withdrawal.
+Inheritance was tried first (run 36290132467, all jobs green) and rejected on review: it
+works but forwards the whole caller secret set where one secret suffices. The rotation
+of ruleset 20722935 to the merge commit of this change is the receipt; every armed
+repository must hold the key in its `ai-review-app` environment.

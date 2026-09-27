@@ -191,7 +191,10 @@ class WorkflowBoundaryTests(unittest.TestCase):
                     {"actions": "read", "contents": "read"},
                     f"{name}: app-key policy must retain explicit read-only permissions",
                 )
-                if name == "ai-review-merge":
+                if name in ("ai-review-merge", "gate-rearm"):
+                    # Both edges reach validate-ai-review-key, so both carry the
+                    # narrow named grant (never inherit): an edge with no grant
+                    # delivers nothing to the environment-bound validator.
                     self.assertEqual(
                         policy.get("secrets"),
                         {"AI_REVIEW_APP_PRIVATE_KEY": "${{ secrets.AI_REVIEW_APP_PRIVATE_KEY }}"},
@@ -525,7 +528,15 @@ class AppKeyRoleManifestTests(unittest.TestCase):
                     # policy workflow, which validates it inside its environment.
                     caller = workflow(binding["workflow"])
                     policy = caller["jobs"]["app-key-policy"]
-                    self.assertEqual(policy["uses"], "./.github/workflows/app-key-environment.yml")
+                    if binding["workflow"] == "gate-rearm":
+                        # The injected required workflow pins the validator to a
+                        # full immutable, ref-reachable SHA (ADR 0171).
+                        self.assertRegex(
+                            policy["uses"],
+                            r"^Verjson/\.github/\.github/workflows/app-key-environment\.yml@[0-9a-f]{40}$",
+                        )
+                    else:
+                        self.assertEqual(policy["uses"], "./.github/workflows/app-key-environment.yml")
                     self.assertIn("environment", policy["with"])
                     self.assertEqual(
                         policy.get("secrets"),
