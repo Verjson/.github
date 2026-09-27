@@ -207,10 +207,16 @@ literal_hosted="$(
 #    is the reviewed route. Job identity is bound by the exact inventory above.
 # Exact raw hosted selectors are governed by the file/job inventory above;
 # this expression sweep handles portable fallbacks and other embedded routes.
+# The generated release callers' selector (gen-changelog-caller.sh
+# release_runner_expr) is a Verjson-guarded route whose hosted fallback is
+# reachable only outside Verjson; it is governed by
+# generated-changelog-selector-policy.test.py and appears here since this
+# repository adopted its own generated release-snapshot caller (#1374).
 unsafe_portable="$(
   grep -HnE "^    runs-on:.*ubuntu-(24\\.04|latest)" "${workflow_files[@]}" \
     | grep -v "github.repository_owner != 'Verjson' && 'ubuntu-24.04'" \
     | grep -v "github.repository_owner == 'Verjson'.*|| 'ubuntu-24.04'" \
+    | grep -vF "github.repository_owner == 'Verjson' && (vars.CI_RUNNER_DEFAULT || '[\"self-hosted\",\"general\"]') || '[\"ubuntu-24.04\"]'" \
     | grep -vE '/ai-privileged-merge\.yml:[0-9]+:.*github\.event\.repository\.visibility == '\''public'\'' && '\''ubuntu-24\.04'\''.*self-hosted.*general' \
     | grep -vE ':[0-9]+:[[:space:]]+runs-on: ubuntu-24\.04$' \
     | grep -v "inputs.github-hosted-runner" \
