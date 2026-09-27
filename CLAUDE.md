@@ -13,7 +13,10 @@ change that affects behaviour, pins, docs, or config, add a **new** file
 metadata and the issue-less exception).
 Because no two PRs touch the same file, the log can't produce merge conflicts —
 which is the whole point. Read the log with `scripts/render-next.sh`. `NEXT.md` is
-a static pointer; don't add entries to it.
+a static pointer; don't add entries to it. Since v3.0.0 (2026-09-27) the repository also
+tracks `CHANGELOG/<version>.md` snapshots and the aggregate `CHANGELOG.md` that the
+dispatched release writes (`.github/workflows/release.yml`); no PR edits either — a
+correction is a later release.
 
 ## ADRs — add a directory, let the index generate
 
@@ -62,15 +65,12 @@ Each entry states the concrete fact and how/when it was last verified — a live
 not just inspection of prose (#956: an entry asserting external status should say how it
 was confirmed, since inspection-only claims go stale silently).
 
-- [#1363](https://github.com/Verjson/.github/issues/1363) — Separate AI authorization-arm enrollment from deterministic core checks. GitHub API verification on 2026-09-23 found 29 repositories selected by `verjson-core-checks=enforced` and no dedicated authorization property; ADR 0206 records the reviewed cohort-preserving migration.
+- [#1363](https://github.com/Verjson/.github/issues/1363) — Separate AI authorization-arm enrollment from deterministic core checks. Live audit on 2026-09-27 reports one armed repository without canonical deterministic CI (`verjson-agents`, verjson-agents#417 filed with the proposed diff); the ADR 0206 transaction applies after verjson-agents#417 (via #1401) closes. Since the organization App keys were withdrawn on 2026-09-27, ruleset 20722935 runs `gate-rearm@b7e7899` and only the 12 repositories holding the key in `ai-review-app` can arm (#1385).
 
 - [#629](https://github.com/Verjson/.github/issues/629) — Protected runner canary rollout. GitHub API verification on 2026-09-04: `verjson-github-runner` has no generated deployment caller; its protected `production` environment has the registration App key but lacks `DIGITALOCEAN_RUNNER_FLEET_TOKEN`. Its environment review policy also needs alignment with ADR 0144. Complete adopter installation and a non-production fleet canary/stop/rollback receipt in the owning repository before closure.
 
 
-- [#1451](https://github.com/Verjson/.github/issues/1451) — Complete consumer capacity validation and live host acceptance. GitHub API check on 2026-09-26 found all four `RUNNER_HOST_EVIDENCE_*` secrets in `verjson-git-runners`' `production` environment, but the first CI-driven dry-run (run 36279086275) received them empty because the generated caller lacked `secrets: inherit`; fixed canonically under ADR 0198's 2026-09-26 amendment. Do not claim live evidence until the consumer is regenerated at that SHA and a real host run succeeds.
-- [#1540](https://github.com/Verjson/.github/issues/1540) — Remove temporary review-App `checks:write` compatibility after all active authorization receipts and adopters use Actions-owned checks; verify through the tracked migration before removing the permission.
-- [#1612](https://github.com/Verjson/.github/issues/1612) — `validate_privileged_lane`'s `jq -e` check fails open on an empty/missing `privileged_lane` under jq 1.6 (a bash here-string never produces truly empty stdin, and jq 1.6 exits 0 on whitespace-only input regardless of `-e`). Reproduced locally on 2026-09-25 with `bash scripts/ci-gate/privileged-lane-validation.test.sh`; PR #1611's own CI run on the self-hosted fleet passed this same test, so it is not a live exploit against the fleet as provisioned — the check's correctness silently depends on an unpinned jq behavior, worth fixing but not urgent.
-- [#1617](https://github.com/Verjson/.github/issues/1617) — Sibling of #1612: `gen-container-deployment.sh`'s generated deployment-config `jq -re` validation also fails open on a truly empty config under jq 1.6, contradicting its own comment and its own meta-test (`scripts/container-deployment-contract.test.sh`, which already fails against this on `main`). Reproduced locally on 2026-09-26; not verified against the actual fleet/hosted runner's jq version.
+- [#1451](https://github.com/Verjson/.github/issues/1451) — Complete consumer capacity validation and live host acceptance. The generated caller now inherits the `production` environment secret context (#1625, ADR 0198 amendment 2026-09-26); the verjson-git-runners PM regenerates its caller at that SHA and re-dispatches the dry-run for the first CI-driven host-export receipt.
 
 Prune an entry when its issue closes. This list loads into every session, so a
 closed entry costs context in each one and misreports the state of the work.
