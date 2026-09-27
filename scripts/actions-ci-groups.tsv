@@ -216,3 +216,4 @@ merge-gate	python3 scripts/codeowners.py check
 platform	bash scripts/ci-gate/pipefail-sigpipe.test.sh
 platform	bash scripts/ci-gate/hub-changelog-validate.test.sh
 platform	bash scripts/ci-gate/hub-changelog-validate.sh
+platform	python3 scripts/ci-gate/merge-gate-provenance-claims.test.py

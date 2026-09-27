@@ -46,3 +46,7 @@ open work.
   from the actual private required-workflow identity shape.
 - A future signing design needs a captured private-consumer credential/bundle
   test proving its exact verifier predicates before rollout.
+- **Superseded in part (2026-09-27):** the captured private-consumer credential test now
+  exists and its verifier predicates are specified in
+  [ADR 0211](../0211-signed-merge-gate-provenance-binds-the-canonical-required-workflow/README.md);
+  the restored unsigned gate above remains the deployed boundary.
