@@ -9,7 +9,7 @@ for such a token carries the same values as X.509 extensions, so these predicate
 are the certificate policy a future signing rollout must enforce; nothing here
 performs signing or verification of signatures.
 
-    python3 scripts/ci-gate/merge-gate-provenance-claims.py verify \
+    python3 scripts/merge-gate-provenance-claims.py verify \
         --claims claims.json --canonical-path .github/workflows/gate-rearm.yml \
         --canonical-sha <ruleset-stored-40-hex-sha>
 

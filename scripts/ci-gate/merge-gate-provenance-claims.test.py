@@ -11,7 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = ROOT / "config/merge-gate-provenance-fixtures.json"
-SCRIPT = ROOT / "scripts/ci-gate/merge-gate-provenance-claims.py"
+SCRIPT = ROOT / "scripts/merge-gate-provenance-claims.py"
 SPEC = importlib.util.spec_from_file_location("provenance_claims", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)

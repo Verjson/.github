@@ -53,7 +53,7 @@ run is captured the same way.
 
 A signing design for the merge gate must verify, as certificate policy over the Fulcio
 extensions that carry these OIDC claims, exactly the predicates implemented in
-`scripts/ci-gate/merge-gate-provenance-claims.py`:
+`scripts/merge-gate-provenance-claims.py`:
 
 1. `iss == https://token.actions.githubusercontent.com`.
 2. `repository_owner_id == 279365001` and `repository_owner == Verjson` (the id is the
