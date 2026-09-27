@@ -608,5 +608,24 @@ class CliProjectsPackageSurfaceRulesetTest(unittest.TestCase):
         self.assertEqual("active", mutate.call_args.args[2]["enforcement"])
 
 
+class TimestampParsingTest(unittest.TestCase):
+    # GitHub reports run timestamps as `...Z` and ruleset `updated_at` in an
+    # offset form; both must parse and compare in UTC (#1630).
+    def parse(self, value):
+        return MODULE.parse_timestamp(value)
+
+    def test_z_and_offset_forms_compare_as_the_same_instant_in_utc(self):
+        zulu = self.parse("2026-09-27T00:16:20Z")
+        offset = self.parse("2026-09-26T20:16:20.000-04:00")
+        self.assertEqual(zulu, offset)
+        self.assertEqual(str(zulu.tzinfo), "UTC")
+        self.assertLess(offset, self.parse("2026-09-27T00:16:39Z"))
+
+    def test_naive_empty_and_malformed_values_are_rejected(self):
+        for value in ("2026-09-27T00:16:20", "", "not-a-time", "2026-13-40T00:00:00Z", None, 7):
+            with self.subTest(value=value), self.assertRaisesRegex(MODULE.ContractError, "ruleset timestamp is invalid"):
+                self.parse(value)
+
+
 if __name__ == "__main__":
     unittest.main()
