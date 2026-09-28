@@ -65,6 +65,8 @@ Each entry states the concrete fact and how/when it was last verified — a live
 not just inspection of prose (#956: an entry asserting external status should say how it
 was confirmed, since inspection-only claims go stale silently).
 
+- [#1655](https://github.com/Verjson/.github/issues/1655) — Signed merge-gate provenance rollout, opened 2026-09-28 after #1339 met its evidence gate; ADR 0211 still requires a real `pull_request_target` capture before rollout.
+
 - [#1363](https://github.com/Verjson/.github/issues/1363) — Separate AI authorization-arm enrollment from deterministic core checks. Live audit on 2026-09-27 reports one armed repository without canonical deterministic CI (`verjson-agents`, verjson-agents#417 filed with the proposed diff); the ADR 0206 transaction applies after verjson-agents#417 (via #1401) closes. Since the organization App keys were withdrawn on 2026-09-27, ruleset 20722935 runs `gate-rearm@b7e7899` and only the 12 repositories holding the key in `ai-review-app` can arm (#1385).
 - [#1650](https://github.com/Verjson/.github/issues/1650) — `ai-review-merge.yml`'s finalizer step (`complete-authorization` job, "Fail authorization if completion did not run") validates the `external_id`'s embedded head SHA by shape only (`test("^[0-9a-f]{40}$")`), not by equality against `EXPECTED_HEAD_SHA`, unlike its `gate-rearm.yml` sibling. Flagged 2026-09-27 by code review on #1649; confirmed pre-existing and out of that PR's scope via diff against its merge-base.
 
