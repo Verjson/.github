@@ -135,7 +135,7 @@ Two artifact kinds, one release train, one version number:
 | Consumer | Channel | Rationale |
 | --- | --- | --- |
 | CI-executed contract (`changelog.py`, contract test, reusable workflows) | reusable workflow ref | Needs no adopter-resident file beyond the caller, and a `uses:` must be a git ref, so npm cannot serve it. |
-| Developer-executed tooling (`render-next.sh`, `gen-adr-index.sh`) | published package `bin` | A workflow cannot give a human a local command. This is exactly why these were copied into adopters; a package is the correct fix. |
+| Developer-executed tooling (`render-next.sh`, `gen-adr-index.sh`) | published package `bin` | Publish as `@verjson/contract` with `render-next` and `gen-adr-index` bins, versioned in lockstep with the reusable workflow contract ref and dispatched contract release. A workflow cannot give a human a local command; a package is the correct fix for the historical adopter copies. |
 
 This is the precise answer to "shouldn't every repository just depend on the
 `@verjson/ci` package": not one package, but **one versioned organization

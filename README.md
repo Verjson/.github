@@ -35,6 +35,23 @@ python3 scripts/changelog.py validate --repo-root .
 python3 scripts/changelog.py next-version --help
 ```
 
+## Contract developer tools
+
+The published `@verjson/contract` package carries the same version as the
+dispatched contract release and provides the canonical developer commands. Add
+the exact contract version declared by your repository. Configure npm's
+`@verjson` scope for `https://npm.pkg.github.com` with an approved package-read
+credential; never commit the token:
+
+```bash
+npm install --save-dev @verjson/contract@<contract-version>
+npm exec -- render-next --as-released
+npm exec -- gen-adr-index --check
+```
+
+Both commands operate on the current repository. They require Node.js 18 or
+newer, Python 3 for rendering, and Bash for ADR index generation.
+
 Add a `NEXT/` fragment in the same commit as any change to behaviour, pins,
 docs, or config — see [`NEXT/README.md`](NEXT/README.md).
 
