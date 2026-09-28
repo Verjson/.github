@@ -88,7 +88,11 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
         self.assertIn('"$RUNNER_TEMP/', cache_setup["run"])
         self.assertNotIn("$GITHUB_WORKSPACE", cache_setup["run"])
         self.assertEqual(plan["if"], warm["if"])
-        self.assertIn("scripts/render-next.sh", warm["run"])
+        self.assertIn('workspace.resolve(strict=True)', warm["run"])
+        self.assertIn('os.open("scripts", directory_flags, dir_fd=workspace_fd)', warm["run"])
+        self.assertIn('"render-next.sh"', warm["run"])
+        self.assertIn("os.O_NOFOLLOW", warm["run"])
+        self.assertIn("max_renderer_bytes = 1024 * 1024", warm["run"])
         self.assertIn("CONTRACT_REF", warm["run"])
         self.assertIn("CONTRACT_SHA256", warm["run"])
         self.assertIn("hashlib.sha256", warm["run"])
@@ -103,12 +107,21 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
             if step.get("name") == "Warm verified changelog contract cache"
         )
 
-    def run_changelog_cache_warm_step(self, renderer, contract_bytes):
+    def run_changelog_cache_warm_step(
+        self, renderer, contract_bytes, *, symlink_renderer=False, track_renderer_reads=False
+    ):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             workspace = root / "workspace"
             (workspace / "scripts").mkdir(parents=True)
-            (workspace / "scripts/render-next.sh").write_text(renderer, encoding="utf-8")
+            renderer_path = workspace / "scripts/render-next.sh"
+            if symlink_renderer:
+                outside_renderer = root / "outside" / "render-next.sh"
+                outside_renderer.parent.mkdir()
+                outside_renderer.write_text(renderer, encoding="utf-8")
+                renderer_path.symlink_to(outside_renderer)
+            else:
+                renderer_path.write_text(renderer, encoding="utf-8")
             runner_temp = root / "runner-temp"
             runner_temp.mkdir()
             cache_root = runner_temp / "verjson-changelog-tools-test"
@@ -129,6 +142,23 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
                 encoding="utf-8",
             )
             fake_curl.chmod(0o755)
+            python_site = root / "python-site"
+            read_marker = root / "renderer-read"
+            python_path = os.environ.get("PYTHONPATH", "")
+            if track_renderer_reads:
+                python_site.mkdir()
+                (python_site / "sitecustomize.py").write_text(
+                    "import os\n"
+                    "from pathlib import Path\n"
+                    "original_read_text = Path.read_text\n"
+                    "def tracked_read_text(self, *args, **kwargs):\n"
+                    "    if self.name == 'render-next.sh':\n"
+                    "        Path(os.environ['RENDERER_READ_MARKER']).write_text(str(self))\n"
+                    "    return original_read_text(self, *args, **kwargs)\n"
+                    "Path.read_text = tracked_read_text\n",
+                    encoding="utf-8",
+                )
+                python_path = f"{python_site}:{python_path}" if python_path else str(python_site)
             output = root / "step-output"
             result = subprocess.run(
                 ["/usr/bin/bash", "-c", self.changelog_cache_warm_step()["run"]],
@@ -143,6 +173,8 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
                     "CURL_BODY": str(contract_source),
                     "CURL_LOG": str(curl_log),
                     "EXECUTED_MARKER": str(root / "renderer-executed"),
+                    "PYTHONPATH": python_path,
+                    "RENDERER_READ_MARKER": str(read_marker),
                 },
                 capture_output=True,
                 text=True,
@@ -158,7 +190,39 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
                 output.read_text(encoding="utf-8") if output.exists() else "",
                 (root / "renderer-executed").exists(),
                 list(cache_root.iterdir()),
+                read_marker.exists(),
             )
+
+    def test_changelog_cache_warmup_rejects_outside_renderer_symlink_without_reading_it(self):
+        contract = b"# pinned changelog engine fixture\n"
+        reference = "c" * 40
+        renderer = (
+            f'CONTRACT_REF="{reference}"\n'
+            f'CONTRACT_SHA256="{hashlib.sha256(contract).hexdigest()}"\n'
+        )
+
+        (
+            result,
+            cached_contract,
+            _,
+            _,
+            curl_args,
+            _,
+            _,
+            cache_entries,
+            renderer_read,
+        ) = self.run_changelog_cache_warm_step(
+            renderer,
+            contract,
+            symlink_renderer=True,
+            track_renderer_reads=True,
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIsNone(cached_contract)
+        self.assertIsNone(curl_args)
+        self.assertEqual([], cache_entries)
+        self.assertFalse(renderer_read)
 
     def test_changelog_cache_warmup_reads_pins_as_data_and_never_executes_renderer(self):
         contract = b"# pinned changelog engine fixture\n"
@@ -170,9 +234,17 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
             'printf executed > "$EXECUTED_MARKER"\n'
         )
 
-        result, cached_contract, file_mode, directory_mode, curl_args, outputs, executed, _ = (
-            self.run_changelog_cache_warm_step(renderer, contract)
-        )
+        (
+            result,
+            cached_contract,
+            file_mode,
+            directory_mode,
+            curl_args,
+            outputs,
+            executed,
+            _,
+            _,
+        ) = self.run_changelog_cache_warm_step(renderer, contract)
 
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(contract, cached_contract)
@@ -195,9 +267,17 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
             f'CONTRACT_SHA256="{"0" * 64}"\n'
             'printf executed > "$EXECUTED_MARKER"\n'
         )
-        bad_digest, bad_contract, _, _, bad_curl_args, _, bad_executed, _ = (
-            self.run_changelog_cache_warm_step(bad_digest_renderer, contract)
-        )
+        (
+            bad_digest,
+            bad_contract,
+            _,
+            _,
+            bad_curl_args,
+            _,
+            bad_executed,
+            _,
+            _,
+        ) = self.run_changelog_cache_warm_step(bad_digest_renderer, contract)
         self.assertNotEqual(0, bad_digest.returncode)
         self.assertIsNone(bad_contract)
         self.assertIsNotNone(bad_curl_args)
@@ -207,9 +287,17 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
             'CONTRACT_REF="not-a-commit"\n'
             f'CONTRACT_SHA256="{hashlib.sha256(contract).hexdigest()}"\n'
         )
-        malformed, malformed_contract, _, _, malformed_curl_args, _, _, malformed_entries = (
-            self.run_changelog_cache_warm_step(malformed_renderer, contract)
-        )
+        (
+            malformed,
+            malformed_contract,
+            _,
+            _,
+            malformed_curl_args,
+            _,
+            _,
+            malformed_entries,
+            _,
+        ) = self.run_changelog_cache_warm_step(malformed_renderer, contract)
         self.assertNotEqual(0, malformed.returncode)
         self.assertIsNone(malformed_contract)
         self.assertIsNone(malformed_curl_args)

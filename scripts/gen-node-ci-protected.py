@@ -482,11 +482,86 @@ def configure_changelog_tool_cache(document: str) -> str:
           import tempfile
           from pathlib import Path
 
-          workspace = Path(os.environ["GITHUB_WORKSPACE"])
+          workspace = Path(os.environ.get("GITHUB_WORKSPACE", ""))
+          workspace_fd = None
+          scripts_fd = None
+          renderer_fd = None
           try:
-              renderer = (workspace / "scripts/render-next.sh").read_text(encoding="utf-8")
-          except OSError:
-              sys.exit("pinned changelog renderer is unavailable")
+              if (
+                  not workspace.is_absolute()
+                  or workspace.resolve(strict=True) != workspace
+              ):
+                  raise ValueError("checkout path is not canonical")
+              directory_flags = (
+                  os.O_RDONLY
+                  | os.O_DIRECTORY
+                  | os.O_NOFOLLOW
+                  | getattr(os, "O_CLOEXEC", 0)
+              )
+              workspace_metadata = workspace.stat(follow_symlinks=False)
+              workspace_fd = os.open(workspace, directory_flags)
+              opened_workspace_metadata = os.fstat(workspace_fd)
+              if (
+                  not stat.S_ISDIR(opened_workspace_metadata.st_mode)
+                  or opened_workspace_metadata.st_dev != workspace_metadata.st_dev
+                  or opened_workspace_metadata.st_ino != workspace_metadata.st_ino
+                  or opened_workspace_metadata.st_uid != os.getuid()
+              ):
+                  raise ValueError("checkout directory changed during validation")
+              scripts_fd = os.open("scripts", directory_flags, dir_fd=workspace_fd)
+              scripts_metadata = os.fstat(scripts_fd)
+              if (
+                  not stat.S_ISDIR(scripts_metadata.st_mode)
+                  or scripts_metadata.st_uid != os.getuid()
+              ):
+                  raise ValueError("checkout scripts directory has an unsafe shape")
+              renderer_fd = os.open(
+                  "render-next.sh",
+                  os.O_RDONLY
+                  | os.O_NOFOLLOW
+                  | os.O_NONBLOCK
+                  | getattr(os, "O_CLOEXEC", 0),
+                  dir_fd=scripts_fd,
+              )
+              renderer_metadata = os.fstat(renderer_fd)
+              max_renderer_bytes = 1024 * 1024
+              if (
+                  not stat.S_ISREG(renderer_metadata.st_mode)
+                  or renderer_metadata.st_uid != os.getuid()
+                  or renderer_metadata.st_nlink != 1
+                  or renderer_metadata.st_size > max_renderer_bytes
+              ):
+                  raise ValueError("checkout renderer has an unsafe file shape")
+              with os.fdopen(renderer_fd, "rb") as renderer_stream:
+                  renderer_fd = None
+                  renderer_bytes = renderer_stream.read(max_renderer_bytes + 1)
+                  final_renderer_metadata = os.fstat(renderer_stream.fileno())
+              if (
+                  len(renderer_bytes) != renderer_metadata.st_size
+                  or len(renderer_bytes) > max_renderer_bytes
+                  or (
+                      renderer_metadata.st_dev,
+                      renderer_metadata.st_ino,
+                      renderer_metadata.st_size,
+                      renderer_metadata.st_mtime_ns,
+                      renderer_metadata.st_ctime_ns,
+                  )
+                  != (
+                      final_renderer_metadata.st_dev,
+                      final_renderer_metadata.st_ino,
+                      final_renderer_metadata.st_size,
+                      final_renderer_metadata.st_mtime_ns,
+                      final_renderer_metadata.st_ctime_ns,
+                  )
+              ):
+                  raise ValueError("checkout renderer changed during validation")
+              renderer = renderer_bytes.decode("utf-8")
+          except (OSError, UnicodeDecodeError, ValueError):
+              sys.exit("pinned changelog renderer is unavailable or unsafe")
+          finally:
+              for descriptor in (renderer_fd, scripts_fd, workspace_fd):
+                  if descriptor is not None:
+                      os.close(descriptor)
 
           def declaration(name, pattern):
               matches = re.findall(rf'(?m)^{{name}}="([^"\\n]*)"$', renderer)
