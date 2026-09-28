@@ -67,6 +67,154 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
         subprocess.run(["python3", "scripts/gen-node-ci-protected.py"], cwd=ROOT, check=True)
         self.assertEqual(before, PROTECTED.read_bytes())
 
+    def test_changelog_cache_is_verified_before_the_networkless_sandbox(self):
+        steps = self.workflow["jobs"]["build-test"]["steps"]
+        cache_setup = next(
+            step for step in steps
+            if step.get("name") == "Prepare job-scoped changelog tool cache"
+        )
+        warm_steps = [
+            step for step in steps
+            if step.get("name") == "Warm verified changelog contract cache"
+        ]
+        self.assertEqual(1, len(warm_steps))
+        warm = warm_steps[0]
+        plan = next(
+            step for step in steps
+            if step.get("name") == "Run exact credentialless consumer script plan"
+        )
+        self.assertLess(steps.index(cache_setup), steps.index(warm))
+        self.assertLess(steps.index(warm), steps.index(plan))
+        self.assertIn('"$RUNNER_TEMP/', cache_setup["run"])
+        self.assertNotIn("$GITHUB_WORKSPACE", cache_setup["run"])
+        self.assertEqual(plan["if"], warm["if"])
+        self.assertIn("scripts/render-next.sh", warm["run"])
+        self.assertIn("CONTRACT_REF", warm["run"])
+        self.assertIn("CONTRACT_SHA256", warm["run"])
+        self.assertIn("hashlib.sha256", warm["run"])
+        self.assertNotIn("bash scripts/render-next.sh", warm["run"])
+        self.assertIn("VERJSON_CHANGELOG_TOOL_CACHE", plan["run"])
+        self.assertIn('"--unshare-net"', plan["run"])
+        self.assertIn('"--ro-bind"', plan["run"])
+
+    def changelog_cache_warm_step(self):
+        return next(
+            step for step in self.workflow["jobs"]["build-test"]["steps"]
+            if step.get("name") == "Warm verified changelog contract cache"
+        )
+
+    def run_changelog_cache_warm_step(self, renderer, contract_bytes):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            (workspace / "scripts").mkdir(parents=True)
+            (workspace / "scripts/render-next.sh").write_text(renderer, encoding="utf-8")
+            runner_temp = root / "runner-temp"
+            runner_temp.mkdir()
+            cache_root = runner_temp / "verjson-changelog-tools-test"
+            cache_root.mkdir(mode=0o700)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            contract_source = root / "contract.py"
+            contract_source.write_bytes(contract_bytes)
+            curl_log = root / "curl.log"
+            fake_curl = fake_bin / "curl"
+            fake_curl.write_text(
+                "#!/usr/bin/env python3\n"
+                "import os, sys\n"
+                "from pathlib import Path\n"
+                "args = sys.argv[1:]\n"
+                "Path(os.environ['CURL_LOG']).write_text('\\n'.join(args), encoding='utf-8')\n"
+                "Path(args[args.index('-o') + 1]).write_bytes(Path(os.environ['CURL_BODY']).read_bytes())\n",
+                encoding="utf-8",
+            )
+            fake_curl.chmod(0o755)
+            output = root / "step-output"
+            result = subprocess.run(
+                ["/usr/bin/bash", "-c", self.changelog_cache_warm_step()["run"]],
+                cwd=workspace,
+                env={
+                    **os.environ,
+                    "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                    "GITHUB_WORKSPACE": str(workspace),
+                    "RUNNER_TEMP": str(runner_temp),
+                    "VERJSON_CHANGELOG_TOOL_CACHE": str(cache_root),
+                    "GITHUB_OUTPUT": str(output),
+                    "CURL_BODY": str(contract_source),
+                    "CURL_LOG": str(curl_log),
+                    "EXECUTED_MARKER": str(root / "renderer-executed"),
+                },
+                capture_output=True,
+                text=True,
+            )
+            cached_paths = list(cache_root.glob("*/changelog.py"))
+            cached_contract = cached_paths[0] if len(cached_paths) == 1 else None
+            return (
+                result,
+                cached_contract.read_bytes() if cached_contract is not None else None,
+                cached_contract.stat().st_mode & 0o777 if cached_contract is not None else None,
+                cached_contract.parent.stat().st_mode & 0o777 if cached_contract is not None else None,
+                curl_log.read_text(encoding="utf-8") if curl_log.exists() else None,
+                output.read_text(encoding="utf-8") if output.exists() else "",
+                (root / "renderer-executed").exists(),
+                list(cache_root.iterdir()),
+            )
+
+    def test_changelog_cache_warmup_reads_pins_as_data_and_never_executes_renderer(self):
+        contract = b"# pinned changelog engine fixture\n"
+        reference = "a" * 40
+        digest = hashlib.sha256(contract).hexdigest()
+        renderer = (
+            f'CONTRACT_REF="{reference}"\n'
+            f'CONTRACT_SHA256="{digest}"\n'
+            'printf executed > "$EXECUTED_MARKER"\n'
+        )
+
+        result, cached_contract, file_mode, directory_mode, curl_args, outputs, executed, _ = (
+            self.run_changelog_cache_warm_step(renderer, contract)
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(contract, cached_contract)
+        self.assertEqual(0o400, file_mode)
+        self.assertEqual(0o700, directory_mode)
+        self.assertIn(
+            f"https://raw.githubusercontent.com/Verjson/.github/{reference}/scripts/changelog.py",
+            curl_args,
+        )
+        self.assertIn("--max-filesize\n16777216", curl_args)
+        self.assertIn(f"contract_ref={reference}", outputs)
+        self.assertIn(f"contract_sha256={digest}", outputs)
+        self.assertFalse(executed)
+
+    def test_changelog_cache_warmup_rejects_bad_digest_and_malformed_pin(self):
+        contract = b"# pinned changelog engine fixture\n"
+        reference = "b" * 40
+        bad_digest_renderer = (
+            f'CONTRACT_REF="{reference}"\n'
+            f'CONTRACT_SHA256="{"0" * 64}"\n'
+            'printf executed > "$EXECUTED_MARKER"\n'
+        )
+        bad_digest, bad_contract, _, _, bad_curl_args, _, bad_executed, _ = (
+            self.run_changelog_cache_warm_step(bad_digest_renderer, contract)
+        )
+        self.assertNotEqual(0, bad_digest.returncode)
+        self.assertIsNone(bad_contract)
+        self.assertIsNotNone(bad_curl_args)
+        self.assertFalse(bad_executed)
+
+        malformed_renderer = (
+            'CONTRACT_REF="not-a-commit"\n'
+            f'CONTRACT_SHA256="{hashlib.sha256(contract).hexdigest()}"\n'
+        )
+        malformed, malformed_contract, _, _, malformed_curl_args, _, _, malformed_entries = (
+            self.run_changelog_cache_warm_step(malformed_renderer, contract)
+        )
+        self.assertNotEqual(0, malformed.returncode)
+        self.assertIsNone(malformed_contract)
+        self.assertIsNone(malformed_curl_args)
+        self.assertEqual([], malformed_entries)
+
     def test_contract_requires_scopes_and_explicit_nonambient_token(self):
         self.assertEqual(7, len(self.verifiers))
         for step in self.verifiers:
@@ -250,6 +398,18 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
             if step.get("name") == "Run exact credentialless consumer script plan"
         )
 
+    def create_changelog_cache_fixture(self, runner_temp):
+        cache_root = runner_temp / "verjson-changelog-tools-test"
+        reference = "c" * 40
+        contract_bytes = b"# pinned changelog engine fixture\n"
+        cache_root.mkdir(mode=0o700)
+        cache_dir = cache_root / reference
+        cache_dir.mkdir(mode=0o700)
+        contract = cache_dir / "changelog.py"
+        contract.write_bytes(contract_bytes)
+        contract.chmod(0o400)
+        return cache_root, reference, contract_bytes
+
     def run_candidate_plan(
         self,
         cache_setup,
@@ -277,6 +437,9 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
             runner_temp.mkdir()
             baseline = runner_temp / "baseline"
             baseline.mkdir()
+            changelog_cache_root, changelog_ref, changelog_bytes = (
+                self.create_changelog_cache_fixture(runner_temp)
+            )
             workspace_parent = runner_temp if workspace_in_runner_temp else root
             workspace = workspace_parent / "workspace"
             if workspace_symlink:
@@ -394,6 +557,9 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
                 "CANDIDATE_CACHE_ROOT": str(runner_temp / "verjson-candidate-caches-test"),
                 "npm_config_cache": str(baseline),
                 "RUNNER_TOOL_CACHE": str(tool_bin.parent),
+                "VERJSON_CHANGELOG_TOOL_CACHE": str(changelog_cache_root),
+                "VERJSON_CHANGELOG_CONTRACT_REF": changelog_ref,
+                "VERJSON_CHANGELOG_CONTRACT_SHA256": hashlib.sha256(changelog_bytes).hexdigest(),
                 "PWD": str(workspace),
             }
             env.update(environment_updates or {})
@@ -502,21 +668,34 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
                     runner_temp.mkdir()
                     baseline = runner_temp / "baseline"
                     baseline.mkdir()
+                    changelog_cache_root, changelog_ref, changelog_bytes = (
+                        self.create_changelog_cache_fixture(runner_temp)
+                    )
                     (baseline / "blob").write_text("verified", encoding="utf-8")
+                    workspace = Path(directory) / "workspace"
+                    workspace.mkdir()
+                    (workspace / "package.json").write_text(
+                        json.dumps({"scripts": {"first": "true"}}), encoding="utf-8"
+                    )
                     run = self.candidate_plan_step()["run"]
                     result = subprocess.run(
                         ["/usr/bin/bash", "-c", run],
-                        cwd=Path(directory),
+                        cwd=workspace,
                         env={
                             **os.environ,
                             "RUNNER_TEMP": str(runner_temp),
                             "CI_SCRIPT_PLAN": '["first"]',
                             "CANDIDATE_CACHE_ROOT": str(baseline),
                             "npm_config_cache": str(baseline),
+                            "VERJSON_CHANGELOG_TOOL_CACHE": str(changelog_cache_root),
+                            "VERJSON_CHANGELOG_CONTRACT_REF": changelog_ref,
+                            "VERJSON_CHANGELOG_CONTRACT_SHA256": hashlib.sha256(changelog_bytes).hexdigest(),
                         },
                         capture_output=True,
+                        text=True,
                     )
                     self.assertNotEqual(0, result.returncode)
+                    self.assertIn("candidate cache root exists before script execution", result.stderr)
                 continue
             result, remaining = self.run_candidate_plan(
                 cache_setup,
@@ -535,6 +714,30 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
             shadow_candidate_path=True,
         )
         self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual([], remaining)
+
+    def test_verified_changelog_contract_is_read_only_inside_the_networkless_sandbox(self):
+        result, remaining = self.run_candidate_plan(
+            lambda baseline: (baseline / "blob").write_text("verified", encoding="utf-8"),
+            "contract=\"$VERJSON_CHANGELOG_TOOL_CACHE/$VERJSON_CHANGELOG_CONTRACT_REF/changelog.py\"\n"
+            "test -r \"$contract\"\n"
+            "grep -q 'pinned changelog engine fixture' \"$contract\"\n"
+            "if printf poisoned >\"$contract\" 2>/dev/null; then exit 91; fi\n"
+            "grep -q 'pinned changelog engine fixture' \"$contract\"\n",
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual([], remaining)
+
+    def test_changelog_contract_digest_is_rechecked_immediately_before_sandbox_entry(self):
+        result, remaining = self.run_candidate_plan(
+            lambda baseline: (baseline / "blob").write_text("verified", encoding="utf-8"),
+            "exit 0\n",
+            environment_updates={"VERJSON_CHANGELOG_CONTRACT_SHA256": "0" * 64},
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("does not match its pinned SHA-256", result.stderr)
         self.assertEqual([], remaining)
 
     def test_trusted_tool_root_rejects_workspace_equality_and_writable_mode(self):
@@ -825,6 +1028,9 @@ PY
             runner_temp.mkdir()
             baseline = runner_temp / "baseline"
             baseline.mkdir()
+            changelog_cache_root, changelog_ref, changelog_bytes = (
+                self.create_changelog_cache_fixture(runner_temp)
+            )
             workspace = root / "workspace"
             workspace.mkdir()
             (baseline / "blob").write_text("verified", encoding="utf-8")
@@ -834,6 +1040,7 @@ PY
             tool_bin = root / "tool" / "bin"
             tool_bin.mkdir(parents=True)
             tool_bin.parent.chmod(0o755)
+            tool_bin.chmod(0o755)
             npm = tool_bin / "npm"
             npm.write_text(
                 "#!/usr/bin/env bash\nset -euo pipefail\nprintf '%s' \"$$\" > child.pid\nwhile :; do sleep 1; done\n",
@@ -843,6 +1050,12 @@ PY
             node = tool_bin / "node"
             node.write_text("#!/usr/bin/env bash\nexec /usr/bin/node \"$@\"\n", encoding="utf-8")
             node.chmod(0o755)
+            tool_package = tool_bin.parent / "lib" / "node_modules" / "npm" / "package.json"
+            tool_package.parent.mkdir(parents=True)
+            tool_package.write_text('{"name":"npm"}\n', encoding="utf-8")
+            tool_package.chmod(0o644)
+            for directory_name, _, _ in os.walk(tool_bin.parent):
+                Path(directory_name).chmod(0o755)
             subprocess.run(
                 ["sudo", "-n", "chown", "-R", "0:0", str(tool_bin.parent)], check=True
             )
@@ -855,8 +1068,11 @@ PY
                     "RUNNER_TEMP": str(runner_temp),
                     "CI_SCRIPT_PLAN": '["first"]',
                     "CANDIDATE_CACHE_ROOT": str(runner_temp / "verjson-candidate-caches-test"),
-                "npm_config_cache": str(baseline),
-                "RUNNER_TOOL_CACHE": str(tool_bin.parent),
+                    "npm_config_cache": str(baseline),
+                    "RUNNER_TOOL_CACHE": str(tool_bin.parent),
+                    "VERJSON_CHANGELOG_TOOL_CACHE": str(changelog_cache_root),
+                    "VERJSON_CHANGELOG_CONTRACT_REF": changelog_ref,
+                    "VERJSON_CHANGELOG_CONTRACT_SHA256": hashlib.sha256(changelog_bytes).hexdigest(),
                 },
             )
             for _ in range(100):
@@ -864,7 +1080,7 @@ PY
                     break
                 time.sleep(0.02)
             process.send_signal(signal.SIGTERM)
-            self.assertNotEqual(0, process.wait(timeout=20))
+            return_code = process.wait(timeout=20)
             self.assertEqual([], list(runner_temp.glob("verjson-candidate-caches-*")))
             subprocess.run(
                 [
@@ -877,6 +1093,8 @@ PY
                 ],
                 check=True,
             )
+            self.assertTrue((workspace / "child.pid").exists())
+            self.assertNotEqual(0, return_code)
 
 
 if __name__ == "__main__":

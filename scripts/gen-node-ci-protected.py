@@ -81,6 +81,7 @@ PROTECTED_BASELINE_STEP = """      - name: Resolve protected type-surface baseli
           import json
           import os
           import re
+          import stat
           import subprocess
           from pathlib import Path
 
@@ -446,6 +447,150 @@ def move_step_before_guard(
     return "".join(lines)
 
 
+def configure_changelog_tool_cache(document: str) -> str:
+    step_name = "Prepare job-scoped changelog tool cache"
+    step_marker = f"      - name: {step_name}\n"
+    step_start = document.index(step_marker)
+    step_end = document.find("\n      - ", step_start + len(step_marker))
+    if step_end == -1:
+        raise SystemExit(f"protected changelog cache step {step_name!r} must not be last")
+    step = document[step_start:step_end]
+    workspace_cache_root = '$GITHUB_WORKSPACE/.verjson-changelog-tools.XXXXXX'
+    runner_cache_root = '$RUNNER_TEMP/verjson-changelog-tools.XXXXXX'
+    if step.count(workspace_cache_root) != 1:
+        raise SystemExit("protected changelog cache root source drifted")
+    step = step.replace(workspace_cache_root, runner_cache_root, 1)
+
+    plan_if = (
+        "needs.eligibility.outputs.should-run != 'false' && "
+        "(inputs.secretless-pr || inputs.secretless-trusted-ref) && "
+        "(inputs.secretless-ci-script-plan != '' || "
+        "inputs.secretless-nested-manifests != '')"
+    )
+    warm_step = f"""      - name: Warm verified changelog contract cache
+        id: warm-changelog-contract
+        if: {plan_if}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import os
+          import re
+          import stat
+          import subprocess
+          import sys
+          import tempfile
+          from pathlib import Path
+
+          workspace = Path(os.environ["GITHUB_WORKSPACE"])
+          try:
+              renderer = (workspace / "scripts/render-next.sh").read_text(encoding="utf-8")
+          except OSError:
+              sys.exit("pinned changelog renderer is unavailable")
+
+          def declaration(name, pattern):
+              matches = re.findall(rf'(?m)^{{name}}="([^"\\n]*)"$', renderer)
+              if len(matches) != 1 or re.fullmatch(pattern, matches[0]) is None:
+                  sys.exit(f"pinned changelog renderer has an invalid {{name}} declaration")
+              return matches[0]
+
+          contract_ref = declaration("CONTRACT_REF", r"[0-9a-f]{{40}}")
+          contract_sha256 = declaration("CONTRACT_SHA256", r"[0-9a-f]{{64}}")
+          runner_temp = Path(os.environ.get("RUNNER_TEMP", ""))
+          cache_root = Path(os.environ.get("VERJSON_CHANGELOG_TOOL_CACHE", ""))
+          if (
+              not runner_temp.is_absolute()
+              or runner_temp.is_symlink()
+              or not runner_temp.is_dir()
+              or runner_temp.resolve() != runner_temp
+              or not cache_root.is_absolute()
+              or cache_root.is_symlink()
+              or not cache_root.is_dir()
+              or cache_root.resolve() != cache_root
+              or cache_root.parent != runner_temp
+          ):
+              sys.exit("job-scoped changelog cache is not a canonical RUNNER_TEMP child")
+          if any(cache_root.iterdir()):
+              sys.exit("job-scoped changelog cache was not empty before warm-up")
+
+          url = (
+              "https://raw.githubusercontent.com/Verjson/.github/"
+              f"{{contract_ref}}/scripts/changelog.py"
+          )
+          descriptor, temporary_name = tempfile.mkstemp(prefix=".changelog.", dir=cache_root)
+          os.close(descriptor)
+          temporary_path = Path(temporary_name)
+          try:
+              subprocess.run(
+                  [
+                      "curl",
+                      "-fsSL",
+                      "--proto",
+                      "=https",
+                      "--proto-redir",
+                      "=https",
+                      "--max-filesize",
+                      "16777216",
+                      "-o",
+                      str(temporary_path),
+                      url,
+                  ],
+                  check=True,
+                  capture_output=True,
+              )
+          except (OSError, subprocess.CalledProcessError):
+              temporary_path.unlink(missing_ok=True)
+              sys.exit("cannot fetch the pinned changelog contract")
+          try:
+              temporary_metadata = temporary_path.stat(follow_symlinks=False)
+              if (
+                  not stat.S_ISREG(temporary_metadata.st_mode)
+                  or temporary_metadata.st_uid != os.getuid()
+                  or temporary_metadata.st_nlink != 1
+                  or temporary_metadata.st_mode & 0o022
+                  or temporary_metadata.st_size > 16777216
+              ):
+                  raise ValueError("fetched changelog contract has an unsafe file shape")
+              contract_fd = os.open(
+                  temporary_path,
+                  os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+              )
+              opened_metadata = os.fstat(contract_fd)
+              if (
+                  opened_metadata.st_dev != temporary_metadata.st_dev
+                  or opened_metadata.st_ino != temporary_metadata.st_ino
+                  or not stat.S_ISREG(opened_metadata.st_mode)
+              ):
+                  os.close(contract_fd)
+                  raise ValueError("fetched changelog contract changed during validation")
+              digest = hashlib.sha256()
+              with os.fdopen(contract_fd, "rb") as contract_stream:
+                  for chunk in iter(lambda: contract_stream.read(1024 * 1024), b""):
+                      digest.update(chunk)
+          except (OSError, ValueError):
+              temporary_path.unlink(missing_ok=True)
+              sys.exit("fetched changelog contract has an unsafe file shape")
+          if digest.hexdigest() != contract_sha256:
+              temporary_path.unlink(missing_ok=True)
+              sys.exit("fetched changelog contract does not match its pinned SHA-256")
+
+          contract_dir = cache_root / contract_ref
+          try:
+              contract_dir.mkdir(mode=0o700)
+              temporary_path.chmod(0o400)
+              os.rename(temporary_path, contract_dir / "changelog.py")
+          except OSError:
+              temporary_path.unlink(missing_ok=True)
+              sys.exit("cannot publish the verified changelog contract")
+
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+              output.write(f"contract_ref={{contract_ref}}\\n")
+              output.write(f"contract_sha256={{contract_sha256}}\\n")
+          PY
+"""
+    return document[:step_start] + step + "\n" + warm_step.rstrip("\n") + document[step_end:]
+
+
 def isolate_candidate_runtime_cache(document: str) -> str:
     step_name = "Run exact credentialless consumer script plan"
     plan_if = (
@@ -474,6 +619,10 @@ def isolate_candidate_runtime_cache(document: str) -> str:
         "          CANDIDATE_CACHE_ROOT: "
         "${{ runner.temp }}/verjson-candidate-caches-${{ github.run_id }}-"
         "${{ github.run_attempt }}-${{ github.job }}\n"
+        "          VERJSON_CHANGELOG_CONTRACT_REF: "
+        "${{ steps.warm-changelog-contract.outputs.contract_ref }}\n"
+        "          VERJSON_CHANGELOG_CONTRACT_SHA256: "
+        "${{ steps.warm-changelog-contract.outputs.contract_sha256 }}\n"
     )
     step = step.replace(plan_env, isolated_plan_env, 1)
     imports = """          import json
@@ -515,6 +664,81 @@ def isolate_candidate_runtime_cache(document: str) -> str:
           ):
               sys.exit("RUNNER_TEMP is not a canonical directory")
           runner_temp = runner_temp_input
+          changelog_ref = os.environ.get("VERJSON_CHANGELOG_CONTRACT_REF", "")
+          changelog_sha256 = os.environ.get("VERJSON_CHANGELOG_CONTRACT_SHA256", "")
+          if (
+              re.fullmatch(r"[0-9a-f]{{40}}", changelog_ref) is None
+              or re.fullmatch(r"[0-9a-f]{{64}}", changelog_sha256) is None
+          ):
+              sys.exit("pinned changelog contract identity is malformed")
+          changelog_cache_root = Path(os.environ.get("VERJSON_CHANGELOG_TOOL_CACHE", ""))
+          if (
+              not changelog_cache_root.is_absolute()
+              or changelog_cache_root.is_symlink()
+              or not changelog_cache_root.is_dir()
+              or changelog_cache_root.resolve() != changelog_cache_root
+              or changelog_cache_root.parent != runner_temp
+          ):
+              sys.exit("verified changelog cache is not a canonical RUNNER_TEMP child")
+          changelog_cache_root_metadata = changelog_cache_root.stat(follow_symlinks=False)
+          if (
+              not stat.S_ISDIR(changelog_cache_root_metadata.st_mode)
+              or changelog_cache_root_metadata.st_uid != os.getuid()
+              or changelog_cache_root_metadata.st_mode & 0o022
+          ):
+              sys.exit("verified changelog cache root has unsafe ownership or mode")
+          changelog_cache_entries = list(os.scandir(changelog_cache_root))
+          if len(changelog_cache_entries) != 1 or changelog_cache_entries[0].name != changelog_ref:
+              sys.exit("verified changelog cache contains unexpected entries")
+          changelog_cache_dir = changelog_cache_root / changelog_ref
+          changelog_cache_dir_metadata = changelog_cache_dir.stat(follow_symlinks=False)
+          if (
+              not stat.S_ISDIR(changelog_cache_dir_metadata.st_mode)
+              or changelog_cache_dir_metadata.st_uid != os.getuid()
+              or changelog_cache_dir_metadata.st_mode & 0o022
+          ):
+              sys.exit("verified changelog cache entry has unsafe ownership or mode")
+          changelog_cache_files = list(os.scandir(changelog_cache_dir))
+          if len(changelog_cache_files) != 1 or changelog_cache_files[0].name != "changelog.py":
+              sys.exit("verified changelog cache entry is incomplete")
+          changelog_contract_path = changelog_cache_dir / "changelog.py"
+          changelog_contract_metadata = changelog_contract_path.stat(follow_symlinks=False)
+          if (
+              not stat.S_ISREG(changelog_contract_metadata.st_mode)
+              or changelog_contract_metadata.st_uid != os.getuid()
+              or changelog_contract_metadata.st_nlink != 1
+              or changelog_contract_metadata.st_mode & 0o222
+              or changelog_contract_metadata.st_size > 16777216
+          ):
+              sys.exit("verified changelog contract file has unsafe ownership or mode")
+          try:
+              changelog_contract_fd = os.open(
+                  changelog_contract_path,
+                  os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+              )
+          except OSError:
+              sys.exit("verified changelog contract changed during validation")
+          opened_contract_metadata = os.fstat(changelog_contract_fd)
+          if (
+              opened_contract_metadata.st_dev != changelog_contract_metadata.st_dev
+              or opened_contract_metadata.st_ino != changelog_contract_metadata.st_ino
+              or opened_contract_metadata.st_uid != changelog_contract_metadata.st_uid
+              or opened_contract_metadata.st_size != changelog_contract_metadata.st_size
+          ):
+              os.close(changelog_contract_fd)
+              sys.exit("verified changelog contract changed during validation")
+          changelog_digest = hashlib.sha256()
+          with os.fdopen(changelog_contract_fd, "rb") as changelog_stream:
+              for chunk in iter(lambda: changelog_stream.read(1024 * 1024), b""):
+                  changelog_digest.update(chunk)
+          if changelog_digest.hexdigest() != changelog_sha256:
+              sys.exit("verified changelog contract does not match its pinned SHA-256")
+          changelog_cache_root_identity = (
+              changelog_cache_root_metadata.st_dev,
+              changelog_cache_root_metadata.st_ino,
+              changelog_cache_root_metadata.st_uid,
+              stat.S_IMODE(changelog_cache_root_metadata.st_mode),
+          )
           baseline_value = os.environ.get("npm_config_cache", "").strip()
           baseline = None
           if baseline_value:
@@ -636,6 +860,11 @@ def isolate_candidate_runtime_cache(document: str) -> str:
           def paths_overlap(left, right):
             return left == right or left in right.parents or right in left.parents
 
+          if paths_overlap(changelog_cache_root, cache_root) or (
+              baseline is not None and paths_overlap(changelog_cache_root, baseline)
+          ):
+              sys.exit("verified changelog cache overlaps a candidate cache")
+
           def validate_trusted_ancestry(
             root,
             target,
@@ -669,7 +898,8 @@ def isolate_candidate_runtime_cache(document: str) -> str:
                 sys.exit(f"{{label}} ancestry has unsafe ownership mode")
 
           candidate_controlled_roots = tuple(
-              root for root in (workspace, runner_temp, baseline, cache_root) if root is not None
+              root for root in (workspace, runner_temp, baseline, cache_root, changelog_cache_root)
+              if root is not None
           )
           if any(paths_overlap(trusted_tool_root, path) for path in candidate_controlled_roots):
               sys.exit("trusted setup-node tool root overlaps candidate-controlled paths")
@@ -1020,7 +1250,13 @@ def isolate_candidate_runtime_cache(document: str) -> str:
                       for right in isolated_paths[position + 1:]
                   ):
                       sys.exit("candidate writable mount paths overlap")
-                  mount_targets = (workspace, cache_root, *isolated_paths, *tool_prefixes)
+                  mount_targets = (
+                      workspace,
+                      cache_root,
+                      changelog_cache_root,
+                      *isolated_paths,
+                      *tool_prefixes,
+                  )
                   namespace_directories = set()
                   for target in mount_targets:
                       namespace_directories.add(target)
@@ -1037,8 +1273,10 @@ def isolate_candidate_runtime_cache(document: str) -> str:
                       chmod_args.extend(("--chmod", "0555", str(directory)))
               tool_mount_args = []
               tool_prefix_fds = []
+              readonly_mount_identities = dict(tool_prefix_identities)
+              readonly_mount_identities[changelog_cache_root] = changelog_cache_root_identity
               try:
-                for tool_prefix in tool_prefixes:
+                for tool_prefix in (*tool_prefixes, changelog_cache_root):
                   descriptor = os.open(
                     tool_prefix,
                     os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
@@ -1050,9 +1288,9 @@ def isolate_candidate_runtime_cache(document: str) -> str:
                     descriptor_metadata.st_uid,
                     stat.S_IMODE(descriptor_metadata.st_mode),
                   )
-                  if descriptor_identity != tool_prefix_identities[tool_prefix]:
+                  if descriptor_identity != readonly_mount_identities[tool_prefix]:
                     os.close(descriptor)
-                    sys.exit("trusted tool prefix changed before namespace bind")
+                    sys.exit("verified read-only mount changed before namespace bind")
                   tool_prefix_fds.append(descriptor)
                   tool_mount_args.extend(
                     ("--ro-bind", f"/proc/self/fd/{{descriptor}}", str(tool_prefix))
@@ -1478,6 +1716,7 @@ def render() -> str:
         "Run runtime-resolved compatibility lanes without credentials",
     ):
         document = remove_candidate_credentials(document, step_name)
+    document = configure_changelog_tool_cache(document)
     document = isolate_candidate_runtime_cache(document)
     document = move_step_before_guard(
         document,
