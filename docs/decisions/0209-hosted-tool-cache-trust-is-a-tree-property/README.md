@@ -114,3 +114,28 @@ compatibility lanes (declaration path or compatibility ranges set), under the sa
 four does not pay for provisioning it would never use. Self-hosted runners are
 unchanged because they carry the sandbox as a fleet property. Nothing about what the
 sandbox admits changes; only when it is present.
+
+## 2026-09-28 amendment: prewarm the pinned changelog engine for protected plans
+
+**Status:** Accepted; [#1646](https://github.com/Verjson/.github/issues/1646).
+
+Protected consumer plans may invoke the generated `scripts/render-next.sh`, whose
+engine is pinned by `CONTRACT_REF` and `CONTRACT_SHA256`. A networkless protected
+plan cannot use the renderer's fetch fallback, and an empty cache made the exact
+`test:release` plan fail before it could validate the consumer. Keep that plan and
+the sandbox's network boundary unchanged.
+
+Before sandbox entry, the generated workflow reads only the two literal pin
+declarations as data; it never executes the consumer renderer on the host. It
+fetches only `scripts/changelog.py` from the canonical `.github` repository at the
+validated 40-hex ref, verifies the bytes against the declared SHA-256, and writes
+the verified file into a job-scoped `RUNNER_TEMP` cache. The protected plan
+revalidates the exact one-file cache tree and digest, opens the cache root without
+following symlinks, rechecks its identity, and bind-mounts it read-only alongside
+the existing trusted tool prefixes. The renderer can therefore read the same
+verified engine in its existing offline sandbox, without granting it network or
+host write access.
+
+The behavioral coverage in `scripts/ci-gate/node-ci-required-identity.test.py`
+exercises malformed pins, digest mismatch, non-execution of the renderer during
+warm-up, and a real bubblewrap write-denial probe for the mounted cache.
