@@ -52,6 +52,11 @@
     "apply_acknowledgement": "ROTATE-CLI-PROJECTS-REQUIRED-WORKFLOW-1187",
     "previous_workflow_sha": "ebe574b639ff5ffc1dfb5cf935014c5c7ad5d081",
     "previous_disabled_workflow_sha": "4525c152a77bd04c006fa2b790f4b64833b1bbbe",
+    "freshness_status_check": {
+      "context": "admission",
+      "integration_id": 15368,
+      "strict": true
+    },
     "required_run": {
       "event": "pull_request",
       "conclusion": "success",

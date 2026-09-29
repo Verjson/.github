@@ -67,17 +67,20 @@ jobs:
           [[ "$run_head_sha" =~ ^[0-9a-f]{{40}}$ ]]
           [ "$pr_count" = 1 ]
           [[ "$pr_number" =~ ^[1-9][0-9]*$ ]]
-          pr_record="$(gh api "repos/$REPOSITORY/pulls/$pr_number" --jq '[.number,.state,.head.repo.full_name,.head.sha]|@tsv')"
-          IFS=$'\\t' read -r live_number live_state live_repository live_head_sha <<<"$pr_record"
+          pr_record="$(gh api "repos/$REPOSITORY/pulls/$pr_number" --jq '[.number,.state,.head.repo.full_name,.head.sha,.base.ref]|@tsv')"
+          IFS=$'\\t' read -r live_number live_state live_repository live_head_sha live_base_ref <<<"$pr_record"
           [ "$live_number" = "$pr_number" ]
           [ "$live_state" = open ]
           [ "$live_repository" = '{repository}' ]
           [ "$live_head_sha" = "$run_head_sha" ]
           [[ "$live_head_sha" =~ ^[0-9a-f]{{40}}$ ]]
+          [ "$live_base_ref" = main ]
           candidate_workflow="$(mktemp)"
           trap 'rm -f -- "$candidate_workflow"' EXIT INT TERM
           gh api -H 'Accept: application/vnd.github.raw+json' "repos/{repository}/contents/.github/workflows/ci.yml?ref=$live_head_sha" >"$candidate_workflow"
-          [ "$(sha256sum "$candidate_workflow" | cut -d' ' -f1)" = "$CONSUMER_WORKFLOW_SHA256" ]
+          candidate_sha256="$(sha256sum "$candidate_workflow" | cut -d' ' -f1)"
+          [[ "$candidate_sha256" =~ ^[0-9a-f]{{64}}$ ]]
+          [ "$candidate_sha256" = "$CONSUMER_WORKFLOW_SHA256" ]
           {{
             echo "event-name=$event_name"
             echo "head-repository=$live_repository"

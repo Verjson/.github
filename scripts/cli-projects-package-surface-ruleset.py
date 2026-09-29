@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -10,6 +11,8 @@ import tempfile
 
 import yaml
 
+from cli_projects_required_node_config import load_required_node_config
+
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT = ROOT / "config/cli-projects-package-surface-ruleset.json"
@@ -18,6 +21,7 @@ VERIFIER = ROOT / "scripts/cli-projects-package-surface.py"
 GENERATOR = ROOT / "scripts/gen-node-required-workflow.py"
 GENERATOR_CONFIG = ROOT / "config/cli-projects-required-node-ci.json"
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
+SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 MUTABLE_FIELDS = (
     "name", "target", "enforcement", "bypass_actors", "conditions", "rules",
 )
@@ -30,6 +34,22 @@ class ContractError(Exception):
 def require(condition, message):
     if not condition:
         raise ContractError(message)
+
+
+def is_accepted_consumer_workflow_for_rollout(
+    candidate_bytes, generated_bytes, legacy_sha256, default_main_workflow_bytes=None
+):
+    if not isinstance(candidate_bytes, bytes) or not isinstance(generated_bytes, bytes):
+        return False
+    if candidate_bytes == generated_bytes:
+        return True
+    if not isinstance(legacy_sha256, str) or not SHA256_PATTERN.fullmatch(legacy_sha256):
+        return False
+    if not isinstance(default_main_workflow_bytes, bytes):
+        return False
+    candidate_sha256 = hashlib.sha256(candidate_bytes).hexdigest()
+    default_main_sha256 = hashlib.sha256(default_main_workflow_bytes).hexdigest()
+    return candidate_sha256 == legacy_sha256 and default_main_sha256 == legacy_sha256
 
 
 def load_json(text, source):
@@ -101,7 +121,7 @@ def read_contract(path=CONTRACT):
     rollout = contract["rollout"]
     require(set(rollout) == {
         "issue", "human_gate_required", "apply_acknowledgement", "previous_workflow_sha",
-        "previous_disabled_workflow_sha", "required_run",
+        "previous_disabled_workflow_sha", "freshness_status_check", "required_run",
     }, "rollout keys drifted")
     require(rollout["issue"] == 1187, "rollout issue drifted")
     require(rollout["human_gate_required"] is True, "rollout human gate removed")
@@ -114,6 +134,11 @@ def read_contract(path=CONTRACT):
     require(rollout["previous_disabled_workflow_sha"] ==
             "4525c152a77bd04c006fa2b790f4b64833b1bbbe",
             "previous disabled workflow identity drifted")
+    require(rollout["freshness_status_check"] == {
+        "context": "admission",
+        "integration_id": 15368,
+        "strict": True,
+    }, "strict admission freshness check drifted")
     require(rollout["required_run"] == {
         "event": "pull_request",
         "conclusion": "success",
@@ -166,15 +191,30 @@ def validate_workflow(path=WORKFLOW):
     }, "identity admission inputs drifted")
     admission_run = admission_step.get("run", "")
     for assertion in (
-        "actions/runs/$RUN_ID", 'event_name" = pull_request', 'pr_count" = 1',
-        'live_state" = open', 'live_repository" = \'Verjson/verjson-cli-projects\'',
+        "actions/runs/$RUN_ID",
+        'event_name" = pull_request',
+        'pr_count" = 1',
+        'live_state" = open',
+        "live_repository",
         'live_head_sha" = "$run_head_sha',
         '[[ "$live_head_sha" =~ ^[0-9a-f]{40}$ ]]',
+        ".base.ref",
+        '[ "$live_base_ref" = main ]',
         "contents/.github/workflows/ci.yml?ref=$live_head_sha",
+        '[ "$candidate_sha256" = "$CONSUMER_WORKFLOW_SHA256" ]',
         '"$CONSUMER_WORKFLOW_SHA256"',
         '} >>"$GITHUB_OUTPUT"',
     ):
         require(assertion in admission_run, f"identity admission omits {assertion}")
+    require(
+        "LEGACY_CONSUMER_WORKFLOW_SHA256" not in admission_run
+        and "default_main_workflow_sha256" not in admission_run,
+        "identity admission must not accept a legacy caller",
+    )
+    require(
+        "git/ref/heads/main" not in admission_run,
+        "identity admission must not depend on the consumer main ref",
+    )
     for name, version in (("ci", "26"), ("ci-node-floor", "24.19.0")):
         job = document["jobs"][name]
         require(job.get("needs") == "admission", f"{name} bypasses identity admission")
@@ -184,7 +224,7 @@ def validate_workflow(path=WORKFLOW):
         }, f"{name} permissions drifted")
         require(job.get("uses") == (
             "Verjson/.github/.github/workflows/node-ci-protected.yml@"
-            "4a08c756547ccaf8977eda692e14eff56fddaf15"
+            "1c7659b77e1c97743cdcfc0a1603141bfe25320d"
         ), f"{name} reusable workflow identity drifted")
         require(job.get("secrets") == {
             "NODE_AUTH_TOKEN": "${{ secrets.GITHUB_TOKEN }}",
@@ -244,7 +284,7 @@ def validate_workflow(path=WORKFLOW):
             "package-surface execution may not receive a credential")
 
 
-def render_payload(contract, workflow_sha):
+def render_payload(contract, workflow_sha, *, include_freshness=True):
     require(SHA_PATTERN.fullmatch(workflow_sha),
             "workflow SHA must be 40 lowercase hexadecimal characters")
     workflow = contract["canonical_workflow"]
@@ -261,6 +301,19 @@ def render_payload(contract, workflow_sha):
             }],
         },
     }]
+    if include_freshness:
+        freshness = contract["rollout"]["freshness_status_check"]
+        payload["rules"].append({
+            "type": "required_status_checks",
+            "parameters": {
+                "do_not_enforce_on_create": False,
+                "required_status_checks": [{
+                    "context": freshness["context"],
+                    "integration_id": freshness["integration_id"],
+                }],
+                "strict_required_status_checks_policy": freshness["strict"],
+            },
+        })
     return payload
 
 
@@ -359,6 +412,7 @@ def assert_consumer_branch_sha(expected_sha):
 
 
 def verify_consumer_workflow(contract, expected_sha=None):
+    config = load_required_node_config(GENERATOR_CONFIG, require)
     generated = subprocess.run(
         [sys.executable, str(GENERATOR), "--consumer",
          "config/cli-projects-required-node-ci.json"],
@@ -378,7 +432,12 @@ def verify_consumer_workflow(contract, expected_sha=None):
         capture_output=True, check=False,
     )
     require(result.returncode == 0, "consumer workflow default-branch bytes unreadable")
-    require(result.stdout == generated.stdout,
+    require(is_accepted_consumer_workflow_for_rollout(
+        result.stdout,
+        generated.stdout,
+        config["rollout_legacy_consumer_workflow_sha256"],
+        result.stdout,
+    ),
             "consumer workflow is not the reviewed push-only generated image")
     assert_consumer_branch_sha(branch_sha)
     return branch_sha
@@ -522,6 +581,33 @@ def validate_required_run(run, contract, workflow_sha, head_sha, minimum_run_id,
             "reported workflow SHA disagrees with rule binding")
 
 
+def validate_freshness_check(check_runs, contract, head_sha, workflow_run_id, not_before):
+    require(isinstance(check_runs, list), "check-run listing is malformed")
+    require(isinstance(workflow_run_id, int) and workflow_run_id > 0,
+            "required workflow run id is invalid")
+    freshness = contract["rollout"]["freshness_status_check"]
+    run_path = (
+        "https://github.com/Verjson/verjson-cli-projects/actions/"
+        f"runs/{workflow_run_id}/job/"
+    )
+    candidates = [
+        check for check in check_runs
+        if isinstance(check, dict)
+        and check.get("name") == freshness["context"]
+        and check.get("head_sha") == head_sha
+        and isinstance(check.get("app"), dict)
+        and check["app"].get("id") == freshness["integration_id"]
+        and isinstance(check.get("details_url"), str)
+        and check["details_url"].startswith(run_path)
+    ]
+    require(candidates, "strict admission check is absent from fresh required-workflow run")
+    latest = max(candidates, key=lambda check: parse_timestamp(check.get("started_at")))
+    require(latest.get("status") == "completed" and latest.get("conclusion") == "success",
+            "strict admission check is not successful")
+    require(parse_timestamp(latest.get("completed_at")) >= not_before,
+            "strict admission check predates ruleset activation")
+
+
 def main(arguments=None):
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -536,9 +622,12 @@ def main(arguments=None):
     args = parser.parse_args(arguments)
     contract = read_contract()
     expected = render_payload(contract, args.workflow_sha)
-    previous = render_payload(contract, contract["rollout"]["previous_workflow_sha"])
+    previous = render_payload(
+        contract, contract["rollout"]["previous_workflow_sha"], include_freshness=False
+    )
     previous_disabled = render_payload(
-        contract, contract["rollout"]["previous_disabled_workflow_sha"]
+        contract, contract["rollout"]["previous_disabled_workflow_sha"],
+        include_freshness=False,
     )
     previous_disabled["enforcement"] = "disabled"
     staged = dict(expected)
@@ -578,7 +667,19 @@ def main(arguments=None):
             run, contract, args.workflow_sha, args.head_sha,
             args.pre_trigger_max_run_id, parse_timestamp(live.get("updated_at")),
         )
-        print("verified: fresh exact-head organization required-workflow run")
+        pages = gh_json(
+            "--paginate", "--slurp",
+            f"repos/Verjson/verjson-cli-projects/commits/{args.head_sha}/check-runs?per_page=100",
+        )
+        check_runs = [
+            check for page in pages if isinstance(page, dict)
+            for check in page.get("check_runs", [])
+        ]
+        validate_freshness_check(
+            check_runs, contract, args.head_sha, args.run_id,
+            parse_timestamp(live.get("updated_at")),
+        )
+        print("verified: fresh exact-head required-workflow run and strict admission check")
         return 0
     require(args.ack == contract["rollout"]["apply_acknowledgement"],
             "explicit apply acknowledgement required")

@@ -7,6 +7,8 @@ import sys
 import tempfile
 import unittest
 
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -109,6 +111,60 @@ class CliProjectsPackageSurfaceTest(unittest.TestCase):
         self.assertEqual(floor_lane, config["node_versions"][1])
         self.assertEqual(MODULE.required_node_engine(), f">={floor_lane}")
 
+    def test_required_workflow_uses_current_canonical_node_ci_pin(self):
+        expected_sha = "1c7659b77e1c97743cdcfc0a1603141bfe25320d"
+        config = json.loads(MODULE.REQUIRED_NODE_CONFIG.read_text(encoding="utf-8"))
+        self.assertEqual(config["node_ci_sha"], expected_sha)
+
+        workflow = MODULE.load_yaml(
+            ROOT / ".github/workflows/cli-projects-package-surface-required.yml"
+        )
+        expected_uses = (
+            "Verjson/.github/.github/workflows/node-ci-protected.yml@" + expected_sha
+        )
+        for job in ("ci", "ci-node-floor"):
+            with self.subTest(job=job):
+                self.assertEqual(workflow["jobs"][job]["uses"], expected_uses)
+
+    def test_generated_admission_requires_exact_pinned_caller(self):
+        config = json.loads(MODULE.REQUIRED_NODE_CONFIG.read_text(encoding="utf-8"))
+        workflow_text = GENERATOR.render(
+            config, Path("config/cli-projects-required-node-ci.json")
+        )
+        workflow = yaml.safe_load(workflow_text)
+        script = workflow["jobs"]["admission"]["steps"][0]["run"]
+
+        self.assertIn(".base.ref", script)
+        self.assertIn('[ "$live_base_ref" = main ]', script)
+        self.assertIn('[ "$candidate_sha256" = "$CONSUMER_WORKFLOW_SHA256" ]', script)
+        self.assertNotIn("git/ref/heads/main", script)
+        self.assertNotIn("LEGACY_CONSUMER_WORKFLOW_SHA256", workflow_text)
+        self.assertNotIn("default_main_workflow_sha256", script)
+
+    def test_rollout_legacy_consumer_workflow_digest_accepts_digest_or_null(self):
+        config = json.loads(MODULE.REQUIRED_NODE_CONFIG.read_text(encoding="utf-8"))
+        for value in ("a" * 64, None):
+            with self.subTest(value=value):
+                candidate = {**config, "rollout_legacy_consumer_workflow_sha256": value}
+                self.assert_required_node_config_accepted(candidate)
+
+    def test_rollout_legacy_consumer_workflow_digest_rejects_malformed_values(self):
+        config = json.loads(MODULE.REQUIRED_NODE_CONFIG.read_text(encoding="utf-8"))
+        malformed_values = (
+            "a" * 63,
+            "a" * 65,
+            "A" * 64,
+            "g" * 64,
+            "",
+            False,
+            1,
+            [],
+        )
+        for value in malformed_values:
+            with self.subTest(value=value):
+                candidate = {**config, "rollout_legacy_consumer_workflow_sha256": value}
+                self.assert_required_node_config_rejected(candidate)
+
     def test_required_node_config_rejects_every_malformed_field_in_both_consumers(self):
         config = json.loads(MODULE.REQUIRED_NODE_CONFIG.read_text(encoding="utf-8"))
         mutations = {
@@ -140,8 +196,23 @@ class CliProjectsPackageSurfaceTest(unittest.TestCase):
                 duplicate = "{" + json.dumps(field) + ":" + json.dumps(value) + "," + serialized[1:]
                 self.assert_required_node_config_rejected_text(duplicate)
 
+    def test_required_node_config_rejects_legacy_consumer_digest(self):
+        config = json.loads(MODULE.REQUIRED_NODE_CONFIG.read_text(encoding="utf-8"))
+        self.assert_required_node_config_rejected({
+            **config,
+            "legacy_consumer_workflow_sha256": "a" * 64,
+        })
+
     def assert_required_node_config_rejected(self, config):
         self.assert_required_node_config_rejected_text(json.dumps(config))
+
+    def assert_required_node_config_accepted(self, config):
+        path = self.root / "required-node.json"
+        path.write_text(json.dumps(config), encoding="utf-8")
+        self.assertEqual(
+            MODULE.required_node_engine(path), f">={config['node_versions'][1]}"
+        )
+        self.assertEqual(GENERATOR.load_config(path), config)
 
     def assert_required_node_config_rejected_text(self, text):
         path = self.root / "required-node.json"
