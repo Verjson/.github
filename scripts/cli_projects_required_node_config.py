@@ -4,6 +4,7 @@ import re
 
 
 SHA = re.compile(r"[0-9a-f]{40}")
+SHA256 = re.compile(r"[0-9a-f]{64}")
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 PACKAGE = re.compile(r"@[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*")
 SCRIPT = re.compile(r"[a-z0-9][a-z0-9:._-]*")
@@ -29,6 +30,7 @@ def load_required_node_config(path, require):
             "schema_version",
             "repository",
             "node_ci_sha",
+            "rollout_legacy_consumer_workflow_sha256",
             "node_versions",
             "approved_internal_packages",
             "scripts",
@@ -52,6 +54,14 @@ def load_required_node_config(path, require):
         isinstance(config["node_ci_sha"], str)
         and SHA.fullmatch(config["node_ci_sha"]),
         "node_ci_sha must be immutable",
+    )
+    require(
+        config["rollout_legacy_consumer_workflow_sha256"] is None
+        or (
+            isinstance(config["rollout_legacy_consumer_workflow_sha256"], str)
+            and SHA256.fullmatch(config["rollout_legacy_consumer_workflow_sha256"])
+        ),
+        "rollout_legacy_consumer_workflow_sha256 must be null or a 64-character lowercase SHA-256",
     )
 
     versions = config["node_versions"]

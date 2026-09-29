@@ -25,7 +25,7 @@ jobs:
         env:
           REPOSITORY: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
-          CONSUMER_WORKFLOW_SHA256: 721856f97158be3619945eb1c2a265ca49e74788bda2bd9fec732d6d0c0bec4c
+          CONSUMER_WORKFLOW_SHA256: 9e4ca97c8fd980f37af2ef3cbbb47aea3c00b44f5a5ff336d25d95815aff3886
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -37,17 +37,20 @@ jobs:
           [[ "$run_head_sha" =~ ^[0-9a-f]{40}$ ]]
           [ "$pr_count" = 1 ]
           [[ "$pr_number" =~ ^[1-9][0-9]*$ ]]
-          pr_record="$(gh api "repos/$REPOSITORY/pulls/$pr_number" --jq '[.number,.state,.head.repo.full_name,.head.sha]|@tsv')"
-          IFS=$'\t' read -r live_number live_state live_repository live_head_sha <<<"$pr_record"
+          pr_record="$(gh api "repos/$REPOSITORY/pulls/$pr_number" --jq '[.number,.state,.head.repo.full_name,.head.sha,.base.ref]|@tsv')"
+          IFS=$'\t' read -r live_number live_state live_repository live_head_sha live_base_ref <<<"$pr_record"
           [ "$live_number" = "$pr_number" ]
           [ "$live_state" = open ]
           [ "$live_repository" = 'Verjson/verjson-cli-projects' ]
           [ "$live_head_sha" = "$run_head_sha" ]
           [[ "$live_head_sha" =~ ^[0-9a-f]{40}$ ]]
+          [ "$live_base_ref" = main ]
           candidate_workflow="$(mktemp)"
           trap 'rm -f -- "$candidate_workflow"' EXIT INT TERM
           gh api -H 'Accept: application/vnd.github.raw+json' "repos/Verjson/verjson-cli-projects/contents/.github/workflows/ci.yml?ref=$live_head_sha" >"$candidate_workflow"
-          [ "$(sha256sum "$candidate_workflow" | cut -d' ' -f1)" = "$CONSUMER_WORKFLOW_SHA256" ]
+          candidate_sha256="$(sha256sum "$candidate_workflow" | cut -d' ' -f1)"
+          [[ "$candidate_sha256" =~ ^[0-9a-f]{64}$ ]]
+          [ "$candidate_sha256" = "$CONSUMER_WORKFLOW_SHA256" ]
           {
             echo "event-name=$event_name"
             echo "head-repository=$live_repository"
@@ -61,7 +64,7 @@ jobs:
       packages: read
       pull-requests: read
       statuses: read
-    uses: Verjson/.github/.github/workflows/node-ci-protected.yml@4a08c756547ccaf8977eda692e14eff56fddaf15
+    uses: Verjson/.github/.github/workflows/node-ci-protected.yml@1c7659b77e1c97743cdcfc0a1603141bfe25320d
     secrets:
       NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     with:
@@ -83,7 +86,7 @@ jobs:
       packages: read
       pull-requests: read
       statuses: read
-    uses: Verjson/.github/.github/workflows/node-ci-protected.yml@4a08c756547ccaf8977eda692e14eff56fddaf15
+    uses: Verjson/.github/.github/workflows/node-ci-protected.yml@1c7659b77e1c97743cdcfc0a1603141bfe25320d
     secrets:
       NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     with:

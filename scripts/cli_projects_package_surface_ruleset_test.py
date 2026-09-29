@@ -19,6 +19,11 @@ SCRIPT = ROOT / "scripts/cli-projects-package-surface-ruleset.py"
 SPEC = importlib.util.spec_from_file_location("cli_projects_ruleset", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
+GENERATOR_SPEC = importlib.util.spec_from_file_location(
+    "gen_node_required_workflow", ROOT / "scripts/gen-node-required-workflow.py"
+)
+GENERATOR_MODULE = importlib.util.module_from_spec(GENERATOR_SPEC)
+GENERATOR_SPEC.loader.exec_module(GENERATOR_MODULE)
 SHA = "a" * 40
 HEAD = "b" * 40
 
@@ -27,13 +32,141 @@ class CliProjectsPackageSurfaceRulesetTest(unittest.TestCase):
     def setUp(self):
         self.contract = MODULE.read_contract()
 
+    def test_rollout_guard_accepts_legacy_only_while_default_main_matches(self):
+        generated_bytes = b"current generated consumer workflow\n"
+        legacy_bytes = b"previous published consumer workflow\n"
+        other_bytes = b"unreviewed consumer workflow\n"
+        legacy_sha256 = hashlib.sha256(legacy_bytes).hexdigest()
+
+        self.assertTrue(
+            MODULE.is_accepted_consumer_workflow_for_rollout(
+                generated_bytes, generated_bytes, legacy_sha256
+            )
+        )
+        self.assertTrue(
+            MODULE.is_accepted_consumer_workflow_for_rollout(
+                legacy_bytes, generated_bytes, legacy_sha256, legacy_bytes
+            )
+        )
+        self.assertFalse(
+            MODULE.is_accepted_consumer_workflow_for_rollout(
+                legacy_bytes, generated_bytes, legacy_sha256, other_bytes
+            )
+        )
+        self.assertFalse(
+            MODULE.is_accepted_consumer_workflow_for_rollout(
+                legacy_bytes, generated_bytes, legacy_sha256
+            )
+        )
+        self.assertFalse(
+            MODULE.is_accepted_consumer_workflow_for_rollout(
+                other_bytes, generated_bytes, legacy_sha256
+            )
+        )
+        self.assertFalse(
+            MODULE.is_accepted_consumer_workflow_for_rollout(
+                legacy_bytes,
+                generated_bytes,
+                hashlib.sha256(other_bytes).hexdigest(),
+            )
+        )
+        for malformed_sha256 in ("a" * 63, "A" * 64, "g" * 64):
+            with self.subTest(malformed_sha256=malformed_sha256):
+                self.assertFalse(
+                    MODULE.is_accepted_consumer_workflow_for_rollout(
+                        legacy_bytes, generated_bytes, malformed_sha256
+                    )
+                )
+
+    def test_admission_rejects_legacy_caller_without_reading_default_main(self):
+        config = GENERATOR_MODULE.load_config(MODULE.GENERATOR_CONFIG)
+        config_path = Path("config/cli-projects-required-node-ci.json")
+        generated_bytes = GENERATOR_MODULE.render_consumer(
+            config, config_path
+        ).encode("utf-8")
+        legacy_bytes = b"legacy consumer workflow\n"
+        workflow = yaml.safe_load(GENERATOR_MODULE.render(config, config_path))
+        admission_script = workflow["jobs"]["admission"]["steps"][0]["run"]
+        head_sha = "b" * 40
+
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            candidate_path = temp / "candidate.yml"
+            output_path = temp / "output"
+            fake_gh = temp / "gh"
+            fake_gh.write_text(
+                "#!/usr/bin/env python3\n"
+                "import os\n"
+                "from pathlib import Path\n"
+                "import sys\n"
+                "args = ' '.join(sys.argv[1:])\n"
+                "if os.environ.get('GH_TOKEN') != 'bounded-test-token':\n"
+                "    raise SystemExit(70)\n"
+                "if 'actions/runs/' in args:\n"
+                "    print(os.environ['RUN_RECORD'])\n"
+                "elif 'pulls/' in args:\n"
+                "    print(os.environ['PR_RECORD'])\n"
+                "elif 'contents/.github/workflows/ci.yml' in args:\n"
+                "    if f\"ref={os.environ['HEAD_SHA']}\" in args:\n"
+                "        sys.stdout.buffer.write(Path(os.environ['CANDIDATE_FILE']).read_bytes())\n"
+                "    else:\n"
+                "        raise SystemExit(72)\n"
+                "else:\n"
+                "    raise SystemExit(73)\n",
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+
+            def execute(candidate, *, base_ref="main"):
+                candidate_path.write_bytes(candidate)
+                output_path.unlink(missing_ok=True)
+                environment = {
+                    **os.environ,
+                    "PATH": f"{directory}:{os.environ['PATH']}",
+                    "GH_TOKEN": "bounded-test-token",
+                    "REPOSITORY": "Verjson/verjson-cli-projects",
+                    "RUN_ID": "33306897795",
+                    "RUN_RECORD": f"pull_request\t{head_sha}\t1\t114",
+                    "PR_RECORD": (
+                        f"114\topen\tVerjson/verjson-cli-projects\t"
+                        f"{head_sha}\t{base_ref}"
+                    ),
+                    "CONSUMER_WORKFLOW_SHA256": hashlib.sha256(
+                        generated_bytes
+                    ).hexdigest(),
+                    "HEAD_SHA": head_sha,
+                    "CANDIDATE_FILE": str(candidate_path),
+                    "GITHUB_OUTPUT": str(output_path),
+                }
+                return subprocess.run(
+                    ["bash", "-c", admission_script],
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+
+            current = execute(generated_bytes)
+            self.assertEqual(0, current.returncode, current.stderr)
+            legacy = execute(legacy_bytes)
+            self.assertNotEqual(
+                0,
+                legacy.returncode,
+                "legacy PR caller must fail even when no default-main state is read",
+            )
+            non_main = execute(generated_bytes, base_ref="release")
+            self.assertNotEqual(
+                0, non_main.returncode,
+                "admission must reject pull requests that are not based on main",
+            )
+
     def test_workflow_is_exact_repository_hosted_credentialless_boundary(self):
         MODULE.validate_workflow()
 
     def test_caller_ref_input_and_credential_mutations_are_rejected(self):
         source = MODULE.WORKFLOW.read_text(encoding="utf-8")
         mutations = (
-            source.replace("node-ci-protected.yml@4a08c75", "node-ci-protected.yml@aaaaaaaa"),
+            source.replace("node-ci-protected.yml@1c7659b", "node-ci-protected.yml@aaaaaaaa"),
             source.replace("secretless-pr: true", "secretless-pr: false", 1),
             source.replace("NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}", "NODE_AUTH_TOKEN: mutation", 1),
             source.replace("needs: admission", "needs: []", 1),
@@ -78,6 +211,7 @@ class CliProjectsPackageSurfaceRulesetTest(unittest.TestCase):
                 "case \"$*\" in\n"
                 "  *actions/runs/*) printf '%s\\n' \"$RUN_RECORD\" ;;\n"
                 "  *pulls/*) printf '%s\\n' \"$PR_RECORD\" ;;\n"
+                "  *git/ref/heads/main*) printf '%s\\n' \"$MAIN_REF_SHA\" ;;\n"
                 "  *contents/.github/workflows/ci.yml*) cat \"$CONSUMER_FILE\" ;;\n"
                 "  *) exit 72 ;;\n"
                 "esac\n",
@@ -92,7 +226,8 @@ class CliProjectsPackageSurfaceRulesetTest(unittest.TestCase):
                     "PATH": f"{directory}:{os.environ['PATH']}",
                     "GH_TOKEN": "bounded-test-token",
                     "RUN_RECORD": f"pull_request\t{head}\t1\t114",
-                    "PR_RECORD": f"114\topen\tVerjson/verjson-cli-projects\t{head}",
+                    "PR_RECORD": f"114\topen\tVerjson/verjson-cli-projects\t{head}\tmain",
+                    "MAIN_REF_SHA": "c" * 40,
                     "CONSUMER_FILE": str(consumer_path),
                     "GITHUB_OUTPUT": str(output_path),
                     **changes,
@@ -204,12 +339,62 @@ class CliProjectsPackageSurfaceRulesetTest(unittest.TestCase):
         payload = MODULE.render_payload(self.contract, SHA)
         self.assertEqual([], payload["bypass_actors"])
         self.assertEqual({"repository_ids": [1277452690]}, payload["conditions"]["repository_id"])
-        self.assertEqual([{
-            "path": ".github/workflows/cli-projects-package-surface-required.yml",
-            "repository_id": 1269388380,
-            "ref": "refs/heads/main",
-            "sha": SHA,
-        }], payload["rules"][0]["parameters"]["workflows"])
+        self.assertEqual([
+            {
+                "type": "workflows",
+                "parameters": {
+                    "do_not_enforce_on_create": False,
+                    "workflows": [{
+                        "path": ".github/workflows/cli-projects-package-surface-required.yml",
+                        "repository_id": 1269388380,
+                        "ref": "refs/heads/main",
+                        "sha": SHA,
+                    }],
+                },
+            },
+            {
+                "type": "required_status_checks",
+                "parameters": {
+                    "do_not_enforce_on_create": False,
+                    "required_status_checks": [{
+                        "context": "admission",
+                        "integration_id": 15368,
+                    }],
+                    "strict_required_status_checks_policy": True,
+                },
+            },
+        ], payload["rules"])
+
+    def test_freshness_check_is_bound_to_current_head_and_required_workflow_run(self):
+        not_before = datetime(2026, 9, 29, 12, tzinfo=timezone.utc)
+        check = {
+            "name": "admission",
+            "head_sha": HEAD,
+            "status": "completed",
+            "conclusion": "success",
+            "app": {"id": 15368},
+            "details_url": "https://github.com/Verjson/verjson-cli-projects/actions/runs/42/job/7",
+            "started_at": "2026-09-29T12:01:00Z",
+            "completed_at": "2026-09-29T12:05:00Z",
+        }
+        MODULE.validate_freshness_check(
+            [check], self.contract, HEAD, 42, not_before
+        )
+
+        stale_or_untrusted_checks = (
+            {**check, "head_sha": "c" * 40},
+            {**check, "conclusion": "failure"},
+            {**check, "app": {"id": 1}},
+            {**check, "details_url": "https://github.com/Verjson/verjson-cli-projects/actions/runs/41/job/7"},
+            {**check, "completed_at": "2026-09-29T11:59:00Z"},
+        )
+        for stale_check in stale_or_untrusted_checks:
+            with self.subTest(stale_check=stale_check), self.assertRaises(
+                MODULE.ContractError
+            ):
+                MODULE.validate_freshness_check(
+                    [stale_check], self.contract, HEAD, 42, not_before
+                )
 
     def test_contract_rejects_consumer_preimage_or_receipt_scope_drift(self):
         for mutation, message in (
@@ -313,7 +498,8 @@ class CliProjectsPackageSurfaceRulesetTest(unittest.TestCase):
     def test_apply_rotates_only_the_exact_reviewed_prior_workflow(self):
         expected = MODULE.render_payload(self.contract, SHA)
         previous = MODULE.render_payload(
-            self.contract, self.contract["rollout"]["previous_workflow_sha"]
+            self.contract, self.contract["rollout"]["previous_workflow_sha"],
+            include_freshness=False,
         )
         live_previous = previous | {
             "id": 9, "source_type": "Organization", "source": "Verjson",
@@ -335,7 +521,8 @@ class CliProjectsPackageSurfaceRulesetTest(unittest.TestCase):
 
     def test_dry_run_accepts_the_exact_reviewed_prior_disabled_workflow(self):
         previous_disabled = MODULE.render_payload(
-            self.contract, self.contract["rollout"]["previous_disabled_workflow_sha"]
+            self.contract, self.contract["rollout"]["previous_disabled_workflow_sha"],
+            include_freshness=False,
         )
         previous_disabled["enforcement"] = "disabled"
         live_previous_disabled = previous_disabled | {
@@ -349,7 +536,8 @@ class CliProjectsPackageSurfaceRulesetTest(unittest.TestCase):
 
     def test_dry_run_rejects_an_unreviewed_live_organization_image(self):
         previous_disabled = MODULE.render_payload(
-            self.contract, self.contract["rollout"]["previous_disabled_workflow_sha"]
+            self.contract, self.contract["rollout"]["previous_disabled_workflow_sha"],
+            include_freshness=False,
         )
         previous_disabled["enforcement"] = "disabled"
         live_unreviewed = previous_disabled | {
@@ -375,7 +563,8 @@ class CliProjectsPackageSurfaceRulesetTest(unittest.TestCase):
     def test_apply_rotates_the_exact_reviewed_prior_disabled_workflow(self):
         expected = MODULE.render_payload(self.contract, SHA)
         previous_disabled = MODULE.render_payload(
-            self.contract, self.contract["rollout"]["previous_disabled_workflow_sha"]
+            self.contract, self.contract["rollout"]["previous_disabled_workflow_sha"],
+            include_freshness=False,
         )
         previous_disabled["enforcement"] = "disabled"
         live_previous_disabled = previous_disabled | {
@@ -402,7 +591,8 @@ class CliProjectsPackageSurfaceRulesetTest(unittest.TestCase):
     def test_apply_rotates_reviewed_prior_workflow_that_appears_during_discovery(self):
         expected = MODULE.render_payload(self.contract, SHA)
         previous = MODULE.render_payload(
-            self.contract, self.contract["rollout"]["previous_workflow_sha"]
+            self.contract, self.contract["rollout"]["previous_workflow_sha"],
+            include_freshness=False,
         )
         live_previous = previous | {
             "id": 9, "source_type": "Organization", "source": "Verjson",
@@ -428,7 +618,8 @@ class CliProjectsPackageSurfaceRulesetTest(unittest.TestCase):
     def test_apply_rotates_prior_disabled_workflow_that_appears_during_discovery(self):
         expected = MODULE.render_payload(self.contract, SHA)
         previous_disabled = MODULE.render_payload(
-            self.contract, self.contract["rollout"]["previous_disabled_workflow_sha"]
+            self.contract, self.contract["rollout"]["previous_disabled_workflow_sha"],
+            include_freshness=False,
         )
         previous_disabled["enforcement"] = "disabled"
         live_previous_disabled = previous_disabled | {
@@ -458,7 +649,8 @@ class CliProjectsPackageSurfaceRulesetTest(unittest.TestCase):
     def test_apply_rotates_prior_disabled_workflow_recovered_after_create_race(self):
         expected = MODULE.render_payload(self.contract, SHA)
         previous_disabled = MODULE.render_payload(
-            self.contract, self.contract["rollout"]["previous_disabled_workflow_sha"]
+            self.contract, self.contract["rollout"]["previous_disabled_workflow_sha"],
+            include_freshness=False,
         )
         previous_disabled["enforcement"] = "disabled"
         live_previous_disabled = previous_disabled | {
@@ -490,7 +682,8 @@ class CliProjectsPackageSurfaceRulesetTest(unittest.TestCase):
     def test_partial_rotation_restores_and_verifies_the_prior_active_workflow(self):
         expected = MODULE.render_payload(self.contract, SHA)
         previous = MODULE.render_payload(
-            self.contract, self.contract["rollout"]["previous_workflow_sha"]
+            self.contract, self.contract["rollout"]["previous_workflow_sha"],
+            include_freshness=False,
         )
         live_previous = previous | {
             "id": 9, "source_type": "Organization", "source": "Verjson",
@@ -511,7 +704,8 @@ class CliProjectsPackageSurfaceRulesetTest(unittest.TestCase):
     def test_org_rotation_branch_drift_restores_prior_after_ambiguous_put(self):
         expected = MODULE.render_payload(self.contract, SHA)
         previous = MODULE.render_payload(
-            self.contract, self.contract["rollout"]["previous_workflow_sha"]
+            self.contract, self.contract["rollout"]["previous_workflow_sha"],
+            include_freshness=False,
         )
         live_previous = previous | {
             "id": 9, "source_type": "Organization", "source": "Verjson",
@@ -538,7 +732,8 @@ class CliProjectsPackageSurfaceRulesetTest(unittest.TestCase):
     def test_partial_rotation_restores_the_exact_prior_disabled_workflow(self):
         expected = MODULE.render_payload(self.contract, SHA)
         previous_disabled = MODULE.render_payload(
-            self.contract, self.contract["rollout"]["previous_disabled_workflow_sha"]
+            self.contract, self.contract["rollout"]["previous_disabled_workflow_sha"],
+            include_freshness=False,
         )
         previous_disabled["enforcement"] = "disabled"
         live_previous_disabled = previous_disabled | {
