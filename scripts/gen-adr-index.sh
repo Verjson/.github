@@ -20,7 +20,9 @@ case "$#:${1:-}" in
   *) echo "gen-adr-index: expected no argument (regenerate) or exactly --check (verify)" >&2; exit 2 ;;
 esac
 
-root="$(cd "$(dirname "$0")/.." && pwd)"
+root="${VERJSON_ADR_INDEX_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+root="$(cd "$root" && pwd)" \
+  || { echo "gen-adr-index: repository root is not accessible: $root" >&2; exit 1; }
 dec_dir="$root/docs/decisions"
 index="$dec_dir/README.md"
 begin='<!-- BEGIN ADR INDEX -->'
