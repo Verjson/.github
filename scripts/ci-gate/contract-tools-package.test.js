@@ -140,3 +140,29 @@ test("gen-adr-index updates and checks the consumer's decision index", () => {
   assert.equal(staleIndex.error, undefined, staleIndex.error?.message);
   assert.notEqual(staleIndex.status, 0);
 });
+
+test("gen-adr-index normalizes unexpected child exit codes to 1", () => {
+  const fakeBinDirectory = path.join(temporaryRoot, "fake-bash-bin");
+  const fakeBash = path.join(fakeBinDirectory, "bash");
+  fs.mkdirSync(fakeBinDirectory, { recursive: true });
+  fs.writeFileSync(fakeBash, "#!/bin/sh\nexit 137\n");
+  fs.chmodSync(fakeBash, 0o755);
+
+  const result = spawnSync(path.join(consumerRoot, "node_modules/.bin/gen-adr-index"), [], {
+    cwd: consumerRoot,
+    encoding: "utf8",
+    env: { ...process.env, PATH: `${fakeBinDirectory}${path.delimiter}${process.env.PATH ?? ""}` },
+  });
+  assert.equal(result.error, undefined, result.error?.message);
+  assert.equal(result.status, 1, result.stderr);
+});
+
+test("gen-adr-index preserves its documented argument-error exit code 2", () => {
+  const result = spawnSync(
+    path.join(consumerRoot, "node_modules/.bin/gen-adr-index"),
+    ["--unsupported"],
+    { cwd: consumerRoot, encoding: "utf8" },
+  );
+  assert.equal(result.error, undefined, result.error?.message);
+  assert.equal(result.status, 2, result.stderr);
+});
