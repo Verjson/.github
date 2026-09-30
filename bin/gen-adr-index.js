@@ -15,4 +15,4 @@ if (result.error) {
   console.error(`gen-adr-index: unable to start bash: ${result.error.message}`);
   process.exit(1);
 }
-process.exit(result.status ?? 1);
+process.exit(result.status === 0 ? 0 : result.status === 2 ? 2 : 1);
