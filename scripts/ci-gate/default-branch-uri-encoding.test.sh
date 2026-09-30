@@ -308,48 +308,67 @@ grep -qF "ai-review-merge.yml?ref=$NESTED_BRANCH" "$GH_CALLS" \
   || fail "a path-shaped default branch must keep its separators literal in a query value: $(cat "$GH_CALLS")"
 
 # --------------------------------------------------------------------------------------
-# 1b. Behavior: the cross-run orphan-recovery receipt block. Extracted the same way as the
-#     selector, so its encoding is covered by execution rather than by a spelling match.
+# 1b. Behavior: generalized source-bound receipt verification. Extract by explicit
+#     outer-indent bounds so the label caller exercises its dynamic workflow ref.
 # --------------------------------------------------------------------------------------
 awk '
-  !found && $0 == "              if [ \"$(jq -r .path <<<\"$source_run\")\" = .github/workflows/ai-review-label-rearm.yml ]; then" { found=1 }
+  !found && $0 == "                # Keep the protected caller and the workflow revision recorded by the receipt identical." { found=1 }
   found {
     line = $0
-    sub(/^              /, "", line)
+    sub(/^                /, "", line)
     print line
-    if ($0 == "              fi") exit
+    if ($0 ~ /^                if ! jq -e --arg ref /) { checking_receipt=1; next }
+    if (checking_receipt && $0 == "                fi") exit
   }
-' "$workflow" >"$tmp/recovery-body.sh"
-[ -s "$tmp/recovery-body.sh" ] || fail "cross-run orphan-recovery receipt block is missing"
-{ printf 'verify_recovery_receipt() {\n'; cat "$tmp/recovery-body.sh"; printf '  return 0\n}\n'; } \
-  >"$tmp/recovery.sh"
+' "$workflow" >"$tmp/source-bound-receipt.sh"
+[ -s "$tmp/source-bound-receipt.sh" ] || fail "source-bound receipt verification block is missing"
+{ printf 'verify_source_bound_receipt() {\n'; cat "$tmp/source-bound-receipt.sh"; printf '  return 0\n}\n'; } \
+  >"$tmp/source-bound-receipt-wrapper.sh"
 # shellcheck source=/dev/null
-source "$tmp/recovery.sh"
+source "$tmp/source-bound-receipt-wrapper.sh"
 
+LABEL_CALLER_PATH='.github/workflows/ai-review-label-rearm.yml'
+LABEL_WORKFLOW_ID=424242
+
+# Exercise a complete source run and schema-2 receipt for the protected label caller.
 drive_recovery() {
-  local branch="$1" receipt_dir="$tmp/receipt" source_run
-  # shellcheck disable=SC2034 # The sourced recovery script reads this test fixture.
-  source_run='{"path":".github/workflows/ai-review-label-rearm.yml","actor":{"login":"trusted-arm"}}'
+  # shellcheck disable=SC2034 # The sourced workflow receipt block consumes these local fixture values.
+  local branch="$1" receipt_dir="$tmp/receipt" source_path source_workflow receipt_workflow_sha source_run
+  # shellcheck disable=SC2034 # The extracted receipt verifier reads this local at runtime.
+  source_path="$LABEL_CALLER_PATH"
+  # shellcheck disable=SC2034 # The extracted receipt verifier reads this local at runtime.
+  source_workflow="$LABEL_CALLER_PATH"
+  # shellcheck disable=SC2034 # The extracted receipt verifier reads this local at runtime.
+  receipt_workflow_sha="$WORKFLOW_SHA"
+  # shellcheck disable=SC2034 # The extracted block reads this complete source-run fixture.
+  source_run="$(cat <<JSON
+{"id":73,"event":"pull_request_target","path":"$LABEL_CALLER_PATH","workflow_id":$LABEL_WORKFLOW_ID,"run_attempt":1,"head_sha":"$BLOB_SHA","head_repository":{"full_name":"$TARGET_REPO"},"repository":{"id":1234,"full_name":"$TARGET_REPO"},"actor":{"login":"trusted-arm"}}
+JSON
+)"
   rm -rf "$receipt_dir"; mkdir -p "$receipt_dir"
   cat >"$receipt_dir/receipt.json" <<JSON
-{"schema":2,"workflow_sha":"$WORKFLOW_SHA","delivery_event":"pull_request_target",
+{"schema":2,"workflow_sha":"$WORKFLOW_SHA","delivery_event":"labeled",
  "delivery_actor":"trusted-arm",
- "workflow_ref":"$TARGET_REPO/.github/workflows/ai-review-label-rearm.yml@refs/heads/$branch"}
+ "workflow_ref":"$TARGET_REPO/$LABEL_CALLER_PATH@refs/heads/$branch"}
 JSON
   : >"$GH_CALLS"
-  DEFAULT_BRANCH="$branch" GH_STUB_STDOUT="$BLOB_SHA" verify_recovery_receipt \
-    || fail "the recovery receipt block rejected its own fixture for branch '$branch'"
+  DEFAULT_BRANCH="$branch" GH_STUB_STDOUT="$BLOB_SHA" verify_source_bound_receipt \
+    || fail "the source-bound receipt block rejected its fixture for branch '$branch'"
 }
 
+# The hostile branch must be percent-encoded before it reaches the dynamic caller query.
 drive_recovery "$HOSTILE_BRANCH"
-grep -qF "ai-review-label-rearm.yml?ref=$HOSTILE_ENCODED" "$GH_CALLS" \
-  || fail "default branch reached the recovery-block query string unencoded: $(cat "$GH_CALLS")"
-! grep -qF "ref=$HOSTILE_BRANCH" "$GH_CALLS" \
-  || fail "raw default branch survived in the recovery-block query string"
+grep -qF "contents/$LABEL_CALLER_PATH?ref=$HOSTILE_ENCODED" "$GH_CALLS" \
+  || fail "hostile default branch reached the dynamic receipt query unencoded: $(cat "$GH_CALLS")"
+! grep -qF "contents/$LABEL_CALLER_PATH?ref=$HOSTILE_BRANCH" "$GH_CALLS" \
+  || fail "raw hostile default branch survived in the dynamic receipt query"
 
+# Path separators are intentional in branch refs; reserved characters still use @uri encoding.
 drive_recovery "$NESTED_BRANCH"
-grep -qF "ai-review-label-rearm.yml?ref=$NESTED_BRANCH" "$GH_CALLS" \
-  || fail "a path-shaped default branch must keep its separators literal in the recovery block: $(cat "$GH_CALLS")"
+grep -qF "contents/$LABEL_CALLER_PATH?ref=$NESTED_BRANCH" "$GH_CALLS" \
+  || fail "slash-bearing default branch did not preserve path separators in the dynamic receipt query: $(cat "$GH_CALLS")"
+! grep -qF "contents/$LABEL_CALLER_PATH?ref=$NESTED_PATH_ENCODED" "$GH_CALLS" \
+  || fail "slash-bearing default branch was encoded contrary to the query-ref contract"
 
 # --------------------------------------------------------------------------------------
 # Shared scan: every ref interpolation in workflows and non-test shell and Python scripts.

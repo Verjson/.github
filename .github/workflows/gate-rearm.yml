@@ -266,10 +266,10 @@ jobs:
             source_workflow_id="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/actions/workflows/$local_workflow" --jq '.id')" || {
               echo "::error::could not authenticate local arm workflow identity"; exit 1;
             }
-            [[ "$source_workflow_id" =~ ^[1-9][0-9]*$ ]] &&
-              jq -e --argjson workflow_id "$source_workflow_id" '.workflow_id == $workflow_id' <<<"$source_run" >/dev/null || {
-                echo "::error::local arm workflow identity does not match its protected path"; exit 1;
-              }
+            if ! [[ "$source_workflow_id" =~ ^[1-9][0-9]*$ ]] ||
+              ! jq -e --argjson workflow_id "$source_workflow_id" '.workflow_id == $workflow_id' <<<"$source_run" >/dev/null; then
+              echo "::error::local arm workflow identity does not match its protected path"; exit 1
+            fi
             branch_ref="$(jq -rn --arg branch "$DEFAULT_BRANCH" '$branch | @uri | gsub("%2F"; "/")')"
             protected_blob="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/contents/$local_delivery_path?ref=$branch_ref" --jq '.sha')" || {
               echo "::error::could not resolve protected local arm workflow"; exit 1;

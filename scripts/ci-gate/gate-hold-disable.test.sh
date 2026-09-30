@@ -893,7 +893,7 @@ fi
 export RUNNER_TEMP="$tmp"
 unset PR_EDIT_FAIL
 
-python3 - "$workflow" <<'PYTEST'
+if python3 - "$workflow" <<'PYTEST'
 import sys
 from pathlib import Path
 import yaml
@@ -905,7 +905,11 @@ assert '--arg review_policy "$review_policy" --arg delivery_event "$EVENT_ACTION
 assert '{schema:(if $source_bound then 2 else 1 end)' in run
 assert '. + {delivery_event:$delivery_event,delivery_actor:$delivery_actor,' in run
 PYTEST
-if [ "$?" -eq 0 ]; then pass "source-bound receipts record lifecycle action metadata"; else fail "source-bound lifecycle receipt metadata contract missing"; fi
+then
+  pass "source-bound receipts record lifecycle action metadata"
+else
+  fail "source-bound lifecycle receipt metadata contract missing"
+fi
 
 [ "$fails" -eq 0 ] && { echo "All tests passed."; exit 0; }
 echo "$fails test(s) failed."; exit 1
