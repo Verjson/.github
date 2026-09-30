@@ -14,7 +14,7 @@ def load(path):
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 def validate_caller(doc, target):
-    assert doc[True] == {"pull_request_target": {"types": ["labeled", "ready_for_review", "converted_to_draft", "edited", "unlabeled"]}}
+    assert doc[True] == {"pull_request_target": {"types": ["labeled"]}}
     assert doc["permissions"] == {"actions": "read", "contents": "read"}
     assert doc["jobs"] == {"rearm": {
             "permissions": {"actions": "write", "checks": "write", "contents": "read", "issues": "write", "pull-requests": "write"},

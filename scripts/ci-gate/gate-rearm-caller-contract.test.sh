@@ -69,6 +69,39 @@ PY
   fi
 fi
 
+label_generator="$repo_root/scripts/gen-ai-review-label-rearm-caller.sh"
+label_caller="$tmp/ai-review-label-rearm.yml"
+if [ ! -x "$label_generator" ]; then
+  fail "AI review label re-arm caller generator missing or not executable"
+elif "$label_generator" "$contract_sha" >"$label_caller" \
+  && python3 - "$label_caller" "$caller" <<'PY'
+import sys
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    label_doc = yaml.load(stream, Loader=yaml.BaseLoader)
+with open(sys.argv[2], encoding="utf-8") as stream:
+    gate_doc = yaml.load(stream, Loader=yaml.BaseLoader)
+
+label_events = label_doc["on"]["pull_request_target"]["types"]
+gate_events = gate_doc["on"]["pull_request_target"]["types"]
+assert label_events == ["labeled"], f"label re-arm caller owns extra events: {label_events!r}"
+assert gate_events == [
+    "opened",
+    "reopened",
+    "synchronize",
+    "ready_for_review",
+    "converted_to_draft",
+    "edited",
+    "unlabeled",
+], f"gate re-arm caller lost lifecycle events: {gate_events!r}"
+PY
+then
+  pass "label re-arm caller handles labeled only; lifecycle events stay with gate re-arm"
+else
+  fail "generated callers overlap on AI review lifecycle events"
+fi
+
 for invalid_ref in main v1 '' \
   0123456789abcdef0123456789abcdef0123456 \
   '0123456789abcdef0123456789abcdef01234567

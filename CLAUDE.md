@@ -65,6 +65,8 @@ Each entry states the concrete fact and how/when it was last verified — a live
 not just inspection of prose (#956: an entry asserting external status should say how it
 was confirmed, since inspection-only claims go stale silently).
 
+- [#1663](https://github.com/Verjson/.github/issues/1663) — The generated label re-arm caller also subscribed to lifecycle events already handled by `gate-rearm.yml`; confirmed 2026-09-30 by comparing both generators and caller contracts.
+
 - [#1655](https://github.com/Verjson/.github/issues/1655) — Signed merge-gate provenance rollout, opened 2026-09-28 after #1339 met its evidence gate; ADR 0211 still requires a real `pull_request_target` capture before rollout.
 
 - [#1646](https://github.com/Verjson/.github/issues/1646) — CLI Projects PR admission accepts only the byte-exact generated caller; the previous-main digest is rollout-only. Strict admission freshness is defense in depth. Remove the rollout digest after [Verjson/verjson-cli-projects PR #142](https://github.com/Verjson/verjson-cli-projects/pull/142) updates main. See [ADR 0212](docs/decisions/0212-cli-projects-admission-accepts-only-generated-caller/README.md).
