@@ -71,10 +71,22 @@ fi
 
 label_generator="$repo_root/scripts/gen-ai-review-label-rearm-caller.sh"
 label_caller="$tmp/ai-review-label-rearm.yml"
+lifecycle_generator="$repo_root/scripts/gen-ai-review-lifecycle-rearm-caller.sh"
+lifecycle_workflow="$repo_root/.github/workflows/ai-review-lifecycle-rearm.yml"
+lifecycle_caller="$tmp/ai-review-lifecycle-rearm.yml"
 if [ ! -x "$label_generator" ]; then
   fail "AI review label re-arm caller generator missing or not executable"
-elif "$label_generator" "$contract_sha" >"$label_caller" \
-  && python3 - "$label_caller" "$caller" <<'PY'
+elif ! "$label_generator" "$contract_sha" >"$label_caller"; then
+  fail "AI review label re-arm caller generator rejected a valid contract SHA"
+elif [ ! -f "$lifecycle_workflow" ]; then
+  fail "canonical lifecycle-only re-arm caller is missing"
+elif [ ! -x "$lifecycle_generator" ]; then
+  fail "AI review lifecycle re-arm caller generator missing or not executable"
+elif ! "$lifecycle_generator" --local >"$lifecycle_caller"; then
+  fail "AI review lifecycle re-arm caller generator rejected --local"
+elif ! cmp -s "$lifecycle_caller" "$lifecycle_workflow"; then
+  fail "checked-in lifecycle re-arm caller differs from its generator"
+elif python3 - "$label_caller" "$caller" "$canonical" "$lifecycle_caller" <<'PY'
 import sys
 import yaml
 
@@ -82,24 +94,41 @@ with open(sys.argv[1], encoding="utf-8") as stream:
     label_doc = yaml.load(stream, Loader=yaml.BaseLoader)
 with open(sys.argv[2], encoding="utf-8") as stream:
     gate_doc = yaml.load(stream, Loader=yaml.BaseLoader)
+with open(sys.argv[3], encoding="utf-8") as stream:
+    canonical_doc = yaml.load(stream, Loader=yaml.BaseLoader)
+with open(sys.argv[4], encoding="utf-8") as stream:
+    lifecycle_doc = yaml.load(stream, Loader=yaml.BaseLoader)
 
 label_events = label_doc["on"]["pull_request_target"]["types"]
 gate_events = gate_doc["on"]["pull_request_target"]["types"]
+canonical_events = canonical_doc["on"]["pull_request_target"]["types"]
+lifecycle_events = lifecycle_doc["on"]["pull_request_target"]["types"]
+expected_lifecycle_events = set(gate_events) - set(canonical_events)
 assert label_events == ["labeled"], f"label re-arm caller owns extra events: {label_events!r}"
-assert gate_events == [
-    "opened",
-    "reopened",
-    "synchronize",
-    "ready_for_review",
-    "converted_to_draft",
-    "edited",
-    "unlabeled",
-], f"gate re-arm caller lost lifecycle events: {gate_events!r}"
+assert expected_lifecycle_events, "canonical gate caller has no lifecycle events beyond head transitions"
+assert set(lifecycle_events) == expected_lifecycle_events, (
+    f"local lifecycle caller does not own the remaining gate events: {lifecycle_events!r}"
+)
+assert set(lifecycle_events).isdisjoint(canonical_events), "lifecycle and head-transition triggers overlap"
+assert set(lifecycle_events).isdisjoint(label_events), "lifecycle and explicit-label triggers overlap"
+assert set(canonical_events).isdisjoint(label_events), "head-transition and explicit-label triggers overlap"
+
+lifecycle_job = lifecycle_doc["jobs"]["rearm"]
+assert lifecycle_job["uses"] == "./.github/workflows/gate-rearm.yml"
+assert lifecycle_job["secrets"] == "inherit"
+assert lifecycle_job["with"] == {"ai_review_environment": "ai-review-app"}
+assert lifecycle_job["permissions"] == {
+    "actions": "write",
+    "checks": "write",
+    "contents": "read",
+    "issues": "write",
+    "pull-requests": "write",
+}
 PY
 then
-  pass "label re-arm caller handles labeled only; lifecycle events stay with gate re-arm"
+  pass "canonical lifecycle caller covers only gate events beyond head and label triggers"
 else
-  fail "generated callers overlap on AI review lifecycle events"
+  fail "canonical event sets overlap or lifecycle re-arm caller contract drifted"
 fi
 
 for invalid_ref in main v1 '' \

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Verify that a dedicated-App check is named by immutable evidence from the
-# exact trusted gate-arm run. All identity inputs arrive through the environment.
+# exact trusted arm run. All identity inputs arrive through the environment.
 set -euo pipefail
 
 for value in TARGET_REPO PR_NUMBER EXPECTED_HEAD_SHA AUTHORIZATION_CHECK_ID ARM_RUN_ID ARM_RUN_ATTEMPT EXPECTED_APP_ID EXPECTED_APP_SLUG REVIEW_POLICY; do
@@ -47,8 +47,8 @@ arm_workflow_id="$(jq -r '.workflow_id // ""' <<<"$arm_run")"
 jq -e --argjson run_id "$ARM_RUN_ID" --argjson attempt "$ARM_RUN_ATTEMPT" --arg repo "$TARGET_REPO" '
   .id == $run_id and .run_attempt == $attempt and
   .event == "pull_request_target" and
-  (.path == ".github/workflows/gate-rearm.yml" or .path == ".github/workflows/ai-review-label-rearm.yml") and
-  .head_repository.full_name == $repo
+  (.path == ".github/workflows/gate-rearm.yml" or .path == ".github/workflows/ai-review-label-rearm.yml" or .path == ".github/workflows/ai-review-lifecycle-rearm.yml") and
+  .head_repository.full_name == $repo and .repository.full_name == $repo
 ' <<<"$arm_run" >/dev/null || { echo "::error::arm run provenance mismatch"; exit 1; }
 arm_run_path="$(jq -r '.path' <<<"$arm_run")"
 required_workflow_url="https://api.github.com/repos/$TARGET_REPO/actions/required_workflows/$arm_workflow_id"
@@ -82,6 +82,7 @@ else
   case "$arm_run_path" in
     .github/workflows/gate-rearm.yml) local_workflow=gate-rearm.yml ;;
     .github/workflows/ai-review-label-rearm.yml) local_workflow=ai-review-label-rearm.yml ;;
+    .github/workflows/ai-review-lifecycle-rearm.yml) local_workflow=ai-review-lifecycle-rearm.yml ;;
     *) exit 1 ;;
   esac
   workflow_api arm-workflow "$tmp/arm-workflow-id" \
@@ -89,15 +90,13 @@ else
   [ "$(<"$tmp/arm-workflow-id")" = "$arm_workflow_id" ] || {
     echo "::error::arm run provenance mismatch"; exit 1;
   }
-  if [ "$arm_run_path" = .github/workflows/ai-review-label-rearm.yml ]; then
-    [ "$ARM_RUN_ATTEMPT" = 1 ] || { echo "::error::label delivery replay rejected"; exit 1; }
+  if [ "$arm_run_path" != .github/workflows/gate-rearm.yml ]; then
+    [ "$ARM_RUN_ATTEMPT" = 1 ] || { echo "::error::local caller delivery replay rejected"; exit 1; }
     jq -e '.head_sha | test("^[0-9a-f]{40}$")' <<<"$arm_run" >/dev/null || exit 1
     workflow_api repository-default "$tmp/default-branch" \
       "repos/$TARGET_REPO" --jq '.default_branch // ""' || exit 1
     default_branch="$(<"$tmp/default-branch")"
     [[ "$default_branch" =~ ^[A-Za-z0-9._/-]+$ ]] || exit 1
-    # Encode at the value, not only at the guard: this reaches a query VALUE dozens of lines
-    # below, where "/" stays literal, so relaxing the guard must not re-arm that read.
     branch_ref="$(jq -rn --arg branch "$default_branch" '$branch | @uri | gsub("%2F"; "/")')"
   fi
 fi
@@ -135,28 +134,37 @@ receipt_check_app_id="$(jq -r '.check_app_id // ""' "$tmp/receipt.json")"
 receipt_check_app_slug="$(jq -r '.check_app_slug // ""' "$tmp/receipt.json")"
 if [ "$receipt_schema" = 1 ]; then
   [ "$arm_run_path" = .github/workflows/gate-rearm.yml ] || {
-    echo "::error::label bridge requires a source-bound schema-2 receipt"; exit 1;
+    echo "::error::local caller requires a source-bound schema-2 receipt"; exit 1;
   }
 elif [ "$receipt_schema" = 2 ]; then
-  [ "$arm_run_path" = .github/workflows/ai-review-label-rearm.yml ] || {
-    echo "::error::schema-2 receipt requires the separate label caller"; exit 1;
-  }
+  case "$arm_run_path" in
+    .github/workflows/ai-review-label-rearm.yml)
+      local_caller=ai-review-label-rearm.yml
+      ;;
+    .github/workflows/ai-review-lifecycle-rearm.yml)
+      local_caller=ai-review-lifecycle-rearm.yml
+      ;;
+    *) echo "::error::schema-2 receipt requires an exact protected local caller"; exit 1 ;;
+  esac
   receipt_workflow_sha="$(jq -r '.workflow_sha // ""' "$tmp/receipt.json")"
   [[ "$receipt_workflow_sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
   workflow_api caller-at-protected-ref "$tmp/caller-protected-blob" \
-    "repos/$TARGET_REPO/contents/.github/workflows/ai-review-label-rearm.yml?ref=$branch_ref" --jq '.sha // ""' || exit 1
+    "repos/$TARGET_REPO/contents/.github/workflows/$local_caller?ref=$branch_ref" --jq '.sha // ""' || exit 1
   workflow_api caller-at-receipt-sha "$tmp/caller-receipt-blob" \
-    "repos/$TARGET_REPO/contents/.github/workflows/ai-review-label-rearm.yml?ref=$receipt_workflow_sha" --jq '.sha // ""' || exit 1
+    "repos/$TARGET_REPO/contents/.github/workflows/$local_caller?ref=$receipt_workflow_sha" --jq '.sha // ""' || exit 1
   protected_caller_blob="$(<"$tmp/caller-protected-blob")"
   receipt_caller_blob="$(<"$tmp/caller-receipt-blob")"
   [[ "$protected_caller_blob" =~ ^[0-9a-f]{40}$ ]] && [ "$receipt_caller_blob" = "$protected_caller_blob" ] || {
-    echo "::error::label caller workflow SHA does not resolve to the protected caller revision"; exit 1;
+    echo "::error::local caller workflow SHA does not resolve to the protected caller revision"; exit 1;
   }
-  jq -e --arg event "$(jq -r '.event' <<<"$arm_run")" --arg actor "$(jq -r '.actor.login // ""' <<<"$arm_run")" \
-    --arg repo "$TARGET_REPO" --arg branch "$default_branch" '
-      .delivery_event == $event and .delivery_actor == $actor and
-      .workflow_ref == ($repo + "/.github/workflows/ai-review-label-rearm.yml@refs/heads/" + $branch) and
-      (.workflow_sha | test("^[0-9a-f]{40}$"))
+  jq -e --arg actor "$(jq -r '.actor.login // ""' <<<"$arm_run")" \
+    --arg repo "$TARGET_REPO" --arg branch "$default_branch" --arg caller "$local_caller" '
+      .delivery_actor == $actor and
+      .workflow_ref == ($repo + "/.github/workflows/" + $caller + "@refs/heads/" + $branch) and
+      (.workflow_sha | test("^[0-9a-f]{40}$")) and
+      (if $caller == "ai-review-label-rearm.yml" then .delivery_event == "labeled"
+       else (.delivery_event == "ready_for_review" or .delivery_event == "converted_to_draft" or
+             .delivery_event == "edited" or .delivery_event == "unlabeled") end)
     ' "$tmp/receipt.json" >/dev/null || { echo "::error::arm receipt delivery identity mismatch"; exit 1; }
 else
   echo "::error::unsupported arm receipt schema"; exit 1
