@@ -762,7 +762,7 @@ def main() -> int:
     require(set(rearm[True]["pull_request_target"]["types"]) ==
             {"opened", "reopened", "synchronize"} and
             "labeled" not in rearm[True]["pull_request_target"]["types"] and
-            label_rearm[True] == {"pull_request_target": {"types": ["labeled", "ready_for_review", "converted_to_draft", "edited", "unlabeled"]}},
+            label_rearm[True] == {"pull_request_target": {"types": ["labeled"]}},
             "trusted rearm must separate explicit label delivery from head transitions")
     arm = rearm["jobs"]["arm"]
     arm_step = next(step for step in arm["steps"] if step.get("name") == "Create exact-head authorization receipt")

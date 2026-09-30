@@ -39,6 +39,12 @@ case "$*" in
     [ "${LOCAL_WORKFLOW_MISSING:-false}" = false ] || exit 1
     printf '%s\n' 77 ;;
   *"actions/workflows/ai-review-label-rearm.yml"*"--jq"*) printf '%s\n' 77 ;;
+  *"actions/workflows/ai-review-lifecycle-rearm.yml"*"--jq"*) printf '%s\n' 88 ;;
+  *"contents/.github/workflows/ai-review-lifecycle-rearm.yml?ref="*"--jq"*)
+    case "$*" in
+      *"ref=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"*) printf '%s\n' cccccccccccccccccccccccccccccccccccccccc ;;
+      *) printf '%s\n' dddddddddddddddddddddddddddddddddddddddd ;;
+    esac ;;
   *"contents/.github/workflows/ai-review-label-rearm.yml?ref="*"--jq"*)
     case "$*" in
       *"ref=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"*) printf '%s\n' cccccccccccccccccccccccccccccccccccccccc ;;
@@ -70,7 +76,7 @@ write_base() {
   printf '%s\n' '[{"type":"workflows","ruleset_source_type":"Organization","ruleset_source":"Verjson","parameters":{"workflows":[{"path":".github/workflows/gate-rearm.yml","ref":"refs/heads/main","repository_id":1269388380}]}}]' >"$RULES_FILE"
   jq -nc --argjson id "$ARM_RUN_ID" --argjson attempt "$ARM_RUN_ATTEMPT" --arg repo "$TARGET_REPO" \
     --arg workflow_url "https://api.github.com/repos/$TARGET_REPO/actions/workflows/77" \
-    '{id:$id,run_attempt:$attempt,workflow_id:77,event:"pull_request_target",path:".github/workflows/gate-rearm.yml",workflow_url:$workflow_url,head_repository:{full_name:$repo}}' >"$RUN_FILE"
+    '{id:$id,run_attempt:$attempt,workflow_id:77,event:"pull_request_target",path:".github/workflows/gate-rearm.yml",workflow_url:$workflow_url,head_branch:"main",head_repository:{full_name:$repo},repository:{full_name:$repo},actor:{login:"maintainer"}}' >"$RUN_FILE"
   jq -nc --argjson id "$AUTHORIZATION_CHECK_ID" --arg head "$EXPECTED_HEAD_SHA" --arg external "$external_id" \
     --arg url "$check_details_url" --argjson app "$CHECK_APP_ID" --arg slug "$CHECK_APP_SLUG" \
     '{id:$id,name:"AI review authorization",head_sha:$head,external_id:$external,details_url:$url,app:{id:$app,slug:$slug},status:"in_progress",conclusion:null}' >"$CHECK_FILE"
@@ -133,9 +139,18 @@ write_label_run() {
     '.event="pull_request_target" | .path=".github/workflows/ai-review-label-rearm.yml" | .run_attempt=1 | .head_sha=$sha | .actor={login:"maintainer"}' \
     "$RUN_FILE" >"$tmp/x" && mv "$tmp/x" "$RUN_FILE"
   jq --arg sha "$workflow_sha" \
-    '.schema=2 | .delivery_event="pull_request_target" | .delivery_actor="maintainer" |
+    '.schema=2 | .delivery_event="labeled" | .delivery_actor="maintainer" |
      .workflow_ref="Verjson/example/.github/workflows/ai-review-label-rearm.yml@refs/heads/main" |
      .workflow_sha=$sha' "$tmp/archive/receipt.json" >"$tmp/x" && mv "$tmp/x" "$tmp/archive/receipt.json"
+  repack
+}
+
+write_lifecycle_run() {
+  write_label_run
+  jq '.path=".github/workflows/ai-review-lifecycle-rearm.yml" | .workflow_id=88 | .head_branch="main"' \
+    "$RUN_FILE" >"$tmp/x" && mv "$tmp/x" "$RUN_FILE"
+  jq '.delivery_event="ready_for_review" | .workflow_ref="Verjson/example/.github/workflows/ai-review-lifecycle-rearm.yml@refs/heads/main"' \
+    "$tmp/archive/receipt.json" >"$tmp/x" && mv "$tmp/x" "$tmp/archive/receipt.json"
   repack
 }
 
@@ -158,6 +173,22 @@ jq '.arm_run_attempt=2 | .external_id=(.external_id | sub(":1:[0-9a-f]{64}$"; ":
 jq '.external_id=(.external_id | sub(":1:[0-9a-f]{64}$"; ":2:" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))' "$CHECK_FILE" >"$tmp/x" && mv "$tmp/x" "$CHECK_FILE"
 repack; expect_fail "label delivery rejects attempt greater than one" verify
 write_label_run; jq '.path=".github/workflows/gate-rearm.yml"' "$RUN_FILE" >"$tmp/x" && mv "$tmp/x" "$RUN_FILE"; expect_fail "required arm run rejects label-caller schema-2 cross-mode receipt" verify
+for valid_event in ready_for_review converted_to_draft edited unlabeled; do
+  write_lifecycle_run
+  jq --arg event "$valid_event" '.delivery_event=$event' "$tmp/archive/receipt.json" >"$tmp/x" && mv "$tmp/x" "$tmp/archive/receipt.json"
+  repack; expect_pass "lifecycle caller accepts exact action $valid_event" verify
+done
+for invalid_event in labeled pull_request_target opened; do
+  write_lifecycle_run
+  jq --arg event "$invalid_event" '.delivery_event=$event' "$tmp/archive/receipt.json" >"$tmp/x" && mv "$tmp/x" "$tmp/archive/receipt.json"
+  repack; expect_fail "lifecycle caller rejects delivery event $invalid_event" verify
+done
+write_lifecycle_run; jq '.path=".github/workflows/ai-review-label-rearm.yml"' "$RUN_FILE" >"$tmp/x" && mv "$tmp/x" "$RUN_FILE"; expect_fail "lifecycle receipt rejects a different protected caller path" verify
+write_lifecycle_run; jq '.workflow_ref="Verjson/example/.github/workflows/ai-review-lifecycle-rearm.yml@refs/heads/topic"' "$tmp/archive/receipt.json" >"$tmp/x" && mv "$tmp/x" "$tmp/archive/receipt.json"; repack; expect_fail "lifecycle caller rejects wrong protected branch" verify
+write_lifecycle_run; jq '.workflow_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' "$tmp/archive/receipt.json" >"$tmp/x" && mv "$tmp/x" "$tmp/archive/receipt.json"; repack; expect_fail "lifecycle caller rejects a different valid workflow blob" verify
+write_lifecycle_run; jq '.workflow_sha="malformed"' "$tmp/archive/receipt.json" >"$tmp/x" && mv "$tmp/x" "$tmp/archive/receipt.json"; repack; expect_fail "lifecycle caller rejects malformed workflow metadata" verify
+write_lifecycle_run; jq '.workflow_id=77' "$RUN_FILE" >"$tmp/x" && mv "$tmp/x" "$RUN_FILE"; expect_fail "lifecycle caller rejects a mismatched workflow ID" verify
+write_lifecycle_run; jq '.run_attempt=2' "$RUN_FILE" >"$tmp/x" && mv "$tmp/x" "$RUN_FILE"; expect_fail "lifecycle caller rejects replayed source run" verify
 export ARM_RUN_ATTEMPT=2
 REVIEW_POLICY="$(encode_policy "$anthropic_policy")"
 export REVIEW_POLICY

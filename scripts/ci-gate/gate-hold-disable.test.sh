@@ -53,7 +53,15 @@ case "$*" in
   *"commits/"*"/check-runs "*) cat "$LATEST_FILE" ;;
   *"actions/runs/7001 --jq"*) printf '2\n' ;;
   *"actions/runs/7001") printf '{"event":"pull_request_target","path":".github/workflows/gate-rearm.yml","head_repository":{"full_name":"Verjson/example"},"run_attempt":2}\n' ;;
-  *"actions/runs/8000") printf '{"event":"pull_request_target","path":".github/workflows/ai-review-label-rearm.yml","run_attempt":1,"head_sha":"0123456789abcdef0123456789abcdef01234567","head_repository":{"full_name":"Verjson/example"},"repository":{"id":1234},"actor":{"login":"maintainer"}}\n' ;;
+  *"actions/runs/8000") jq -nc --arg path "${SOURCE_RUN_PATH:-.github/workflows/ai-review-label-rearm.yml}" --arg actor "${SOURCE_RUN_ACTOR:-maintainer}" --arg branch "${SOURCE_RUN_BRANCH:-main}" --argjson run_id "${SOURCE_RUN_ID:-8000}" --argjson repo_id "${SOURCE_REPO_ID:-1234}" --arg head_repo "${SOURCE_HEAD_REPO:-Verjson/example}" --arg repo_full "${SOURCE_REPO_FULL:-Verjson/example}" --argjson workflow_id "${SOURCE_WORKFLOW_ID:-77}" '{id:$run_id,event:"pull_request_target",path:$path,workflow_id:$workflow_id,run_attempt:1,head_sha:"0123456789abcdef0123456789abcdef01234567",head_branch:$branch,head_repository:{full_name:$head_repo},repository:{id:$repo_id,full_name:$repo_full},actor:{login:$actor}}' ;;
+  *"actions/workflows/ai-review-lifecycle-rearm.yml"*"--jq"*) printf '88\n' ;;
+  *"contents/.github/workflows/ai-review-label-rearm.yml?ref="*) printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' ;;
+  *"contents/.github/workflows/ai-review-lifecycle-rearm.yml?ref="*) printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' ;;
+
+  *"actions/workflows/ai-review-label-rearm.yml"*"--jq"*) printf '77\n' ;;
+  *"contents/.github/workflows/ai-review-lifecycle-rearm.yml?ref=main"*) printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' ;;
+  *"contents/.github/workflows/ai-review-lifecycle-rearm.yml?ref="*) printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' ;;
+
   *"actions/runs/7001/artifacts?per_page=100 --jq"*) printf '%s\n' "${RECEIPT_COUNT:-1}" ;;
   "run download 7001 "*)
     for arg in "$@"; do destination="$arg"; done
@@ -149,9 +157,21 @@ write_hold() {
 }
 run_arm(){
   local caller=ai-review-label-rearm.yml
-  case "$EVENT_ACTION" in opened|reopened|synchronize) caller=gate-rearm.yml ;; esac
+  case "$EVENT_ACTION" in
+    opened|reopened|synchronize) caller=gate-rearm.yml ;;
+    ready_for_review|converted_to_draft|edited|unlabeled) caller=ai-review-lifecycle-rearm.yml ;;
+  esac
+  local workflow_id=77
+  [ "$caller" = ai-review-lifecycle-rearm.yml ] && workflow_id=88
   (cd "$tmp" && EVENT_ACTION="$EVENT_ACTION" EVENT_LABEL="$EVENT_LABEL" \
-    WORKFLOW_REF="Verjson/example/.github/workflows/$caller@refs/heads/main" \
+    SOURCE_RUN_PATH="${SOURCE_RUN_PATH_OVERRIDE:-.github/workflows/$caller}" \
+    SOURCE_WORKFLOW_ID="${SOURCE_WORKFLOW_ID_OVERRIDE:-$workflow_id}" \
+    SOURCE_RUN_ID="${SOURCE_RUN_ID_OVERRIDE:-8000}" \
+    SOURCE_REPO_ID="${SOURCE_REPO_ID_OVERRIDE:-1234}" \
+    SOURCE_HEAD_REPO="${SOURCE_HEAD_REPO_OVERRIDE:-Verjson/example}" \
+    SOURCE_REPO_FULL="${SOURCE_REPO_FULL_OVERRIDE:-Verjson/example}" \
+    SOURCE_RUN_ACTOR="${SOURCE_RUN_ACTOR_OVERRIDE:-maintainer}" \
+    WORKFLOW_REF="${WORKFLOW_REF_OVERRIDE:-Verjson/example/.github/workflows/$caller@refs/heads/main}" \
     bash "${ARM_SCRIPT:-$tmp/arm.sh}")
 }
 
@@ -873,15 +893,23 @@ fi
 export RUNNER_TEMP="$tmp"
 unset PR_EDIT_FAIL
 
-write_repromotion
-: >"$GITHUB_OUTPUT"
-printf '{}\n' >"$LATEST_FILE"
-export EVENT_ACTION=ready_for_review EVENT_LABEL='' REQUEST_ACTOR=maintainer REVIEW_AUTHORITY=human
-export PRIMARY_PROVIDER=anthropic PRIMARY_MODEL=auto PRIMARY_BUDGET_USD=auto
-export PRIMARY_FALLBACK_MODEL='' PRIMARY_FALLBACK_BUDGET_USD=''
-if run_arm >"$tmp/out" 2>&1 && jq -e '.schema == 2 and .delivery_actor == "maintainer" and .delivery_event == "pull_request_target"' "$RUNNER_TEMP/ai-review-arm-receipt/receipt.json" >/dev/null; then
-  pass "ready-for-review creates a source-bound schema-2 receipt"
-else fail "ready-for-review did not create a source-bound receipt: $(tail -1 "$tmp/out")"; fi
+if python3 - "$workflow" <<'PYTEST'
+import sys
+from pathlib import Path
+import yaml
+
+workflow = yaml.safe_load(Path(sys.argv[1]).read_text(encoding="utf-8"))
+create = next(step for step in workflow["jobs"]["arm"]["steps"] if step.get("name") == "Create exact-head authorization receipt")
+run = create["run"]
+assert '--arg review_policy "$review_policy" --arg delivery_event "$EVENT_ACTION"' in run
+assert '{schema:(if $source_bound then 2 else 1 end)' in run
+assert '. + {delivery_event:$delivery_event,delivery_actor:$delivery_actor,' in run
+PYTEST
+then
+  pass "source-bound receipts record lifecycle action metadata"
+else
+  fail "source-bound lifecycle receipt metadata contract missing"
+fi
 
 [ "$fails" -eq 0 ] && { echo "All tests passed."; exit 0; }
 echo "$fails test(s) failed."; exit 1
