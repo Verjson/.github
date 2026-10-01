@@ -33,8 +33,14 @@ emit() {
 name: gate re-arm
 
 on:
+  workflow_call:
+    inputs:
+      ai_review_environment:
+        description: Main-only environment containing the AI review App private key
+        required: true
+        type: string
   pull_request_target:
-    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, edited, unlabeled]
+    types: [opened, reopened, synchronize]
 permissions:
   contents: read
 

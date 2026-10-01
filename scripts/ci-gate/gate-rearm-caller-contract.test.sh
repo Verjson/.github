@@ -36,14 +36,18 @@ with open(path, encoding="utf-8") as stream:
 
 expected_uses = f"Verjson/.github/.github/workflows/gate-rearm.yml@{sha}"
 assert set(doc) == {"name", "on", "permissions", "jobs"}
-assert doc["on"] == {
-    "pull_request_target": {
-        "types": ["opened", "reopened", "synchronize", "ready_for_review", "converted_to_draft", "edited", "unlabeled"],
-    },
+assert doc["on"]["workflow_call"]["inputs"]["ai_review_environment"]["type"] == "string"
+assert doc["on"]["workflow_call"]["inputs"]["ai_review_environment"]["required"] == "true"
+assert doc["on"]["pull_request_target"] == {
+    "types": ["opened", "reopened", "synchronize"],
 }
 assert doc["permissions"] == {"contents": "read"}
 assert set(doc["jobs"]) == {"rearm"}
 job = doc["jobs"]["rearm"]
+# `jobs.<job_id>.with` does not allow the `inputs` context, and direct
+# pull_request_target runs have no workflow_call input. Keep the canonical
+# environment fixed for both trigger paths while requiring the same typed input
+# that local lifecycle callers use.
 assert job == {
     "permissions": {
         "contents": "read",
@@ -103,10 +107,10 @@ label_events = label_doc["on"]["pull_request_target"]["types"]
 gate_events = gate_doc["on"]["pull_request_target"]["types"]
 canonical_events = canonical_doc["on"]["pull_request_target"]["types"]
 lifecycle_events = lifecycle_doc["on"]["pull_request_target"]["types"]
-expected_lifecycle_events = set(gate_events) - set(canonical_events)
+expected_lifecycle_events = ["ready_for_review", "converted_to_draft", "edited", "unlabeled"]
 assert label_events == ["labeled"], f"label re-arm caller owns extra events: {label_events!r}"
-assert expected_lifecycle_events, "canonical gate caller has no lifecycle events beyond head transitions"
-assert set(lifecycle_events) == expected_lifecycle_events, (
+assert gate_events == canonical_events, "generated gate caller diverged from canonical head-transition events"
+assert lifecycle_events == expected_lifecycle_events, (
     f"local lifecycle caller does not own the remaining gate events: {lifecycle_events!r}"
 )
 assert set(lifecycle_events).isdisjoint(canonical_events), "lifecycle and head-transition triggers overlap"
@@ -114,6 +118,7 @@ assert set(lifecycle_events).isdisjoint(label_events), "lifecycle and explicit-l
 assert set(canonical_events).isdisjoint(label_events), "head-transition and explicit-label triggers overlap"
 
 lifecycle_job = lifecycle_doc["jobs"]["rearm"]
+assert set(lifecycle_doc["jobs"]) == {"rearm"}
 assert lifecycle_job["uses"] == "./.github/workflows/gate-rearm.yml"
 assert lifecycle_job["secrets"] == "inherit"
 assert lifecycle_job["with"] == {"ai_review_environment": "ai-review-app"}
