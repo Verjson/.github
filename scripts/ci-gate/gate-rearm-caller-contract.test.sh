@@ -45,9 +45,8 @@ assert doc["permissions"] == {"contents": "read"}
 assert set(doc["jobs"]) == {"rearm"}
 job = doc["jobs"]["rearm"]
 # ADR 0166 fixes this role environment to `ai-review-app` for both trigger
-# paths. The required reusable input is part of the workflow-call contract,
-# but does not select a different role environment; canonical callers pass the
-# fixed name required by policy checks.
+# paths. The reusable input is required by the workflow-call contract; the
+# generated-caller contract test pins these callers to the fixed role name.
 assert job == {
     "permissions": {
         "contents": "read",
