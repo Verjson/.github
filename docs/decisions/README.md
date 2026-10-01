@@ -12,6 +12,7 @@ Reverse-chronological index of org-level decisions.
 <!-- prettier-ignore -->
 | # | Date | Decision |
 |---|------|----------|
+| [0213](0213-package-type-surface-release-authorization/README.md) | 2026-10-01 | Package type-surface rulesets use the release App only |
 | [0212](0212-cli-projects-admission-accepts-only-generated-caller/README.md) | 2026-09-29 | CLI Projects admission accepts only the generated CI caller |
 | [0211](0211-signed-merge-gate-provenance-binds-the-canonical-required-workflow/README.md) | 2026-09-27 | Signed merge-gate provenance binds the canonical required workflow through captured claim predicates |
 | [0210](0210-code-owner-review-is-real-through-a-generated-codeowners-member/README.md) | 2026-09-27 | Code-owner review is real: the generated CODEOWNERS is a required member of the adopter contract |

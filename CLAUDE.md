@@ -59,6 +59,16 @@ authority is enabled for non-trivial or fanned-out autonomous work:
 - PRs that touch shared append surfaces are conflict-prone when run in parallel;
   the `NEXT/` fragments + generated ADR index above remove the common cases.
 
+## Package PM release-control policy
+
+PM work for Verjson package repositories retains the type-surface ruleset and
+uses the organization-owned package ruleset policy. The release App is the sole
+type-surface bypass actor; private release credentials stay confined to the
+canonical snapshot job. Before any package release, run the exact ruleset
+preflight/postimage audit, the release-App canary, and the pinned release
+rehearsal. Do not hand-edit live bypass actors or treat an unaudited consumer
+exception as a release fix.
+
 ## Active Issues / Areas for Improvement
 
 Each entry states the concrete fact and how/when it was last verified — a live re-check,
