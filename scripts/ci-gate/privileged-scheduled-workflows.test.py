@@ -374,7 +374,7 @@ def validate_ruleset_conformance(document: object) -> None:
         "ruleset-conformance runner route changed",
     )
     require(job["timeout-minutes"] == 10, "ruleset-conformance timeout changed")
-    require(len(steps) == 3, "ruleset-conformance audit must have exactly three steps")
+    require(len(steps) == 4, "ruleset-conformance audit must have exactly four steps")
     require(
         steps[0].get("name") == "Check out the ruleset conformance audit",
         "ruleset-conformance checkout name changed",
@@ -396,8 +396,27 @@ def validate_ruleset_conformance(document: object) -> None:
         audit["run"] == "python3 scripts/org-ruleset-conformance.py",
         "ruleset-conformance command changed",
     )
+    package_audit = require_keys(
+        steps[2], {"name", "env", "run"}, "package type-surface audit"
+    )
+    require(
+        package_audit["name"] == "Verify package type-surface rulesets",
+        "package type-surface audit name changed",
+    )
+    package_env = require_keys(
+        package_audit["env"], {"GH_TOKEN"}, "package type-surface audit env"
+    )
+    require(
+        package_env["GH_TOKEN"] == "${{ secrets.ORG_ADMIN_TOKEN }}",
+        "package type-surface audit token binding changed",
+    )
+    require(
+        package_audit["run"]
+        == "python3 scripts/package-type-surface-ruleset.py audit",
+        "package type-surface audit command changed",
+    )
     validate_cleanup(
-        steps[2], "ruleset-conformance cleanup", RULESET_CONFORMANCE_SOURCE
+        steps[3], "ruleset-conformance cleanup", RULESET_CONFORMANCE_SOURCE
     )
 
 
