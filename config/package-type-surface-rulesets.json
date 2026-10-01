@@ -37,7 +37,7 @@
       "repository": "Verjson/verjson-authz",
       "repository_id": 1282497594,
       "scope": "repository",
-      "ruleset_id": null,
+      "ruleset_id": 24324236,
       "name": "authz-type-surface-required",
       "preimage": null,
       "desired": {
