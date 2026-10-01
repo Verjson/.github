@@ -703,6 +703,7 @@ def isolate_candidate_runtime_cache(document: str) -> str:
     imports = """          import json
           import os
           import re
+          import shutil
           import subprocess
           import sys
           from pathlib import Path
@@ -726,7 +727,26 @@ def isolate_candidate_runtime_cache(document: str) -> str:
               script_env = os.environ.copy()
               for env_name in unset_env:
                   script_env.pop(env_name, None)
-              subprocess.run(["npm", "run", name], check=True, env=script_env, cwd=directory)
+              npm_command = ["npm"]
+              npm_path = shutil.which("npm")
+              node_path = shutil.which("node")
+              if npm_path is not None and node_path is not None:
+                  npm_executable = Path(npm_path)
+                  resolved_npm_executable = npm_executable.resolve()
+                  npm_cli_candidates = list(dict.fromkeys(
+                      candidate.resolve()
+                      for candidate in (
+                          npm_executable.parent.parent / "lib/node_modules/npm/bin/npm-cli.js",
+                          npm_executable.parent / "node_modules/npm/bin/npm-cli.js",
+                          resolved_npm_executable.parent.parent / "bin/npm-cli.js",
+                      )
+                      if candidate.is_file()
+                  ))
+                  if len(npm_cli_candidates) > 1:
+                      raise SystemExit("trusted npm CLI is ambiguous")
+                  if npm_cli_candidates:
+                      npm_command = [node_path, str(npm_cli_candidates[0])]
+              subprocess.run([*npm_command, "run", name], check=True, env=script_env, cwd=directory)
 """
     isolated_execution = f"""          max_cache_files = {CANDIDATE_CACHE_MAX_FILES}
           max_cache_bytes = {CANDIDATE_CACHE_MAX_BYTES}
@@ -1221,6 +1241,28 @@ def isolate_candidate_runtime_cache(document: str) -> str:
             )
             if not any(existing == tool_prefix or existing in tool_prefix.parents for existing in tool_prefixes):
               tool_prefixes.append(tool_prefix)
+          npm_cli_candidates = {{}}
+          for npm_cli_candidate in (
+            npm_executable.parent.parent / "lib/node_modules/npm/bin/npm-cli.js",
+            npm_executable.parent / "node_modules/npm/bin/npm-cli.js",
+            npm_executable.resolve().parent.parent / "bin/npm-cli.js",
+          ):
+            if not npm_cli_candidate.is_file():
+              continue
+            if not any(npm_cli_candidate.is_relative_to(prefix) for prefix in tool_prefixes):
+              sys.exit("trusted npm CLI is outside validated tool prefixes")
+            resolved_npm_cli_candidate = npm_cli_candidate.resolve(strict=True)
+            if not any(resolved_npm_cli_candidate.is_relative_to(prefix) for prefix in tool_prefixes):
+              sys.exit("trusted npm CLI escapes validated tool prefixes")
+            npm_cli_candidates[resolved_npm_cli_candidate] = None
+          if len(npm_cli_candidates) > 1:
+              sys.exit("trusted npm CLI is ambiguous")
+          npm_cli_executable = next(iter(npm_cli_candidates), None)
+          npm_command = (
+            [str(tool_executables["node"]), str(npm_cli_executable)]
+            if npm_cli_executable is not None
+            else [str(npm_executable)]
+          )
           cache_root.mkdir(mode=0o700)
           active_process = None
           received_signal = None
@@ -1411,7 +1453,7 @@ def isolate_candidate_runtime_cache(document: str) -> str:
                               "--dev", "/dev",
                               "--chdir", str(script_directory),
                               "--",
-                              str(npm_executable), "run", name,
+                              *npm_command, "run", name,
                           ],
                           env=script_env,
                           start_new_session=True,

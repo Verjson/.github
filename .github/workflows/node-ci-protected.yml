@@ -5939,6 +5939,28 @@ jobs:
             )
             if not any(existing == tool_prefix or existing in tool_prefix.parents for existing in tool_prefixes):
               tool_prefixes.append(tool_prefix)
+          npm_cli_candidates = {}
+          for npm_cli_candidate in (
+            npm_executable.parent.parent / "lib/node_modules/npm/bin/npm-cli.js",
+            npm_executable.parent / "node_modules/npm/bin/npm-cli.js",
+            npm_executable.resolve().parent.parent / "bin/npm-cli.js",
+          ):
+            if not npm_cli_candidate.is_file():
+              continue
+            if not any(npm_cli_candidate.is_relative_to(prefix) for prefix in tool_prefixes):
+              sys.exit("trusted npm CLI is outside validated tool prefixes")
+            resolved_npm_cli_candidate = npm_cli_candidate.resolve(strict=True)
+            if not any(resolved_npm_cli_candidate.is_relative_to(prefix) for prefix in tool_prefixes):
+              sys.exit("trusted npm CLI escapes validated tool prefixes")
+            npm_cli_candidates[resolved_npm_cli_candidate] = None
+          if len(npm_cli_candidates) > 1:
+              sys.exit("trusted npm CLI is ambiguous")
+          npm_cli_executable = next(iter(npm_cli_candidates), None)
+          npm_command = (
+            [str(tool_executables["node"]), str(npm_cli_executable)]
+            if npm_cli_executable is not None
+            else [str(npm_executable)]
+          )
           cache_root.mkdir(mode=0o700)
           active_process = None
           received_signal = None
@@ -6129,7 +6151,7 @@ jobs:
                               "--dev", "/dev",
                               "--chdir", str(script_directory),
                               "--",
-                              str(npm_executable), "run", name,
+                              *npm_command, "run", name,
                           ],
                           env=script_env,
                           start_new_session=True,
