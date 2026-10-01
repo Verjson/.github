@@ -44,10 +44,9 @@ assert doc["on"]["pull_request_target"] == {
 assert doc["permissions"] == {"contents": "read"}
 assert set(doc["jobs"]) == {"rearm"}
 job = doc["jobs"]["rearm"]
-# `jobs.<job_id>.with` does not allow the `inputs` context, and direct
-# pull_request_target runs have no workflow_call input. Keep the canonical
-# environment fixed for both trigger paths while requiring the same typed input
-# that local lifecycle callers use.
+# ADR 0166 fixes this role environment to `ai-review-app` for both trigger
+# paths. The reusable input is required by the workflow-call contract; the
+# generated-caller contract test pins these callers to the fixed role name.
 assert job == {
     "permissions": {
         "contents": "read",

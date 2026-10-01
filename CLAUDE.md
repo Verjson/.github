@@ -80,6 +80,7 @@ was confirmed, since inspection-only claims go stale silently).
 - [#1669](https://github.com/Verjson/.github/issues/1669) — Node 26 places npm’s CLI under the validated tool prefix’s `lib` tree while the launcher looks below `bin`; the registered credentialless consumer script plan regression and protected identity harness pass locally on 2026-10-01, pending canonical CI.
 
 - [#1665](https://github.com/Verjson/.github/issues/1665) — The generated gate caller requires a typed reusable environment input and directly handles only head transitions; lifecycle and label events remain on their dedicated callers. Verified 2026-10-01 with `bash scripts/ci-gate/gate-rearm-caller-contract.test.sh` and actionlint 1.7.7.
+- [#1675](https://github.com/Verjson/.github/issues/1675) — The required reusable input does not select a different role environment: ADR 0166 fixes generated callers to `ai-review-app`, and the generated-caller contract test pins that value. Verified 2026-10-01 against the caller contract test and ADR 0166.
 
 - [#1667](https://github.com/Verjson/.github/issues/1667) — Track configurable generated OCI candidate destinations for GHCR, GAR, and Sonatype Nexus. Opened 2026-10-01 after live issue searches and checking related [.github#1264](https://github.com/Verjson/.github/issues/1264), [.github#1186](https://github.com/Verjson/.github/issues/1186), and [verjson-ci#30](https://github.com/Verjson/verjson-ci/issues/30); those cover adopter rollout and GitLab CE Nexus engine work, not registry-neutral canonical publisher destinations.
 
