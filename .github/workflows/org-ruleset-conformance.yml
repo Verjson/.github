@@ -29,6 +29,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
         run: python3 scripts/org-ruleset-conformance.py
+      - name: Verify package type-surface rulesets
+        env:
+          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+        run: python3 scripts/package-type-surface-ruleset.py audit
       - name: Remove the isolated ruleset-conformance checkout
         if: ${{ always() }}
         working-directory: ${{ github.workspace }}
