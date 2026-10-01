@@ -218,10 +218,11 @@ def apply_one(organization: str, acknowledgement: str, entry: dict):
             print(f"already conformant {entry['name']} id={live['id']}")
             return
         require(entry["preimage"] is not None, f"{entry['name']}: unexpected live drift; no preimage permits mutation")
-        require(mutable_image(live) == entry["preimage"], f"{entry['name']}: live preimage drifted")
+        validate_live(organization, entry, live, entry["preimage"])
         updated_at = live.get("updated_at")
         reread = read_live(organization, entry)
-        require(reread.get("updated_at") == updated_at and mutable_image(reread) == entry["preimage"], f"{entry['name']}: preimage changed during apply preparation")
+        require(reread.get("updated_at") == updated_at, f"{entry['name']}: preimage changed during apply preparation")
+        validate_live(organization, entry, reread, entry["preimage"])
         entry = {**entry, "ruleset_id": reread["id"]}
     gh_json("--method", "PUT", endpoint(organization, entry, entry["ruleset_id"]), input_path=api_input(payload(entry, desired)))
     postimage = read_live(organization, entry)

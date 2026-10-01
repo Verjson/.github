@@ -44,6 +44,13 @@ class PackageTypeSurfaceRulesetTest(unittest.TestCase):
         with self.assertRaises(MODULE.ContractError):
             MODULE.validate_live("Verjson", entry, live, entry["desired"])
 
+    def test_validate_live_rejects_a_ruleset_id_reused_by_another_name(self):
+        _, _, entries = MODULE.read_policy()
+        entry = entries[0]
+        live = {"id": entry["ruleset_id"], "name": "different-ruleset", "source_type": "Repository", "source": entry["repository"], **entry["preimage"]}
+        with self.assertRaises(MODULE.ContractError):
+            MODULE.validate_live("Verjson", entry, live, entry["preimage"])
+
 
 if __name__ == "__main__":
     unittest.main()
