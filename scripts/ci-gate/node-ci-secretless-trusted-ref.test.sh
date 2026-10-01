@@ -12,6 +12,7 @@ fail() { printf 'not ok - %s\n' "$1" >&2; failures=$((failures + 1)); }
 python3 - "$workflow" "$docs" <<'PY' \
   && pass "trusted-ref mode reuses the bounded secretless pipeline" \
   || fail "trusted-ref mode does not preserve the secretless pipeline boundary"
+import re
 import sys
 from pathlib import Path
 
@@ -57,7 +58,18 @@ assert 'command = ["npm", "rebuild"] if package_manager == "npm" else ["corepack
 assert 'subprocess.run([*command, *requested], check=True)' in rebuild["run"]
 # Each planned script runs in the manifest that declared it (#1229), so the
 # pinned execution call carries that directory rather than assuming the root.
-assert 'subprocess.run(["npm", "run", name], check=True, env=script_env, cwd=directory)' in plan["run"]
+assert re.search(r'(?m)^\s*npm_command\s*=\s*\["npm"\]\s*$', plan["run"])
+assert re.search(
+    r'(?m)^\s*if\s+npm_cli_candidates\s*:\s*\n'
+    r'\s*npm_command\s*=\s*\[\s*node_path\s*,\s*'
+    r'str\(\s*npm_cli_candidates\[0\]\s*\)\s*\]\s*$',
+    plan["run"],
+)
+assert re.search(
+    r'subprocess\.run\(\[\s*\*npm_command\s*,\s*"run"\s*,\s*name\s*\],\s*'
+    r'check=True,\s*env=script_env,\s*cwd=directory\)',
+    plan["run"],
+)
 
 for command in ("npm run build", "npm run typecheck --if-present", "npm test", "npm run lint --if-present"):
     step = next(step for step in steps if step.get("run") == command)
