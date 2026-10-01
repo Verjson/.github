@@ -70,6 +70,7 @@ was confirmed, since inspection-only claims go stale silently).
 - [#1669](https://github.com/Verjson/.github/issues/1669) — Node 26 places npm’s CLI under the validated tool prefix’s `lib` tree while the launcher looks below `bin`; the registered credentialless consumer script plan regression and protected identity harness pass locally on 2026-10-01, pending canonical CI.
 
 - [#1665](https://github.com/Verjson/.github/issues/1665) — The generated gate caller requires a typed reusable environment input and directly handles only head transitions; lifecycle and label events remain on their dedicated callers. Verified 2026-10-01 with `bash scripts/ci-gate/gate-rearm-caller-contract.test.sh` and actionlint 1.7.7.
+- [#1675](https://github.com/Verjson/.github/issues/1675) — The required reusable input does not select a different role environment: ADR 0166 fixes generated callers and policy checks to `ai-review-app`. Verified 2026-10-01 against the caller contract test and ADR 0166.
 
 - [#1655](https://github.com/Verjson/.github/issues/1655) — Signed merge-gate provenance rollout, opened 2026-09-28 after #1339 met its evidence gate; ADR 0211 still requires a real `pull_request_target` capture before rollout.
 
