@@ -139,3 +139,20 @@ host write access.
 The behavioral coverage in `scripts/ci-gate/node-ci-required-identity.test.py`
 exercises malformed pins, digest mismatch, non-execution of the renderer during
 warm-up, and a real bubblewrap write-denial probe for the mounted cache.
+
+## 2026-10-01 amendment: invoke the npm CLI from the validated tool tree
+
+**Status:** Accepted; [#1669](https://github.com/Verjson/.github/issues/1669).
+
+The Node 26 setup-node layout places npm's CLI under
+`lib/node_modules/npm/bin/npm-cli.js`, while its launcher under `bin` still
+looks for `bin/node_modules/npm/bin/npm-prefix.js`. Resolve the CLI only from
+the validated tool prefixes and run it with the validated Node executable.
+Protected execution fails closed when the CLI is ambiguous and uses the
+validated npm launcher only for older or synthetic layouts without a CLI file.
+This keeps execution inside the existing trusted, read-only tool prefix and
+does not add network or credential access.
+
+The Node 26 path is covered by
+`scripts/ci-gate/node-ci-secretless-consumer.test.sh` and the protected
+`scripts/ci-gate/node-ci-required-identity.test.py` harness.

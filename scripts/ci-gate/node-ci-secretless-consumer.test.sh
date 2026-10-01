@@ -50,7 +50,7 @@ plan = next(step for step in build["steps"] if step.get("name") == "Run exact cr
 assert "inputs.secretless-pr" in rebuild["if"] and "secrets." not in str(rebuild.get("env", {}))
 assert "inputs.secretless-pr" in plan["if"] and "secrets." not in str(plan.get("env", {}))
 assert 'subprocess.run([*command, *requested]' in rebuild["run"]
-assert 'subprocess.run(["npm", "run", name]' in plan["run"]
+assert 'subprocess.run([*npm_command, "run", name]' in plan["run"]
 assert "env=script_env" in plan["run"]
 for command in ("npm run build", "npm run typecheck --if-present", "npm test", "npm run lint --if-present"):
     step = next(step for step in build["steps"] if step.get("run") == command)
@@ -163,6 +163,65 @@ if (cd "$tmp/commands" && PATH="$tmp/bin:$PATH" NPM_STUB_LOG="$tmp/plan.log" \
   pass "the exact consumer npm script plan runs in order with a bounded per-script environment clear"
 else
   fail "the exact consumer npm script plan did not run in order"
+fi
+
+# Node 26's validated toolcache layout keeps the launcher in bin/ but the npm
+# package in lib/node_modules/npm. The launcher fixture resolves npm-prefix.js
+# relative to bin/, reproducing the broken lookup without copying tool files.
+node26="$tmp/node26"
+mkdir -p "$node26/bin" "$node26/lib/node_modules/npm/bin"
+ln -s "$(command -v node)" "$node26/bin/node"
+cat > "$node26/bin/npm" <<'JS'
+#!/usr/bin/env node
+const path = require("node:path");
+const prefix = path.join(__dirname, "node_modules", "npm", "bin", "npm-prefix.js");
+require(prefix);
+require(path.join(__dirname, "..", "lib", "node_modules", "npm", "bin", "npm-cli.js"));
+JS
+cat > "$node26/lib/node_modules/npm/bin/npm-prefix.js" <<'JS'
+module.exports = __dirname;
+JS
+cat > "$node26/lib/node_modules/npm/bin/npm-cli.js" <<'JS'
+const fs = require("node:fs");
+fs.appendFileSync(process.env.NPM_STUB_LOG, `${process.argv.slice(2).join(" ")}\n`);
+JS
+chmod +x "$node26/bin/npm"
+: > "$tmp/node26-plan.log"
+node26_plan_status=0
+(cd "$tmp/commands" && PATH="$node26/bin:/usr/bin:/bin" \
+    NPM_STUB_LOG="$tmp/node26-plan.log" NODE26_TOOLCACHE="$node26" \
+    CI_SCRIPT_PLAN='["build"]' bash "$tmp/plan.sh") \
+    > "$tmp/node26-plan-output.log" 2>&1 || node26_plan_status=$?
+if [ "$node26_plan_status" -eq 0 ] && [ "$(cat "$tmp/node26-plan.log")" = 'run build' ]; then
+  pass "the consumer script plan resolves npm from the Node 26 toolcache package layout"
+elif rg -Fq "$node26/bin/node_modules/npm/bin/npm-prefix.js" "$tmp/node26-plan-output.log"; then
+  fail "the Node 26 npm launcher looked for missing $node26/bin/node_modules/npm/bin/npm-prefix.js"
+else
+  fail "the Node 26 npm launcher layout failed: $(tail -1 "$tmp/node26-plan-output.log")"
+fi
+
+# Node 24 can expose npm itself as a symlink to npm-cli.js. The raw
+# credentialless path must derive and deduplicate the resolved package root.
+node24="$tmp/node24"
+mkdir -p "$node24/bin" "$node24/lib/node_modules/npm/bin"
+ln -s "$(command -v node)" "$node24/bin/node"
+cat > "$node24/lib/node_modules/npm/bin/npm-cli.js" <<'JS'
+#!/usr/bin/env node
+const fs = require("node:fs");
+fs.appendFileSync(process.env.NPM_STUB_LOG, `${process.argv.slice(2).join(" ")}\n`);
+JS
+chmod +x "$node24/lib/node_modules/npm/bin/npm-cli.js"
+ln -s ../lib/node_modules/npm/bin/npm-cli.js "$node24/bin/npm"
+: > "$tmp/node24-plan.log"
+node24_plan_status=0
+(cd "$tmp/commands" && PATH="$node24/bin:/usr/bin:/bin" \
+    NPM_STUB_LOG="$tmp/node24-plan.log" \
+    CI_SCRIPT_PLAN='["build"]' bash "$tmp/plan.sh") \
+    > "$tmp/node24-plan-output.log" 2>&1 || node24_plan_status=$?
+if [ "$node24_plan_status" -eq 0 ] && [ "$(cat "$tmp/node24-plan.log")" = 'run build' ]; then
+  pass "the credentialless consumer plan resolves a Node 24 npm CLI symlink"
+else
+  fail "the Node 24 npm CLI symlink layout failed: $(tail -1 "$tmp/node24-plan-output.log")"
 fi
 
 for bad_plan in '["build","build"]' '["--help"]' '["missing"]' '{"script":"build"}' \

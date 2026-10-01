@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 LEGACY = ROOT / ".github/workflows/node-ci.yml"
 PROTECTED = ROOT / ".github/workflows/node-ci-protected.yml"
 HEAD = "a" * 40
-LEGACY_SHA256 = "bbd2aa1a19d3c85fe690ad255187eb3be17ecf760e12507ed7a834f0a98bcc30"
+LEGACY_SHA256 = "c265e7bc48a1e45559c7dad522075ec9f104bba6c4e1f25349e3f4daebe2dc17"
 
 
 class RequiredWorkflowIdentityTest(unittest.TestCase):
@@ -518,6 +518,10 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
         foreign_entry=None,
         pwsh_fixture=None,
         mutate_tool_in_place=False,
+        npm_cli_layout=False,
+        decoy_npm_cli=False,
+        symlink_npm_cli_layout=False,
+        extra_npm_cli=False,
     ):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -549,12 +553,44 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
             npm.write_text("#!/usr/bin/env bash\nset -euo pipefail\n" + npm_body, encoding="utf-8")
             npm.chmod(0o755)
             node = tool_bin / "node"
-            node.write_text("#!/usr/bin/env bash\nexec /usr/bin/node \"$@\"\n", encoding="utf-8")
+            if npm_cli_layout:
+                node.write_text(
+                    "#!/usr/bin/env bash\n"
+                    "case \"$1\" in */tool/lib/node_modules/npm/bin/npm-cli.js) "
+                    "printf '%s\\n' 'trusted npm CLI fixture invoked' ;; "
+                    "*) exit 92 ;; esac\n",
+                    encoding="utf-8",
+                )
+            else:
+                node.write_text(
+                    "#!/usr/bin/env bash\nexec /usr/bin/node \"$@\"\n",
+                    encoding="utf-8",
+                )
             node.chmod(0o755)
             tool_package = tool_bin.parent / "lib" / "node_modules" / "npm" / "package.json"
             tool_package.parent.mkdir(parents=True)
             tool_package.write_text('{"name":"npm"}\n', encoding="utf-8")
             tool_package.chmod(0o644)
+            if npm_cli_layout:
+                npm_cli = tool_package.parent / "bin" / "npm-cli.js"
+                npm_cli.parent.mkdir()
+                npm_cli.write_text(
+                    "console.log('trusted npm CLI fixture invoked');\n",
+                    encoding="utf-8",
+                )
+                npm_cli.chmod(0o644)
+            if symlink_npm_cli_layout:
+                (tool_bin / "node_modules").symlink_to(
+                    tool_bin.parent / "lib" / "node_modules", target_is_directory=True
+                )
+            if extra_npm_cli:
+                extra_npm_cli_path = tool_bin / "node_modules" / "npm" / "bin" / "npm-cli.js"
+                extra_npm_cli_path.parent.mkdir(parents=True)
+                extra_npm_cli_path.write_text(
+                    "console.log('second trusted npm CLI fixture invoked');\n",
+                    encoding="utf-8",
+                )
+                extra_npm_cli_path.chmod(0o644)
             for directory_name, _, _ in os.walk(tool_bin.parent):
                 Path(directory_name).chmod(0o755)
             if tool_tree_mode is not None:
@@ -620,6 +656,13 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
                     encoding="utf-8",
                 )
                 fixture_target.chmod(0o755)
+                if decoy_npm_cli:
+                    decoy_cli = fixture_target.parent / "lib" / "node_modules" / "npm" / "bin" / "npm-cli.js"
+                    decoy_cli.parent.mkdir(parents=True)
+                    decoy_cli.write_text(
+                        "console.log('decoy npm CLI from another trusted tool prefix');\n",
+                        encoding="utf-8",
+                    )
                 fixture_link.symlink_to(fixture_target)
                 fixture_roots = [fixture_usr, fixture_opt, root / "untrusted"]
                 for fixture_root in fixture_roots:
@@ -802,6 +845,55 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
             shadow_candidate_path=True,
         )
         self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual([], remaining)
+
+    def test_node_26_npm_layout_executes_cli_from_the_validated_tool_prefix(self):
+        result, remaining = self.run_candidate_plan(
+            lambda baseline: (baseline / "blob").write_text("verified", encoding="utf-8"),
+            "exit 91\n",
+            npm_cli_layout=True,
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("trusted npm CLI fixture invoked", result.stdout)
+        self.assertEqual([], remaining)
+
+    def test_node_26_npm_cli_is_selected_from_its_own_tool_prefix(self):
+        result, remaining = self.run_candidate_plan(
+            lambda baseline: (baseline / "blob").write_text("verified", encoding="utf-8"),
+            "exit 91\n",
+            npm_cli_layout=True,
+            pwsh_fixture="valid",
+            decoy_npm_cli=True,
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("trusted npm CLI fixture invoked", result.stdout)
+        self.assertNotIn("decoy npm CLI", result.stdout)
+        self.assertEqual([], remaining)
+
+    def test_identical_npm_cli_candidates_from_symlink_layout_are_deduplicated(self):
+        result, remaining = self.run_candidate_plan(
+            lambda baseline: (baseline / "blob").write_text("verified", encoding="utf-8"),
+            "exit 91\n",
+            npm_cli_layout=True,
+            symlink_npm_cli_layout=True,
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("trusted npm CLI fixture invoked", result.stdout)
+        self.assertEqual([], remaining)
+
+    def test_distinct_npm_cli_candidates_fail_closed(self):
+        result, remaining = self.run_candidate_plan(
+            lambda baseline: (baseline / "blob").write_text("verified", encoding="utf-8"),
+            "exit 91\n",
+            npm_cli_layout=True,
+            extra_npm_cli=True,
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("trusted npm CLI is ambiguous", result.stderr)
         self.assertEqual([], remaining)
 
     def test_verified_changelog_contract_is_read_only_inside_the_networkless_sandbox(self):
