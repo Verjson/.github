@@ -71,6 +71,10 @@ class PnpmCandidateTests(unittest.TestCase):
         for name in ("container-candidate.yml", "container-candidate-publish.yml"):
             workflow = yaml.safe_load((ROOT / ".github/workflows" / name).read_text())
             prepare = workflow["jobs"]["prepare"]
+            if name == "container-candidate.yml":
+                self.assertNotIn("acquire-private-node-dependencies", workflow["jobs"])
+                self.assertNotIn("NODE_AUTH_TOKEN", yaml.safe_dump(workflow["jobs"]["prepare"]))
+                continue
             acquire = workflow["jobs"]["acquire-private-node-dependencies"]
             self.assertEqual(prepare["outputs"]["package-manager"], "${{ steps.config.outputs.package-manager }}")
             script = next(step["run"] for step in acquire["steps"] if step.get("name", "").startswith("Acquire exact"))
