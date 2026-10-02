@@ -21,6 +21,19 @@ Last verified: **2026-09-07**. Provisioning implementation:
 HTTPS checks use normal certificate validation. Health checks establish
 reachability only; they do not verify authentication, persistence, or backups.
 
+## Current migration status (2026-10-02)
+
+The K3s inventory showed GitLab CE, Nexus CE, MinIO, registry gateway, and
+both GitLab Runner workloads deployed. Unauthenticated HTTPS probes returned HTTP
+200 for GitLab sign-in and Nexus status, and HTTP 401 for the Docker Registry
+`/v2/` endpoint, which is the expected authentication challenge. One runner
+processed GitLab jobs; the other is currently failing DNS lookups to GitLab.
+
+The environment is deployed, but runner availability is partial. These checks
+did not exercise an isolated GitLab runner canary or multi-platform OCI
+publication. Follow [verjson-ci issue #30](https://github.com/Verjson/verjson-ci/issues/30)
+for the remaining migration acceptance work.
+
 ## Registry setup status
 
 The owner authorized acceptance of the Nexus Community Edition EULA on
