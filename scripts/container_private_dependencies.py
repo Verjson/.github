@@ -100,6 +100,8 @@ def build_npm_plan(lock: dict[str, Any], approved_names: list[str]) -> list[dict
         raise DependencyError("package-lock packages must be an object")
     found: set[str] = set()
     downloads: dict[tuple[str, str], bool] = {}
+    bundled_paths: list[str] = []
+    downloadable_paths: set[str] = set()
     for path, package in packages.items():
         if not isinstance(package, dict):
             raise DependencyError(f"lock entry {path} must be an object")
@@ -107,13 +109,7 @@ def build_npm_plan(lock: dict[str, Any], approved_names: list[str]) -> list[dict
             continue
         install_name = path.rsplit("node_modules/", 1)[-1]
         name = package.get("name", install_name)
-        resolved, integrity, version = (
-            package.get("resolved"),
-            package.get("integrity"),
-            package.get("version"),
-        )
-        if not isinstance(resolved, str):
-            raise DependencyError(f"lock entry {path} lacks an exact resolved URL and integrity")
+        version = package.get("version")
         if (
             not isinstance(version, str)
             or not version
@@ -122,11 +118,22 @@ def build_npm_plan(lock: dict[str, Any], approved_names: list[str]) -> list[dict
             or not REGISTRY_PACKAGE.fullmatch(name)
         ):
             raise DependencyError(f"lock entry {path} lacks a canonical package identity")
+        if package.get("inBundle") is True:
+            bundled_paths.append(path)
+            continue
+        resolved, integrity = package.get("resolved"), package.get("integrity")
+        if not isinstance(resolved, str):
+            raise DependencyError(f"lock entry {path} lacks an exact resolved URL and integrity")
         private = validate_url(path, name, version, resolved, approved)
         if private:
             found.add(name)
         validate_integrity(path, integrity)
+        downloadable_paths.add(path)
         downloads[(resolved, integrity)] = private
+
+    for path in bundled_paths:
+        if not any(path.startswith(f"{parent}/node_modules/") for parent in downloadable_paths):
+            raise DependencyError(f"bundled lock entry {path} has no integrity-pinned parent package")
 
     if found != approved:
         difference = ", ".join(sorted(approved ^ found))
