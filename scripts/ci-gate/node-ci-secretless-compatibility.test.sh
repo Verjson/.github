@@ -136,6 +136,7 @@ for name, filename in {
     "Validate approved internal dependency lock": "validate.sh",
     "Resolve approved compatibility ranges without lifecycle execution": "resolve.sh",
     "Package bounded credential-free npm cache": "package.sh",
+    "Decrypt run-scoped secretless dependency payload": "decrypt.sh",
     "Install from verified secretless npm cache": "install.sh",
     "Run runtime-resolved compatibility lanes without credentials": "run-lanes.sh",
 }.items():
@@ -522,7 +523,8 @@ for case_name in auth-fail access-fail missing empty; do
   fi
 done
 
-mkdir -p "$tmp/e2e/acquire/cache/_cacache/content-v2/sha512" "$tmp/e2e/acquire/compat/_compatibility" "$tmp/e2e/acquire/work"
+mkdir -p "$tmp/e2e/acquire/cache/_cacache/content-v2/sha512" "$tmp/e2e/acquire/compat/_compatibility" "$tmp/e2e/acquire/work" "$tmp/e2e/acquire/runner-temp"
+cp "$root/scripts/container_dependency_transfer.py" "$tmp/e2e/acquire/runner-temp/container_dependency_transfer.py"
 printf '%s\n' '{"name":"@verjson/identity-contracts","version":"0.2.2"}' > "$tmp/e2e/acquire/work/package.json"
 tar -C "$tmp/e2e/acquire/work" --transform='s#^#package/#' -czf "$tmp/e2e/acquire/lane.tgz" package.json
 lane_digest="$(sha512sum "$tmp/e2e/acquire/lane.tgz" | cut -d' ' -f1)"
@@ -539,7 +541,7 @@ PY
 (cd "$tmp/e2e/acquire" && AUXILIARY_COMMIT='' AUXILIARY_CONTENT_PATH='' AUXILIARY_REPOSITORY='' \
   CACHE_DIR="$tmp/e2e/acquire/cache" COMPATIBILITY_ROOT="$tmp/e2e/acquire/compat" COMPATIBILITY_RANGES="$request" \
   GITHUB_OUTPUT="$tmp/e2e/acquire/package.output" GITHUB_WORKSPACE="$tmp/e2e/acquire" MAX_PAYLOAD_BYTES=83886080 \
-  PACKAGE_MANAGER=npm RUN_ATTEMPT=1 RUN_ID=1103 TRANSFER_DIR="$tmp/e2e/acquire/transfer" bash "$tmp/package.sh")
+  PACKAGE_MANAGER=npm RUN_ATTEMPT=1 RUN_ID=1103 RUNNER_TEMP="$tmp/e2e/acquire/runner-temp" TRANSFER_DIR="$tmp/e2e/acquire/transfer" bash "$tmp/package.sh")
 [ "$?" -eq 0 ] && grep -q '^compatibility_provenance_sha256=' "$tmp/e2e/acquire/transfer/manifest" \
   && pass "compatibility provenance shares the bounded transfer" || fail "compatibility provenance was not packaged through the canonical transfer"
 
@@ -550,7 +552,15 @@ chmod +x "$tmp/e2e/build/bin/npm"
 provenance_sha="$(sed -n 's/^compatibility_provenance_sha256=//p' "$tmp/e2e/build/transfer/manifest")"
 run_install() {
   local fixture="$1"
-  (cd "$fixture" && PATH="$tmp/e2e/build/bin:$PATH" NPM_STUB_LOG="$fixture/npm.log" APPROVED_INTERNAL_SCOPES=@verjson \
+  local runner_temp="$fixture/runner-temp"
+  if [ ! -f "$fixture/transfer/npm-private-cache.tar" ]; then
+    mkdir -p "$runner_temp"
+    cp "$root/scripts/container_dependency_transfer.py" "$runner_temp/container_dependency_transfer.py"
+    (cd "$fixture" && RUNNER_TEMP="$runner_temp" TRANSFER_DIR="$fixture/transfer" \
+      TRANSFER_KEY="$(sed -n 's/^encryption-key=//p' "$tmp/e2e/acquire/package.output")" \
+      bash "$tmp/decrypt.sh")
+  fi
+  (cd "$fixture" && RUNNER_TEMP="$runner_temp" PATH="$tmp/e2e/build/bin:$PATH" NPM_STUB_LOG="$fixture/npm.log" APPROVED_INTERNAL_SCOPES=@verjson \
     COMPATIBILITY_RANGES="$request" COMPATIBILITY_ARTIFACT_DIR="$fixture/artifacts" EXPECTED_AUXILIARY_COMMIT='' \
     EXPECTED_AUXILIARY_CONTENT_PATH='' EXPECTED_AUXILIARY_REPOSITORY='' EXPECTED_COMPATIBILITY_PROVENANCE_SHA256="$provenance_sha" \
     EXPECTED_PAYLOAD_BYTES="$(sed -n 's/^payload_bytes=//p' "$fixture/transfer/manifest")" EXPECTED_PAYLOAD_SHA256="$(sed -n 's/^payload_sha256=//p' "$fixture/transfer/manifest")" \
@@ -562,6 +572,10 @@ if run_install "$tmp/e2e/build" && [ -f "$tmp/e2e/build/artifacts/lane-0.tgz" ];
 
 for mutation in provenance payload; do
   fixture="$tmp/e2e/tampered-$mutation"; mkdir -p "$fixture"; cp "$tmp/e2e/acquire/package-lock.json" "$fixture/package-lock.json"; cp -R "$tmp/e2e/acquire/transfer" "$fixture/transfer"
+  mkdir -p "$fixture/runner-temp"
+  cp "$root/scripts/container_dependency_transfer.py" "$fixture/runner-temp/container_dependency_transfer.py"
+  (cd "$fixture" && RUNNER_TEMP="$fixture/runner-temp" TRANSFER_DIR="$fixture/transfer" \
+    TRANSFER_KEY="$(sed -n 's/^encryption-key=//p' "$tmp/e2e/acquire/package.output")" bash "$tmp/decrypt.sh")
   python3 - "$fixture/transfer/npm-private-cache.tar" "$mutation" <<'PY'
 import json,pathlib,tarfile,tempfile,sys
 p=pathlib.Path(sys.argv[1]);m=sys.argv[2]
@@ -1243,6 +1257,7 @@ if [ "${VERJSON_DIAGNOSTIC_MUTATION_CHILD:-false}" != true ]; then
   mkdir -p "$mutation_root/.github/workflows" "$mutation_root/scripts/ci-gate" \
     "$mutation_root/docs"
   cp "$0" "$mutation_root/scripts/ci-gate/node-ci-secretless-compatibility.test.sh"
+  cp "$root/scripts/container_dependency_transfer.py" "$mutation_root/scripts/container_dependency_transfer.py"
   cp "$protected_workflow" "$mutation_root/.github/workflows/node-ci-protected.yml"
   cp "$documentation" "$mutation_root/docs/node-workflows.md"
   python3 - "$workflow" "$mutation_root/.github/workflows/node-ci.yml" <<'PY'
@@ -1284,6 +1299,7 @@ PY
   mkdir -p "$cache_mutation_root/.github/workflows" "$cache_mutation_root/scripts/ci-gate" \
     "$cache_mutation_root/docs"
   cp "$0" "$cache_mutation_root/scripts/ci-gate/node-ci-secretless-compatibility.test.sh"
+  cp "$root/scripts/container_dependency_transfer.py" "$cache_mutation_root/scripts/container_dependency_transfer.py"
   cp "$protected_workflow" "$cache_mutation_root/.github/workflows/node-ci-protected.yml"
   cp "$documentation" "$cache_mutation_root/docs/node-workflows.md"
   python3 - "$workflow" "$cache_mutation_root/.github/workflows/node-ci.yml" <<'PY'
@@ -1324,6 +1340,7 @@ PY
   mkdir -p "$mask_mutation_root/.github/workflows" "$mask_mutation_root/scripts/ci-gate" \
     "$mask_mutation_root/docs"
   cp "$0" "$mask_mutation_root/scripts/ci-gate/node-ci-secretless-compatibility.test.sh"
+  cp "$root/scripts/container_dependency_transfer.py" "$mask_mutation_root/scripts/container_dependency_transfer.py"
   cp "$protected_workflow" "$mask_mutation_root/.github/workflows/node-ci-protected.yml"
   cp "$documentation" "$mask_mutation_root/docs/node-workflows.md"
   python3 - "$workflow" "$mask_mutation_root/.github/workflows/node-ci.yml" <<'PY'
@@ -1364,6 +1381,7 @@ PY
   mkdir -p "$symlink_mutation_root/.github/workflows" \
     "$symlink_mutation_root/scripts/ci-gate" "$symlink_mutation_root/docs"
   cp "$0" "$symlink_mutation_root/scripts/ci-gate/node-ci-secretless-compatibility.test.sh"
+  cp "$root/scripts/container_dependency_transfer.py" "$symlink_mutation_root/scripts/container_dependency_transfer.py"
   cp "$protected_workflow" "$symlink_mutation_root/.github/workflows/node-ci-protected.yml"
   cp "$documentation" "$symlink_mutation_root/docs/node-workflows.md"
   python3 - "$workflow" "$symlink_mutation_root/.github/workflows/node-ci.yml" <<'PY'
@@ -1395,6 +1413,7 @@ PY
   mkdir -p "$public_cache_link_mutation_root/.github/workflows" \
     "$public_cache_link_mutation_root/scripts/ci-gate" "$public_cache_link_mutation_root/docs"
   cp "$0" "$public_cache_link_mutation_root/scripts/ci-gate/node-ci-secretless-compatibility.test.sh"
+  cp "$root/scripts/container_dependency_transfer.py" "$public_cache_link_mutation_root/scripts/container_dependency_transfer.py"
   cp "$protected_workflow" "$public_cache_link_mutation_root/.github/workflows/node-ci-protected.yml"
   cp "$documentation" "$public_cache_link_mutation_root/docs/node-workflows.md"
   python3 - "$workflow" "$public_cache_link_mutation_root/.github/workflows/node-ci.yml" <<'PY'
@@ -1429,6 +1448,7 @@ PY
   mkdir -p "$absent_cache_mutation_root/.github/workflows" \
     "$absent_cache_mutation_root/scripts/ci-gate" "$absent_cache_mutation_root/docs"
   cp "$0" "$absent_cache_mutation_root/scripts/ci-gate/node-ci-secretless-compatibility.test.sh"
+  cp "$root/scripts/container_dependency_transfer.py" "$absent_cache_mutation_root/scripts/container_dependency_transfer.py"
   cp "$protected_workflow" "$absent_cache_mutation_root/.github/workflows/node-ci-protected.yml"
   cp "$documentation" "$absent_cache_mutation_root/docs/node-workflows.md"
   python3 - "$workflow" "$absent_cache_mutation_root/.github/workflows/node-ci.yml" <<'PY'
