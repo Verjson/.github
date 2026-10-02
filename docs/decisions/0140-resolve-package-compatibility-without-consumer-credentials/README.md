@@ -83,3 +83,14 @@ Callers may omit `secretless-compatibility-ranges` without changing the existing
 secretless lock validation. Reverting the workflow input and this decision removes only
 runtime-resolved lanes; passing package credentials into consumer jobs is not an
 acceptable rollback.
+
+## Amendment (2026-10-02, #1682) — accept GitHub Packages casing variants safely
+
+GitHub Packages may return the canonical package tarball URL with organization
+scope casing that differs from the lower-case npm lockfile key (for example,
+`@verJSON/identity-contracts` versus `@verjson/identity-contracts`). After requiring
+both complete package names to be ASCII, compare only that URL package identity
+with ASCII case folding. Keep the package metadata name, exact version, approved
+package, host, path structure, and SHA-512 integrity checks exact. The canonical
+Node CI regression covers mixed-case acceptance and a Unicode-confusable rejection.
+See [#1682](https://github.com/Verjson/.github/issues/1682).

@@ -91,13 +91,13 @@ for step in doc["jobs"]["acquire-secretless-dependencies"]["steps"]:
         print(step["run"])
 PY
 
-if EVENT_NAME=pull_request HEAD_REPOSITORY=Verjson/example REPOSITORY=Verjson/example \
+if EVENT_NAME=pull_request HEAD_REPOSITORY=Verjson/example REPOSITORY=verJSON/example \
     NODE_AUTH_TOKEN=token SCHEMA_DIR='' APPROVED_INTERNAL_PACKAGES='' \
     SECRETLESS_PR=true SECRETLESS_TRUSTED_REF=false bash "$boundary_script" \
-    && ! EVENT_NAME=pull_request HEAD_REPOSITORY=attacker/fork REPOSITORY=Verjson/example \
+    && ! EVENT_NAME=pull_request HEAD_REPOSITORY=attacker/fork REPOSITORY=verJSON/example \
       NODE_AUTH_TOKEN=token SCHEMA_DIR='' APPROVED_INTERNAL_PACKAGES='' \
       SECRETLESS_PR=true SECRETLESS_TRUSTED_REF=false bash "$boundary_script" >/dev/null 2>&1; then
-  pass "same-repository PRs are admitted and fork PRs fail closed"
+  pass "case-varied same-repository PRs are admitted and fork PRs fail closed"
 else
   fail "secretless event admission does not enforce same-repository pull requests"
 fi

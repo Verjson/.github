@@ -181,7 +181,7 @@ canonical-source boundary.
 Generated AI-review callers now pass their immutable `uses:` pin as `contract_ref`.
 The reusable workflow validates that input before any canonical checkout and carries
 the resulting revision from preflight into every verifier job. Direct hub dispatches
-retain their same-repository `job.workflow_sha` fallback. Caller conformance requires
+retain their same-repository `github.workflow_sha` fallback. Caller conformance requires
 the input and `uses:` pin to remain identical, rejecting consumer-head, stale-pin,
 and malformed substitutions. GitHub does not expose the reusable `uses:` pin to the
 called workflow for an independent runtime comparison, so that equality guarantee is
@@ -191,3 +191,7 @@ preflight and again before each downstream checkout, including the always-runnin
 completion job, so a failed preflight cannot degrade an empty ref into checkout's
 mutable default. This changes only canonical verifier provenance; the receipt-bound
 expected PR head and every exact-head authorization check remain unchanged.
+
+## 2026-10-02 amendment — direct dispatch uses its executing workflow SHA (#1682)
+
+A direct hub dispatch without `contract_ref` must resolve its verifier from `github.workflow_sha`, the immutable revision of the workflow that executed; the earlier `job.workflow_sha` wording is superseded. Run 37043951915 reached receipt-bound admission and failed with `arm run provenance mismatch` and `zero-provider recovery receipt identity mismatch`. That failure does not establish an empty workflow SHA as its cause: immutable-revision resolution completed and admission failed later. The focused regression contract checks the direct-dispatch fallback. Preflight now admits direct dispatch only from protected default `main` with the `ai-review-app` environment, before verifier checkout or execution; the App-key jobs also reject alternate direct-dispatch environments, including API-supplied values. The trusted re-arm caller explicitly dispatches on the repository default branch. Reusable callers continue to provide and validate their pinned `contract_ref`; receipt-bound PR-head and exact-head authorization checks remain unchanged. These corrections were found while validating [issue #1682](https://github.com/verJSON/.github/issues/1682).

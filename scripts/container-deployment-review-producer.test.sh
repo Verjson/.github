@@ -18,6 +18,8 @@ grep -qF "repository: '\${{ needs.environment-preflight.outputs.workflow-reposit
 grep -qF "JOB_CONTEXT: '\${{ toJSON(job) }}'" "$trusted"
 grep -qF 'WORKFLOW_REF:' "$trusted"
 grep -qF 'WORKFLOW_SHA:' "$trusted"
+grep -qF 'ascii_downcase == "verjson/.github"' "$trusted"
+test "$(grep -F -c '"${WORKFLOW_REPOSITORY,,}" == "verjson/.github"' "$trusted")" = 3
 ! grep -qF 'github.workflow_' "$trusted"
 ! grep -qF 'inputs.contract-ref' "$trusted"
 grep -qF 'environment-preflight:' "$trusted"

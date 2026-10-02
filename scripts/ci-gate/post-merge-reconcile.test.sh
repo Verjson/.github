@@ -102,7 +102,7 @@ write_valid_ai_evidence() {
       body:"<!-- ai-review-authorization:9001 -->\n<!-- ai-review-run:8001 -->"}' \
     | jq -s '.' >"$REVIEWS_FILE"
   jq -nc --arg head "$MERGED_HEAD_SHA" \
-    '{repository:{full_name:"Verjson/example"},head_sha:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",head_branch:"main",
+    '{repository:{full_name:"verJSON/example"},head_sha:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",head_branch:"main",
       event:"workflow_dispatch",status:"completed",
       conclusion:"success",path:".github/workflows/ai-review-merge.yml"}' >"$RUN_FILE"
   printf '{"artifacts":[{"name":"merge-attestation-8001","expired":false,"archive_download_url":"https://api.github.test/artifacts/81"}]}\n' >"$ARTIFACTS_FILE"

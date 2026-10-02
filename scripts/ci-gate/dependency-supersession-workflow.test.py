@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -31,7 +32,28 @@ class WorkflowContractTest(unittest.TestCase):
     def test_proposal_provenance_and_malformed_ids_fail_closed(self):
         for text in ("^[1-9][0-9]*$", "^[0-9a-f]{64}$", ".path == \".github/workflows/dependency-supersession-observe.yml\"", ".conclusion == \"success\"", "merge_base_commit.sha == $run_head"):
             self.assertIn(text, self.reconcile)
+        self.assertIn("(.repository.full_name | ascii_downcase) == ($repo | ascii_downcase)", self.reconcile)
+        self.assertIn("(.head_repository.full_name | ascii_downcase) == ($repo | ascii_downcase)", self.reconcile)
         self.assertIn("repositories: ${{ steps.target.outputs.name }}", self.reconcile)
+
+    def test_run_repository_identity_accepts_case_variants_and_rejects_confusables(self):
+        comparison = "(.repository.full_name | ascii_downcase) == ($repo | ascii_downcase)"
+        self.assertIn(comparison, self.reconcile)
+        query = f"{{repository: {{full_name: $name}}}} | {comparison}"
+        accepted = subprocess.run(
+            ["jq", "-e", "-n", "--arg", "repo", "Verjson/payments", "--arg", "name", "verJSON/payments", query],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        rejected = subprocess.run(
+            ["jq", "-e", "-n", "--arg", "repo", "Verjson/payments", "--arg", "name", "v\u0435rJSON/payments", query],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertNotEqual(rejected.returncode, 0, rejected.stderr)
 
 
 if __name__ == "__main__":
