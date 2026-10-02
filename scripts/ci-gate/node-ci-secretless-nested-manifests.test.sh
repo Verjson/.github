@@ -49,6 +49,16 @@ validate = next(step for step in acquire
                 if step.get("name") == "Validate approved internal dependency lock")
 package = next(step for step in acquire
                if step.get("name") == "Package bounded credential-free npm cache")
+download_acquire = next(
+    step for step in acquire
+    if step.get("name") == "Download pinned secretless dependency transfer implementation"
+)
+download_build = next(
+    step for step in build
+    if step.get("name") == "Download pinned secretless dependency transfer implementation"
+)
+decrypt = next(step for step in build
+               if step.get("name") == "Decrypt run-scoped secretless dependency payload")
 install = next(step for step in build
                if step.get("name") == "Install from verified secretless npm cache")
 plan = next(step for step in build
@@ -56,6 +66,35 @@ plan = next(step for step in build
 
 for step in (validate, package, install, plan):
     assert step["env"]["NESTED_MANIFESTS"] == wiring, step["name"]
+
+def assert_step_order(job_steps, *names):
+    positions = [next(i for i, step in enumerate(job_steps)
+                      if step.get("name") == name) for name in names]
+    assert positions == sorted(positions), (names, positions)
+
+assert_step_order(
+    acquire,
+    "Download pinned secretless dependency transfer implementation",
+    "Package bounded credential-free npm cache",
+)
+assert_step_order(
+    build,
+    "Download pinned secretless dependency transfer implementation",
+    "Decrypt run-scoped secretless dependency payload",
+    "Install from verified secretless npm cache",
+)
+workflow_sha = "${{ fromJSON(toJSON(job)).workflow_sha }}"
+for download in (download_acquire, download_build):
+    assert download["env"]["JOB_WORKFLOW_SHA"] == workflow_sha
+    assert "${JOB_WORKFLOW_SHA}/scripts/container_dependency_transfer.py" in download["run"]
+assert "container_dependency_transfer.py" in package["run"]
+assert "container_dependency_transfer.py" in decrypt["run"]
+assert decrypt["env"]["TRANSFER_KEY"] == (
+    "${{ needs.acquire-secretless-dependencies.outputs.transfer-encryption-key }}"
+)
+assert jobs["acquire-secretless-dependencies"]["outputs"]["transfer-encryption-key"] == (
+    "${{ steps.package-secretless-transfer.outputs.encryption-key }}"
+)
 
 # A caller may declare nested script plans without a root plan, so the plan step
 # can no longer be gated on the root plan alone.
@@ -306,7 +345,9 @@ run_package() {
     GITHUB_OUTPUT="$fixture/package.outputs" \
     NPM_CONFIG_GLOBALCONFIG="$fixture/empty-global.npmrc" \
     NPM_CONFIG_USERCONFIG="$fixture/empty-user.npmrc" \
-    MAX_PAYLOAD_BYTES=83886080 RUN_ID=7001 RUN_ATTEMPT=3 bash "$tmp/package.sh")
+    MAX_PAYLOAD_BYTES=83886080 RUN_ID=7001 RUN_ATTEMPT=3 bash "$tmp/package.sh") \
+    && [ -f "$fixture/transfer/npm-private-cache.tar.enc" ] \
+    && [ ! -e "$fixture/transfer/npm-private-cache.tar" ]
 }
 
 run_nested_install() {
@@ -314,11 +355,15 @@ run_nested_install() {
   local expected_payload_sha256 expected_payload_bytes
   expected_payload_sha256="$(sed -n 's/^payload_sha256=//p' "$fixture/transfer/manifest")"
   expected_payload_bytes="$(sed -n 's/^payload_bytes=//p' "$fixture/transfer/manifest")"
+  [ -f "$fixture/transfer/npm-private-cache.tar.enc" ] \
+    && [ ! -e "$fixture/transfer/npm-private-cache.tar" ] || return 1
   mkdir -p "$fixture/runner-temp"
   cp "$root/scripts/container_dependency_transfer.py" "$fixture/runner-temp/container_dependency_transfer.py"
   (cd "$fixture" && RUNNER_TEMP="$fixture/runner-temp" TRANSFER_DIR="$fixture/transfer" \
-    TRANSFER_KEY="$(sed -n 's/^encryption-key=//p' "$fixture/package.outputs")" bash "$tmp/decrypt.sh")
-  (cd "$fixture" && PATH="$tmp/bin:$PATH" NPM_STUB_LOG="$fixture/npm.log" \
+    TRANSFER_KEY="$(sed -n 's/^encryption-key=//p' "$fixture/package.outputs")" bash "$tmp/decrypt.sh") || return 1
+  [ -f "$fixture/transfer/npm-private-cache.tar" ] \
+    && [ ! -e "$fixture/runner-temp/container_dependency_transfer.py" ] || return 1
+  (cd "$fixture" && RUNNER_TEMP="$fixture/runner-temp" PATH="$tmp/bin:$PATH" NPM_STUB_LOG="$fixture/npm.log" \
     GITHUB_ENV="$fixture/github.env" NPM_CONFIG_USERCONFIG="$fixture/empty.npmrc" \
     NPM_CONFIG_CACHE="$fixture/runtime-cache" \
     NPM_CONFIG_GLOBALCONFIG="$fixture/empty-global.npmrc" \
