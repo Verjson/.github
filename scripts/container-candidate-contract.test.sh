@@ -195,9 +195,14 @@ def validate_authority(read_only, publication):
         "prepare", "acquire-private-node-dependencies", "publish-base",
         "publish-derived", "attest-sbom", "mirror-gar", "candidate-manifest"
     }, "publication entrypoint has an unexpected static graph"
+    trusted_runner = (
+        "${{ github.repository_owner != 'Verjson' && 'ubuntu-24.04' || "
+        "fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || "
+        "'[\"ubuntu-24.04\"]') }}"
+    )
     for job_name in publication["jobs"]:
-        assert publication["jobs"][job_name]["runs-on"] == "ubuntu-24.04", (
-            f"deployable publication job {job_name} must use an independently trusted hosted runner"
+        assert publication["jobs"][job_name]["runs-on"] == trusted_runner, (
+            f"publication job {job_name} must use the organization-trusted runner lane"
         )
     assert read_only["permissions"] == {"contents": "read"}
     workflow_call = read_only.get("on", read_only.get(True, {})).get("workflow_call", {})
@@ -640,6 +645,30 @@ first_adoption_output="$tmp/first-adoption-output"
     bash "$prepare_script"
 )
 grep -qx 'has-private-node-packages=false' "$first_adoption_output"
+
+case_variant_consumer="$tmp/case-variant-consumer"
+mkdir -p "$case_variant_consumer"
+cp "$root/scripts/fixtures/container-candidate/canary.json" \
+  "$case_variant_consumer/container-candidate.json"
+case_variant_output="$tmp/case-variant-output"
+(
+  cd "$case_variant_consumer"
+  CONFIG_RELATIVE_PATH=container-candidate.json \
+    CONTAINER_DESTINATION_HELPER="$tmp/contract/scripts/container_registry_destinations.py" \
+    CONTRACT_REF="$ref" \
+    GITHUB_OUTPUT="$case_variant_output" \
+    GITHUB_REPOSITORY=verJSON/.github \
+    GITHUB_REPOSITORY_OWNER=verJSON \
+    GITHUB_RUN_ATTEMPT=1 \
+    GITHUB_RUN_ID=12345 \
+    JOB_WORKFLOW_SHA="$ref" \
+    RETRY_SHA256="$(printf 'c%.0s' {1..64})" \
+    RUNNER_TEMP="$runner_temp" \
+    PATH="$mock_bin:$PATH" \
+    SOURCE_PATH=. \
+    bash "$prepare_script"
+)
+grep -qx 'has-gar=false' "$case_variant_output"
 
 run_invalid_config() {
   local config_path=$1

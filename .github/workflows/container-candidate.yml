@@ -85,7 +85,8 @@ jobs:
               type == "string" and length <= 255
               and test("^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$")
               and (split("/") | all(.[]; . != "." and . != ".."));
-            .repository == $repository and .registryNamespace == $namespace
+          (.repository | ascii_downcase) == ($repository | ascii_downcase)
+          and .registryNamespace == $namespace
             and ((.privateNodePackages // []) | type == "array")
             and ((.privateNodePackages // []) | all(.[]; type == "string" and test("^@[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$")))
             and ((.privateNodePackages // []) | length == (unique | length))
