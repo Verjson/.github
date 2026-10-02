@@ -4,7 +4,12 @@ import copy
 import importlib.util
 import sys
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
+import container_registry_destinations as destination_contract
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -117,6 +122,38 @@ class ContainerReleaseManifestTests(unittest.TestCase):
 
     def test_accepts_complete_manifest_bound_to_reviewed_identity(self):
         manifest_contract.validate_manifest(manifest(), config())
+
+    def test_accepts_case_insensitive_github_repository_identity(self):
+        candidate = manifest()
+        candidate["source"]["repository"] = "verjson/VERJSON-GITHUB-RUNNER"
+        manifest_contract.validate_manifest(candidate, config())
+
+    def test_rejects_non_ascii_repository_casefolding(self):
+        reviewed = config()
+        reviewed["repository"] = "VerjoK/verjson-github-runner"
+        candidate = manifest()
+        candidate["source"]["repository"] = "VerjoK/verjson-github-runner"
+        with self.assertRaisesRegex(manifest_contract.ManifestError, "source repository"):
+            manifest_contract.validate_manifest(candidate, reviewed)
+
+    def test_accepts_destination_receipt_generated_by_candidate_readback(self):
+        reviewed = config()
+        candidate = manifest()
+        published_at = (datetime.now(timezone.utc) - timedelta(seconds=5)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        candidate["source"]["candidatePublishedAt"] = published_at
+        digest = candidate["images"][0]["indexDigest"]
+        with TemporaryDirectory() as directory:
+            authfile = Path(directory) / "auth.json"
+            authfile.write_text("{}", encoding="utf-8")
+            with patch.object(destination_contract, "_remote_digest", return_value=digest):
+                receipt = destination_contract.verify_candidate(
+                    reviewed, "Verjson", "default", "ghcr", candidate["candidateVersion"],
+                    digest, authfile, published_at,
+                )
+        candidate["images"][0]["destinations"] = [receipt]
+        manifest_contract.validate_manifest(candidate, reviewed)
 
     def test_accepts_verified_multi_registry_destinations(self):
         reviewed = config()

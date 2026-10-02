@@ -1,5 +1,8 @@
+import json
 import unittest
+from contextlib import redirect_stdout
 from hashlib import sha256
+from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -178,6 +181,89 @@ class RegistryDestinationTests(unittest.TestCase):
                     destinations.mirror_candidate(
                         self.config, OWNER, "api", "gar", "1.2.3", "sha256:" + "a" * 64, authfile
                     )
+
+    def test_mirror_cli_with_published_at_still_copies_and_reads_back(self):
+        self.config["registryDestinations"] = [
+            {"provider": "ghcr", "namespace": GHCR}, GAR_DESTINATION
+        ]
+        payload = b'{"schemaVersion":2}'
+        digest = "sha256:" + sha256(payload).hexdigest()
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "candidate.json"
+            config.write_text(json.dumps(self.config), encoding="utf-8")
+            authfile = root / "auth.json"
+            authfile.write_text("{}", encoding="utf-8")
+            output = StringIO()
+            argv = [
+                "container_registry_destinations.py",
+                "--config", str(config), "--owner", OWNER,
+                "--mirror-provider", "gar", "--variant", "api",
+                "--tag", "1.2.3-rc.123.1", "--digest", digest,
+                "--authfile", str(authfile), "--published-at", "2026-10-02T00:00:00Z",
+            ]
+            with patch.object(destinations.sys, "argv", argv), patch.object(
+                destinations, "_skopeo", side_effect=[
+                    (1, b"", b"manifest unknown"), (0, b"", b""), (0, payload, b"")
+                ],
+            ) as run, redirect_stdout(output):
+                self.assertEqual(destinations.main(), 0)
+
+        self.assertEqual(run.call_count, 3)
+        receipt = json.loads(output.getvalue())
+        self.assertEqual(receipt["provider"], "gar")
+        self.assertEqual(receipt["repository"], f"{GAR}/api")
+        self.assertEqual(receipt["digest"], digest)
+        self.assertEqual(receipt["candidateExpiresAt"], "2026-12-29T00:00:00Z")
+
+    def test_verify_cli_with_published_at_still_reads_back(self):
+        payload = b'{"schemaVersion":2}'
+        digest = "sha256:" + sha256(payload).hexdigest()
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "candidate.json"
+            config.write_text(json.dumps(self.config), encoding="utf-8")
+            authfile = root / "auth.json"
+            authfile.write_text("{}", encoding="utf-8")
+            output = StringIO()
+            argv = [
+                "container_registry_destinations.py",
+                "--config", str(config), "--owner", OWNER,
+                "--verify-provider", "ghcr", "--variant", "api",
+                "--tag", "1.2.3-rc.123.1", "--digest", digest,
+                "--authfile", str(authfile), "--published-at", "2026-10-02T00:00:00Z",
+            ]
+            with patch.object(destinations.sys, "argv", argv), patch.object(
+                destinations, "_skopeo", return_value=(0, payload, b"")
+            ) as run, redirect_stdout(output):
+                self.assertEqual(destinations.main(), 0)
+
+        run.assert_called_once()
+        receipt = json.loads(output.getvalue())
+        self.assertEqual(receipt["provider"], "ghcr")
+        self.assertEqual(receipt["repository"], f"{GHCR}/api")
+        self.assertEqual(receipt["digest"], digest)
+
+    def test_published_at_without_registry_operation_returns_destination_plan(self):
+        digest = "sha256:" + "a" * 64
+        published_at = "2026-10-02T00:00:00Z"
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "candidate.json"
+            config.write_text(json.dumps(self.config), encoding="utf-8")
+            output = StringIO()
+            argv = [
+                "container_registry_destinations.py",
+                "--config", str(config), "--owner", OWNER,
+                "--variant", "api", "--digest", digest, "--published-at", published_at,
+            ]
+            with patch.object(destinations.sys, "argv", argv), redirect_stdout(output):
+                self.assertEqual(destinations.main(), 0)
+
+        self.assertEqual(
+            json.loads(output.getvalue()),
+            destinations.manifest_destinations(self.config, OWNER, "api", digest, published_at),
+        )
 
 
 if __name__ == "__main__":

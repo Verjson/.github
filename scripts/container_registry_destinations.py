@@ -221,7 +221,6 @@ def _with_candidate_expiry(
     )
     return {
         **receipt,
-        "variant": variant,
         "candidateExpiresAt": destination["candidateExpiresAt"],
         "verifiedAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
@@ -317,14 +316,6 @@ def main() -> int:
                 "variant": _string(_object(image, "image").get("variant"), "image.variant"),
                 "destinations": expand_image_destinations(config, args.owner, image),
             })
-        if args.published_at is not None:
-            if not args.variant or not args.digest:
-                raise DestinationError("manifest mode requires a variant and digest")
-            record = manifest_destinations(
-                config, args.owner, args.variant, args.digest, args.published_at
-            )
-            print(json.dumps(record, separators=(",", ":")))
-            return 0
         if args.mirror_provider is not None:
             if not all((args.variant, args.tag, args.digest, args.authfile)):
                 raise DestinationError("mirror mode requires a variant, tag, digest, and authfile")
@@ -342,6 +333,14 @@ def main() -> int:
                 args.tag, args.digest, args.authfile, args.published_at,
             )
             print(json.dumps(receipt, separators=(",", ":")))
+            return 0
+        if args.published_at is not None:
+            if not args.variant or not args.digest:
+                raise DestinationError("manifest mode requires a variant and digest")
+            record = manifest_destinations(
+                config, args.owner, args.variant, args.digest, args.published_at
+            )
+            print(json.dumps(record, separators=(",", ":")))
             return 0
     except (OSError, json.JSONDecodeError, DestinationError) as error:
         print(f"container registry destinations rejected: {error}", file=sys.stderr)

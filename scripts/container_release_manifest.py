@@ -99,7 +99,12 @@ def validate_manifest(manifest: dict[str, Any], config: dict[str, Any]) -> None:
     if not isinstance(source, dict):
         raise ManifestError("manifest.source must be an object")
     expected_repository = _text(config.get("repository"), "config.repository")
-    if source.get("repository") != expected_repository:
+    source_repository = _text(source.get("repository"), "manifest.source.repository")
+    if (
+        not source_repository.isascii()
+        or not expected_repository.isascii()
+        or source_repository.lower() != expected_repository.lower()
+    ):
         raise ManifestError("manifest source repository differs from reviewed config")
     for key in ("commit", "ref", "workflow", "runId", "runAttempt", "candidatePublishedAt"):
         _text(source.get(key), f"manifest.source.{key}")
