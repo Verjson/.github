@@ -495,6 +495,7 @@ jobs:
       auxiliary-content-path: ${{ steps.resolve-auxiliary-source.outputs.content-path }}
       auxiliary-repository: ${{ steps.resolve-auxiliary-source.outputs.repository }}
       transfer-cache-key: ${{ steps.create-secretless-cache-key.outputs.cache-key }}
+      transfer-encryption-key: ${{ steps.package-secretless-transfer.outputs.encryption-key }}
       compatibility-provenance-sha256: ${{ steps.package-secretless-transfer.outputs.compatibility-provenance-sha256 }}
       transfer-payload-bytes: ${{ steps.package-secretless-transfer.outputs.payload-bytes }}
       transfer-payload-sha256: ${{ steps.package-secretless-transfer.outputs.payload-sha256 }}
@@ -543,6 +544,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      - name: Download pinned secretless dependency transfer implementation
+        env:
+          JOB_WORKFLOW_SHA: ${{ fromJSON(toJSON(job)).workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$JOB_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::reusable Node CI workflow SHA is invalid"
+            exit 1
+          }
+          transfer="$RUNNER_TEMP/container_dependency_transfer.py"
+          curl -fsSL "https://raw.githubusercontent.com/Verjson/.github/${JOB_WORKFLOW_SHA}/scripts/container_dependency_transfer.py" -o "$transfer"
       - name: Reject consumer-controlled npm configuration
         run: |
           project_config="$(find . -name .npmrc -print -quit)"
@@ -1422,6 +1434,16 @@ jobs:
             exit 1
           fi
           payload_sha256="$(sha256sum "$TRANSFER_DIR/npm-private-cache.tar" | cut -d' ' -f1)"
+          encryption_key="$(openssl rand -hex 32)"
+          [[ "$encryption_key" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "::error::could not generate a secretless transfer key"
+            exit 1
+          }
+          TRANSFER_KEY="$encryption_key" python3 "$RUNNER_TEMP/container_dependency_transfer.py" encrypt \
+            --source "$TRANSFER_DIR/npm-private-cache.tar" \
+            --destination "$TRANSFER_DIR/npm-private-cache.tar.enc"
+          rm -f "$TRANSFER_DIR/npm-private-cache.tar"
+          printf 'encryption-key=%s\n' "$encryption_key" >> "$GITHUB_OUTPUT"
           case "$PACKAGE_MANAGER" in
             npm) lock_file=package-lock.json ;;
             pnpm) lock_file=pnpm-lock.yaml ;;
@@ -1499,6 +1521,7 @@ jobs:
           TRANSFER_DIR: ${{ github.workspace }}/.verjson-secretless-transfer-${{ github.run_id }}
         run: |
           rm -rf node_modules "$CACHE_DIR" "$COMPATIBILITY_ROOT" "$TRANSFER_DIR"
+          rm -f "$RUNNER_TEMP/container_dependency_transfer.py"
           [ -z "$AUXILIARY_CHECKOUT_PATH" ] || find "$AUXILIARY_CHECKOUT_PATH" -depth -delete
           rm -f "$RUNNER_TEMP/secretless-acquisition.npmrc" "$RUNNER_TEMP/secretless-empty-global.npmrc" \
             "$RUNNER_TEMP/secretless-empty-package.npmrc"
@@ -1585,6 +1608,29 @@ jobs:
         with:
           path: ${{ runner.temp }}/secretless-public-npm-${{ hashFiles(inputs.cache-dependency-path) }}
           key: secretless-public-npm-${{ runner.os }}-${{ hashFiles(inputs.cache-dependency-path) }}
+      - name: Download pinned secretless dependency transfer implementation
+        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref)
+        env:
+          JOB_WORKFLOW_SHA: ${{ fromJSON(toJSON(job)).workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$JOB_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::reusable Node CI workflow SHA is invalid"
+            exit 1
+          }
+          transfer="$RUNNER_TEMP/container_dependency_transfer.py"
+          curl -fsSL "https://raw.githubusercontent.com/Verjson/.github/${JOB_WORKFLOW_SHA}/scripts/container_dependency_transfer.py" -o "$transfer"
+      - name: Decrypt run-scoped secretless dependency payload
+        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref)
+        env:
+          TRANSFER_DIR: ${{ github.workspace }}/.verjson-secretless-transfer-${{ github.run_id }}
+          TRANSFER_KEY: ${{ needs.acquire-secretless-dependencies.outputs.transfer-encryption-key }}
+        run: |
+          set -euo pipefail
+          TRANSFER_KEY="$TRANSFER_KEY" python3 "$RUNNER_TEMP/container_dependency_transfer.py" decrypt \
+            --source "$TRANSFER_DIR/npm-private-cache.tar.enc" \
+            --destination "$TRANSFER_DIR/npm-private-cache.tar"
+          rm -f "$RUNNER_TEMP/container_dependency_transfer.py"
       - name: Install from verified secretless npm cache
         if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref)
         env:
@@ -1648,6 +1694,7 @@ jobs:
               kill "$MOCK_REGISTRY_PID" 2>/dev/null || true
             fi
             rm -rf "$SECRETLESS_CACHE_DIR" "$PNPM_STORE_DIR" "$TRANSFER_DIR" "$NESTED_PATHS_FILE"
+            rm -f "$RUNNER_TEMP/container_dependency_transfer.py"
           }
           trap cleanup EXIT
           : > "$NPM_CONFIG_GLOBALCONFIG"

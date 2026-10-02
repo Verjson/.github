@@ -9,6 +9,7 @@ cp "$root/scripts/gen-container-candidate.sh" \
   "$root/scripts/container_release_manifest.py" \
   "$root/scripts/container_private_dependencies.py" \
   "$root/scripts/container_candidate_retry.py" \
+  "$root/scripts/container_dependency_transfer.py" \
   "$tmp/contract/scripts/"
 git -C "$tmp/contract" init -q
 git -C "$tmp/contract" config user.name fixture
@@ -60,6 +61,8 @@ for fixture in single multi; do
   fi
   mv "$consumer/.github/workflows/container-candidate.yml.clean" "$consumer/.github/workflows/container-candidate.yml"
 done
+
+python3 "$root/scripts/container_dependency_transfer.test.py"
 
 private_consumer="$tmp/private-generated"
 mkdir -p "$private_consumer/.github/workflows" "$private_consumer/scripts"
@@ -114,6 +117,19 @@ with open(os.environ["PUBLISH_WORKFLOW"], encoding="utf-8") as stream:
     publisher = yaml.safe_load(stream)
 with open(os.environ["CANARY_WORKFLOW"], encoding="utf-8") as stream:
     canary = yaml.safe_load(stream)
+
+publisher_call = publisher.get("on", publisher.get(True, {})).get("workflow_call", {})
+assert set(publisher_call.get("inputs", {})) == {
+    "acquisition-sha256",
+    "config-path",
+    "contract-ref",
+    "retry-sha256",
+    "runner",
+    "transfer-sha256",
+}, "publication entrypoint must expose the complete reusable-workflow input contract"
+assert set(publisher_call.get("secrets", {})) == {"NODE_AUTH_TOKEN"}, (
+    "publication entrypoint must expose only its package acquisition token"
+)
 
 validation_permissions = {"actions": "read", "contents": "read"}
 publication_permissions = {
@@ -199,6 +215,15 @@ def validate_authority(read_only, publication):
     assert acquisition["if"] == expected_acquisition_condition, (
         "private dependency acquisition must run only on trusted publication events"
     )
+    assert acquisition["outputs"]["transfer-encryption-key"] == (
+        "${{ steps.package-node-modules.outputs.encryption-key }}"
+    )
+    package_transfer = next(
+        step for step in acquisition["steps"] if step.get("id") == "package-node-modules"
+    )
+    assert 'container_dependency_transfer.py" encrypt' in package_transfer["run"]
+    assert 'rm -f "$TRANSFER_DIR/container-node-modules.tgz"' in package_transfer["run"]
+    assert 'encryption-key=%s' in package_transfer["run"]
     assert read_only["permissions"] == {"contents": "read"}
     workflow_call = read_only.get("on", read_only.get(True, {})).get("workflow_call", {})
     assert "secrets" not in workflow_call, "read-only entrypoint must not declare secret inputs"
@@ -835,6 +860,9 @@ grep -qF 'npm ci --ignore-scripts' <<<"$acquisition_job"
 ! grep -Eq 'npm (install|run|exec|rebuild)|pnpm (run|exec|rebuild)|yarn' <<<"$acquisition_job"
 ! grep -Eq 'subprocess|os\.system|extract(all)?\(' "$root/scripts/container_private_dependencies.py"
 grep -qF 'transfer-cache-key: ${{ steps.create-node-modules-cache-key.outputs.cache-key }}' <<<"$acquisition_job"
+grep -qF 'transfer-encryption-key: ${{ steps.package-node-modules.outputs.encryption-key }}' <<<"$acquisition_job"
+grep -qF 'container-node-modules.tgz.enc' <<<"$acquisition_job"
+grep -qF 'container_dependency_transfer.py" encrypt' <<<"$acquisition_job"
 grep -qF 'openssl rand -hex 32' <<<"$acquisition_job"
 grep -qF '[[ "$nonce" =~ ^[0-9a-f]{64}$ ]]' <<<"$acquisition_job"
 grep -qF 'container-node-modules-${RUN_ID}-${RUN_ATTEMPT}-${nonce}' <<<"$acquisition_job"
@@ -881,7 +909,7 @@ for build_job in publish-base publish-derived; do
   grep -qF 'key: ${{ needs.acquire-private-node-dependencies.outputs.transfer-cache-key }}' <<<"$build_block"
   grep -qF 'fail-on-cache-miss: true' <<<"$build_block"
   grep -qF 'name: Remove local node_modules transfer state' <<<"$build_block"
-  [ "$(grep -cF "needs.prepare.outputs.has-private-node-packages == 'true'" <<<"$build_block")" -eq 3 ]
+  [ "$(grep -cF "needs.prepare.outputs.has-private-node-packages == 'true'" <<<"$build_block")" -eq 4 ]
   grep -qF 'run: rm -rf "$TRANSFER_DIR"' <<<"$build_block"
   if grep -qF 'restore-keys:' <<<"$build_block" || grep -qF 'actions/download-artifact@' <<<"$build_block"; then
     echo "$build_job permits an inexact cache restore or still uses artifact storage" >&2
@@ -921,6 +949,10 @@ for job_name in ("publish-base", "publish-derived"):
         step for step in steps
         if "credential-free node_modules context" in step.get("name", "")
     ]
+    transfer_steps = [
+        step for step in steps
+        if step.get("name") == "Download pinned dependency transfer implementation"
+    ]
     cleanup_steps = [
         step for step in steps
         if step.get("name", "").startswith("Remove local node_modules")
@@ -936,6 +968,7 @@ for job_name in ("publish-base", "publish-derived"):
     )
     for label, guarded_steps in (
         ("cache restore", cache_steps),
+        ("transfer implementation download", transfer_steps),
         ("lock verification", verification_steps),
         ("transfer cleanup", cleanup_steps),
     ):
@@ -943,6 +976,12 @@ for job_name in ("publish-base", "publish-derived"):
         assert private_gate in guarded_steps[0].get("if", ""), (
             f"{job_name}: {label} is not private-package gated"
         )
+    assert 'container_dependency_transfer.py" decrypt' in verification_steps[0]["run"]
+    assert verification_steps[0]["env"]["TRANSFER_KEY"] == (
+        "${{ needs.acquire-private-node-dependencies.outputs.transfer-encryption-key }}"
+    )
+    assert "container-node-modules.tgz.enc" in verification_steps[0]["run"]
+    assert steps.index(transfer_steps[0]) < steps.index(cache_steps[0])
     assert len(build_steps) == 1, f"{job_name}: Docker build step missing"
     assert build_steps[0]["with"]["build-contexts"] == (
         "verjson_node_modules=${{ runner.temp }}/container-node-modules-context"

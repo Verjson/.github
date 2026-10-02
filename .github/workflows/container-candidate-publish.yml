@@ -15,6 +15,10 @@ on:
         description: SHA-256 of the canonical credential-bound acquisition implementation
         required: true
         type: string
+      transfer-sha256:
+        description: SHA-256 of the canonical private dependency transfer implementation
+        required: true
+        type: string
       retry-sha256:
         description: SHA-256 of the canonical exact-SHA retry verifier
         required: true
@@ -163,6 +167,7 @@ jobs:
       contents: read
     outputs:
       transfer-cache-key: ${{ steps.create-node-modules-cache-key.outputs.cache-key }}
+      transfer-encryption-key: ${{ steps.package-node-modules.outputs.encryption-key }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -172,7 +177,21 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
-      - name: Acquire exact lockfile packages without lifecycle execution
+      - name: Download pinned dependency transfer implementation
+        env:
+          CONTRACT_REF: ${{ inputs.contract-ref }}
+          TRANSFER_SHA256: ${{ inputs.transfer-sha256 }}
+        run: |
+          set -euo pipefail
+          [[ "$CONTRACT_REF" =~ ^[0-9a-f]{40}$ && "$TRANSFER_SHA256" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "::error::invalid dependency transfer contract identity"
+            exit 1
+          }
+          transfer="$RUNNER_TEMP/container_dependency_transfer.py"
+          curl -fsSL "https://raw.githubusercontent.com/Verjson/.github/${CONTRACT_REF}/scripts/container_dependency_transfer.py" -o "$transfer"
+          printf '%s  %s\n' "$TRANSFER_SHA256" "$transfer" | sha256sum --check --strict
+      - id: package-node-modules
+        name: Acquire exact lockfile packages without lifecycle execution
         env:
           APPROVED_PRIVATE_PACKAGES: ${{ needs.prepare.outputs.private-node-packages }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -254,6 +273,16 @@ jobs:
           }
           mkdir -p "$TRANSFER_DIR"
           tar -czf "$TRANSFER_DIR/container-node-modules.tgz" -C "$artifact" .
+          encryption_key="$(openssl rand -hex 32)"
+          [[ "$encryption_key" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "::error::could not generate a private dependency transfer key"
+            exit 1
+          }
+          TRANSFER_KEY="$encryption_key" python3 "$RUNNER_TEMP/container_dependency_transfer.py" encrypt \
+            --source "$TRANSFER_DIR/container-node-modules.tgz" \
+            --destination "$TRANSFER_DIR/container-node-modules.tgz.enc"
+          rm -f "$TRANSFER_DIR/container-node-modules.tgz"
+          printf 'encryption-key=%s\n' "$encryption_key" >> "$GITHUB_OUTPUT"
       - name: Create unguessable exact-attempt cache key
         id: create-node-modules-cache-key
         env:
@@ -285,7 +314,8 @@ jobs:
           rm -rf "$TRANSFER_DIR" "$RUNNER_TEMP/container-node-modules" \
             "$RUNNER_TEMP/container-npm-cache" "$RUNNER_TEMP/container-npm-home"
           rm -f "$RUNNER_TEMP/container-user.npmrc" "$RUNNER_TEMP/container-global.npmrc" \
-            "$RUNNER_TEMP/container_private_dependencies.py" "$RUNNER_TEMP/container-candidate-base-package.json"
+            "$RUNNER_TEMP/container_private_dependencies.py" "$RUNNER_TEMP/container_dependency_transfer.py" \
+            "$RUNNER_TEMP/container-candidate-base-package.json"
 
   publish-base:
     if: >-
@@ -312,6 +342,20 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Download pinned dependency transfer implementation
+        if: needs.prepare.outputs.has-private-node-packages == 'true'
+        env:
+          CONTRACT_REF: ${{ inputs.contract-ref }}
+          TRANSFER_SHA256: ${{ inputs.transfer-sha256 }}
+        run: |
+          set -euo pipefail
+          [[ "$CONTRACT_REF" =~ ^[0-9a-f]{40}$ && "$TRANSFER_SHA256" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "::error::invalid dependency transfer contract identity"
+            exit 1
+          }
+          transfer="$RUNNER_TEMP/container_dependency_transfer.py"
+          curl -fsSL "https://raw.githubusercontent.com/Verjson/.github/${CONTRACT_REF}/scripts/container_dependency_transfer.py" -o "$transfer"
+          printf '%s  %s\n' "$TRANSFER_SHA256" "$transfer" | sha256sum --check --strict
       - name: Prepare credential-free dependency build context
         env:
           ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''
@@ -347,11 +391,16 @@ jobs:
           NODE_AUTH_TOKEN: ''
           NPM_TOKEN: ''
           LOCK_FILE: ${{ needs.prepare.outputs.lock-file }}
+          TRANSFER_KEY: ${{ needs.acquire-private-node-dependencies.outputs.transfer-encryption-key }}
           TRANSFER_DIR: ${{ github.workspace }}/.verjson-container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
           context="$RUNNER_TEMP/container-node-modules-context"
-          tar -xzf "$TRANSFER_DIR/container-node-modules.tgz" -C "$context"
+          TRANSFER_KEY="$TRANSFER_KEY" python3 "$RUNNER_TEMP/container_dependency_transfer.py" decrypt \
+            --source "$TRANSFER_DIR/container-node-modules.tgz.enc" \
+            --destination "$RUNNER_TEMP/container-node-modules.tgz"
+          tar -xzf "$RUNNER_TEMP/container-node-modules.tgz" -C "$context"
+          rm -f "$RUNNER_TEMP/container-node-modules.tgz"
           case "$LOCK_FILE" in package-lock.json|pnpm-lock.yaml) ;; *) echo "::error::invalid lock-file output"; exit 1 ;; esac
           expected="$(sha256sum "$LOCK_FILE" | cut -d' ' -f1)"
           [ "$(cat "$context/.verjson-lock-sha256")" = "$expected" ] || { echo "::error::node_modules artifact does not match $LOCK_FILE"; exit 1; }
@@ -359,7 +408,7 @@ jobs:
         if: always() && needs.prepare.outputs.has-private-node-packages == 'true'
         env:
           TRANSFER_DIR: ${{ github.workspace }}/.verjson-container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
-        run: rm -rf "$TRANSFER_DIR"
+        run: rm -rf "$TRANSFER_DIR" "$RUNNER_TEMP/container_dependency_transfer.py" "$RUNNER_TEMP/container-node-modules.tgz"
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
@@ -537,6 +586,20 @@ jobs:
     steps:
       - if: matrix.baseVariant != ''
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - if: matrix.baseVariant != '' && needs.prepare.outputs.has-private-node-packages == 'true'
+        name: Download pinned dependency transfer implementation
+        env:
+          CONTRACT_REF: ${{ inputs.contract-ref }}
+          TRANSFER_SHA256: ${{ inputs.transfer-sha256 }}
+        run: |
+          set -euo pipefail
+          [[ "$CONTRACT_REF" =~ ^[0-9a-f]{40}$ && "$TRANSFER_SHA256" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "::error::invalid dependency transfer contract identity"
+            exit 1
+          }
+          transfer="$RUNNER_TEMP/container_dependency_transfer.py"
+          curl -fsSL "https://raw.githubusercontent.com/Verjson/.github/${CONTRACT_REF}/scripts/container_dependency_transfer.py" -o "$transfer"
+          printf '%s  %s\n' "$TRANSFER_SHA256" "$transfer" | sha256sum --check --strict
       - name: Prepare credential-free dependency build context
         if: matrix.baseVariant != ''
         env:
@@ -573,11 +636,16 @@ jobs:
           NODE_AUTH_TOKEN: ''
           NPM_TOKEN: ''
           LOCK_FILE: ${{ needs.prepare.outputs.lock-file }}
+          TRANSFER_KEY: ${{ needs.acquire-private-node-dependencies.outputs.transfer-encryption-key }}
           TRANSFER_DIR: ${{ github.workspace }}/.verjson-container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
           context="$RUNNER_TEMP/container-node-modules-context"
-          tar -xzf "$TRANSFER_DIR/container-node-modules.tgz" -C "$context"
+          TRANSFER_KEY="$TRANSFER_KEY" python3 "$RUNNER_TEMP/container_dependency_transfer.py" decrypt \
+            --source "$TRANSFER_DIR/container-node-modules.tgz.enc" \
+            --destination "$RUNNER_TEMP/container-node-modules.tgz"
+          tar -xzf "$RUNNER_TEMP/container-node-modules.tgz" -C "$context"
+          rm -f "$RUNNER_TEMP/container-node-modules.tgz"
           case "$LOCK_FILE" in package-lock.json|pnpm-lock.yaml) ;; *) echo "::error::invalid lock-file output"; exit 1 ;; esac
           expected="$(sha256sum "$LOCK_FILE" | cut -d' ' -f1)"
           [ "$(cat "$context/.verjson-lock-sha256")" = "$expected" ] || { echo "::error::node_modules artifact does not match $LOCK_FILE"; exit 1; }
@@ -585,7 +653,7 @@ jobs:
         name: Remove local node_modules transfer state
         env:
           TRANSFER_DIR: ${{ github.workspace }}/.verjson-container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
-        run: rm -rf "$TRANSFER_DIR"
+        run: rm -rf "$TRANSFER_DIR" "$RUNNER_TEMP/container_dependency_transfer.py" "$RUNNER_TEMP/container-node-modules.tgz"
       - if: matrix.baseVariant != ''
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
       - if: matrix.baseVariant != ''
