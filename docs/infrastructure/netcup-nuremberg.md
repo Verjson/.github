@@ -21,7 +21,7 @@ Last verified: **2026-09-07**. Provisioning implementation:
 HTTPS checks use normal certificate validation. Health checks establish
 reachability only; they do not verify authentication, persistence, or backups.
 
-## Current migration status (2026-10-02, 20:02 UTC)
+## Current migration status (2026-10-02, 23:13 UTC)
 
 A read-only Kubernetes deployment inventory, queried through the Netcup
 administration host at the time above, showed GitLab CE, Nexus CE, MinIO, and

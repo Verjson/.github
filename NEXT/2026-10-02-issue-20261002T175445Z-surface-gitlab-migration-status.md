@@ -5,4 +5,4 @@ impact: patch
 title: Surface GitLab migration status
 ---
 
-The organization profile now links to the shared Nuremberg infrastructure guide, deployment implementation, and CI migration tracker. The infrastructure guide records a time-stamped, read-only Kubernetes deployment inventory and clearly limits that evidence to workload readiness; runner job/DNS acceptance and multi-platform OCI publication remain unverified under #30. It also separates the merged Nexus bootstrap implementation from live validation still tracked in #1264.
+The organization profile now links to the shared Nuremberg infrastructure guide, deployment implementation, and CI migration tracker. The guide records a read-only Kubernetes deployment inventory at 2026-10-02 23:13 UTC and limits that evidence to workload readiness; runner job/DNS acceptance and multi-platform OCI publication remain unverified under #30. It also separates the merged Nexus bootstrap implementation from live validation still tracked in #1264.
