@@ -38,6 +38,62 @@ def require(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
+def compact_expression(expression: str) -> str:
+    characters = []
+    quote = None
+    escaped = False
+    for character in expression:
+        if quote is not None:
+            characters.append(character)
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                quote = None
+        elif character in "\"'":
+            quote = character
+            characters.append(character)
+        elif not character.isspace():
+            characters.append(character)
+    if quote is not None:
+        raise AssertionError("unterminated quoted workflow expression")
+    return "".join(characters)
+
+
+def split_top_level(expression: str, operator: str) -> list[str]:
+    terms = []
+    depth = 0
+    quote = None
+    start = 0
+    index = 0
+    while index < len(expression):
+        character = expression[index]
+        if quote is not None:
+            if character == quote:
+                quote = None
+            index += 1
+            continue
+        if character in "\"'":
+            quote = character
+        elif character == "(":
+            depth += 1
+        elif character == ")":
+            depth -= 1
+            if depth < 0:
+                raise AssertionError("unbalanced workflow expression parentheses")
+        elif depth == 0 and expression.startswith(operator, index):
+            terms.append(expression[start:index])
+            index += len(operator)
+            start = index
+            continue
+        index += 1
+    if depth != 0 or quote is not None:
+        raise AssertionError("unbalanced workflow expression parentheses or quotes")
+    terms.append(expression[start:])
+    return terms
+
+
 HEREDOC = re.compile(
     r"<<(?!<)(?P<strip>-?)\s*(?P<word>(?:"
     r"\\[^\r\n]|'[^'\r\n]*'|\"(?:\\.|[^\"\\\r\n])*\"|"
@@ -548,11 +604,78 @@ def main() -> int:
     retry = load(RETRY)
 
     dispatch_inputs = review[True]["workflow_dispatch"]["inputs"]
+    environment_input = dispatch_inputs.get("ai_review_environment", {})
+    require(
+        environment_input.get("type") == "choice"
+        and environment_input.get("options") == ["ai-review-app"],
+        "direct dispatch must select only the main-only ai-review-app environment",
+    )
+    require(
+        "contract_ref" not in dispatch_inputs,
+        "direct dispatch must not override the reusable caller's canonical contract ref",
+    )
     receipt_inputs = {"pr_number", "expected_head_sha", "authorization_check_id",
                       "arm_run_id", "arm_run_attempt"}
     require(receipt_inputs <= dispatch_inputs.keys() and
             all(dispatch_inputs[name].get("required") is True for name in receipt_inputs),
             "workflow_dispatch must require the exact head, App check, and arm-receipt identity")
+    preflight = review["jobs"]["preflight"]
+    direct_environment_guard = (
+        "github.event_name != 'workflow_dispatch' || "
+        "inputs.ai_review_environment == 'ai-review-app'"
+    )
+    compact_environment_guard = "".join(direct_environment_guard.split())
+    app_key_condition = "".join(str(review["jobs"]["app-key-policy"].get("if", "")).split())
+    completion_condition = "".join(str(review["jobs"]["complete-authorization"].get("if", "")).split())
+    expected_completion_guard = (
+        "${{always()&&inputs.authorization_check_id!=''&&("
+        + compact_environment_guard
+        + ")}}"
+    )
+    require(
+        app_key_condition == compact_environment_guard
+        and completion_condition == expected_completion_guard,
+        "App-key jobs must conjunctively reject direct dispatch to unapproved environments",
+    )
+    dispatch_guard = compact_expression(str(preflight.get("if", "")))
+    dispatch_conjuncts = split_top_level(dispatch_guard, "&&")
+    dispatch_disjunctions = split_top_level(dispatch_guard, "||")
+    required_dispatch_guard = (
+        "(github.event_name!='workflow_dispatch'||("
+        "github.ref=='refs/heads/main'&&"
+        "github.event.repository.default_branch=='main'&&"
+        "github.ref_protected&&"
+        "inputs.ai_review_environment=='ai-review-app'))"
+    )
+    require(
+        len(dispatch_conjuncts) == 3
+        and dispatch_conjuncts[0] == "github.event_name!='pull_request_target'"
+        and dispatch_conjuncts[1] == required_dispatch_guard
+        and len(dispatch_disjunctions) == 1,
+        "direct dispatch must be a protected-main conjunct with no trailing OR bypass",
+    )
+    pull_request_terms = split_top_level(dispatch_conjuncts[2][1:-1], "||")
+    required_pull_request_guard = (
+        "(((github.event.action!='labeled'&&github.event.action!='unlabeled')||"
+        "(github.event.action=='labeled'&&github.event.label.name=='re-review')||"
+        "(github.event.action=='unlabeled'&&(github.event.label.name=='hold'||"
+        "github.event.label.name=='DO NOT MERGE')))&&"
+        "!github.event.pull_request.draft&&"
+        "!contains(github.event.pull_request.labels.*.name,'hold')&&"
+        "!contains(github.event.pull_request.labels.*.name,'DO NOT MERGE')&&"
+        "needs.title-policy.outputs.title_held!='true')"
+    )
+    require(
+        len(pull_request_terms) == 2
+        and pull_request_terms[0] == "github.event_name=='workflow_dispatch'"
+        and pull_request_terms[1] == required_pull_request_guard,
+        "pull-request eligibility must not be weakened by a disjunctive bypass",
+    )
+    require(
+        'DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}' in rearm_text
+        and 'gh workflow run ai-review-merge.yml --repo "$TARGET_REPO" --ref "$DEFAULT_BRANCH"' in rearm_text,
+        "trusted dispatcher must explicitly target the repository default branch",
+    )
     expected_run_name = (
         "AI review authorization ${{ inputs.authorization_check_id }} "
         "from arm ${{ inputs.arm_run_id }}.${{ inputs.arm_run_attempt }}"
@@ -663,7 +786,7 @@ def main() -> int:
                     if step.get("name") == "Resolve immutable canonical workflow revision")
     require(revision["env"] == {
         "CONTRACT_REF": "${{ inputs.contract_ref }}",
-        "EXECUTING_WORKFLOW_SHA": "${{ job.workflow_sha }}",
+        "EXECUTING_WORKFLOW_SHA": "${{ github.workflow_sha }}",
     }, "trusted revision resolver must separate the caller head from the canonical input")
     require(preflight["outputs"]["trusted_review_sha"] ==
             "${{ steps.trusted-revision.outputs.sha }}",

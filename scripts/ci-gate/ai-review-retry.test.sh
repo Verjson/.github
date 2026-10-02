@@ -10,6 +10,18 @@ fails=0
 pass() { printf 'ok   - %s\n' "$1"; }
 fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 
+if grep -qF 'EXECUTING_WORKFLOW_SHA: ${{ github.workflow_sha }}' "$workflow"; then
+  pass "dispatched review resolves an immutable workflow SHA"
+else
+  fail "dispatched review has no immutable workflow SHA fallback"
+fi
+
+if grep -qF 'trusted_review_sha="${CONTRACT_REF:-$EXECUTING_WORKFLOW_SHA}"' "$workflow"; then
+  pass "explicit contract SHA takes precedence over dispatch fallback"
+else
+  fail "trusted review SHA does not fall back when contract ref is empty"
+fi
+
 check_contract() {
   local candidate=$1 verdict reservation_token reserve_one reserve_two exact_head_line check_lookup_line
   [ "$(grep -c 'id: deepseek_primary' "$candidate")" -eq 1 ] || return 1

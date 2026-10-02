@@ -103,3 +103,7 @@ claiming which caused it: the mapped credential must read every approved package
 mapped `GITHUB_TOKEN` requires caller `packages: read`. There is no contents-only
 `GITHUB_TOKEN` fallback because moving that token into repository-controlled execution
 would weaken the boundary without granting package authority.
+
+## 2026-10-02 amendment — compare GitHub repository identity without casing (#1682)
+
+GitHub can report different owner or organization-login casing for the same repository. The secretless pull-request boundary now normalizes the complete head and base `owner/repository` names before comparing them. Equality still requires the same owner and repository after normalization, so forks remain rejected. This restores the existing same-repository invariant rather than widening package access. The canonical regression contract verifies the normalization in `node-ci-secretless.test.sh`; the CI reproduction and linked PR are recorded in [issue #1682](https://github.com/verJSON/.github/issues/1682).
