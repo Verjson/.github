@@ -55,14 +55,11 @@ jobs:
     permissions:
       actions: read
       contents: read
-$(if [ "$private_packages" = true ]; then printf '%s\n' '      packages: read'; fi)
     uses: Verjson/.github/.github/workflows/container-candidate.yml@$ref
     with:
       config-path: $config_path
       contract-ref: $ref
-      acquisition-sha256: $acquisition_sha256
       retry-sha256: $retry_sha256
-$(if [ "$private_packages" = true ]; then printf '%s\n' '    secrets:' '      NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}'; fi)
   publish:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
@@ -113,7 +110,7 @@ grep -qx '# Contract: $ref' "\$validator" || fail "validator contract pin differ
 [ "\$(grep -c 'uses: Verjson/.github/.github/workflows/container-candidate.yml@$ref' "\$caller")" -eq 1 ] || fail "validation does not use the pinned read-only reusable workflow"
 [ "\$(grep -c 'uses: Verjson/.github/.github/workflows/container-candidate-publish.yml@$ref' "\$caller")" -eq 1 ] || fail "publication does not use the pinned publication reusable workflow"
 [ "\$(grep -c 'contract-ref: $ref' "\$caller")" -eq 2 ] || fail "caller does not pass the shared pin to both event paths"
-[ "\$(grep -c 'acquisition-sha256: $acquisition_sha256' "\$caller")" -eq 2 ] || fail "caller does not pin the acquisition implementation digest for both event paths"
+[ "\$(grep -c 'acquisition-sha256: $acquisition_sha256' "\$caller")" -eq 1 ] || fail "only trusted publication may pin the acquisition implementation digest"
 [ "\$(grep -c 'retry-sha256: $retry_sha256' "\$caller")" -eq 2 ] || fail "both event paths do not pin the retry verifier digest"
 [ "\$(grep -c '^      actions: read$' "\$caller")" -eq 2 ] || fail "both event paths require Actions reads"
 [ "\$(grep -c '^      contents: read$' "\$caller")" -eq 2 ] || fail "both event paths require source reads"
@@ -128,8 +125,10 @@ if grep -Eq 'secrets: inherit|registry-namespace:|environment:' "\$caller"; then
   fail "caller may not inherit credentials or inject registry namespaces or environments"
 fi
 if [ "$private_packages" = true ]; then
-  [ "\$(grep -cF 'NODE_AUTH_TOKEN: \${{ secrets.NODE_AUTH_TOKEN }}' "\$caller")" -eq 2 ] || fail "private-package caller does not route its acquisition token to both event paths"
-  grep -q '^      packages: read$' "\$caller" || fail "private-package validation cannot read approved packages"
+  [ "\$(grep -cF 'NODE_AUTH_TOKEN: \${{ secrets.NODE_AUTH_TOKEN }}' "\$caller")" -eq 1 ] || fail "private-package caller must route its acquisition token only to trusted publication"
+  if sed -n '/^  validate:/,/^  publish:/p' "\$caller" | grep -Eq 'packages: read|secrets:|NODE_AUTH_TOKEN'; then
+    fail "private-package pull-request validation exposes package credentials or contents"
+  fi
 else
   ! grep -q 'NODE_AUTH_TOKEN\|packages: read' "\$caller" || fail "public-only caller exposes package credentials or read authority"
 fi

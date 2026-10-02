@@ -12,6 +12,7 @@ Reverse-chronological index of org-level decisions.
 <!-- prettier-ignore -->
 | # | Date | Decision |
 |---|------|----------|
+| [0214](0214-private-candidate-builds-skip-untrusted-pull-requests/README.md) | 2026-10-02 | Keep private package contents out of pull-request candidate builds |
 | [0213](0213-package-type-surface-release-authorization/README.md) | 2026-10-01 | Package type-surface rulesets use the release App only |
 | [0212](0212-cli-projects-admission-accepts-only-generated-caller/README.md) | 2026-09-29 | CLI Projects admission accepts only the generated CI caller |
 | [0211](0211-signed-merge-gate-provenance-binds-the-canonical-required-workflow/README.md) | 2026-09-27 | Signed merge-gate provenance binds the canonical required workflow through captured claim predicates |

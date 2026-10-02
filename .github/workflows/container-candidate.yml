@@ -11,10 +11,6 @@ on:
         description: Immutable Verjson/.github contract commit used by the generated caller
         required: true
         type: string
-      acquisition-sha256:
-        description: SHA-256 of the canonical credential-bound acquisition implementation
-        required: true
-        type: string
       retry-sha256:
         description: SHA-256 of the canonical exact-SHA retry verifier
         required: true
@@ -24,10 +20,6 @@ on:
         required: false
         default: ''
         type: string
-    secrets:
-      NODE_AUTH_TOKEN:
-        description: Token used only by canonical lockfile-bound package acquisition
-        required: false
 
 permissions:
   contents: read
@@ -149,147 +141,24 @@ jobs:
           SOURCE_PATH: .container-candidate-source-${{ github.run_id }}-${{ github.run_attempt }}
         run: rm -rf "$SOURCE_PATH"
 
-  acquire-private-node-dependencies:
-    if: needs.prepare.outputs.has-private-node-packages == 'true'
+  skip-private-node-build:
+    if: >-
+      github.event_name == 'pull_request'
+      && needs.prepare.outputs.has-private-node-packages == 'true'
     needs: prepare
-    runs-on: ${{ github.repository_owner == 'Verjson' && fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') || 'ubuntu-24.04' }}
-    timeout-minutes: 30
     permissions:
       contents: read
-    outputs:
-      transfer-cache-key: ${{ steps.create-node-modules-cache-key.outputs.cache-key }}
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        with:
-          node-version: '24'
-          package-manager-cache: false
-      - name: Acquire exact lockfile packages without lifecycle execution
-        env:
-          APPROVED_PRIVATE_PACKAGES: ${{ needs.prepare.outputs.private-node-packages }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          CONFIG_PATH: ${{ inputs.config-path }}
-          EVENT_NAME: ${{ github.event_name }}
-          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
-          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
-          PACKAGE_MANAGER: ${{ needs.prepare.outputs.package-manager }}
-          REPOSITORY: ${{ github.repository }}
-          TRANSFER_DIR: ${{ github.workspace }}/.verjson-container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
-        run: |
-          set -euo pipefail
-          base_manifest=''
-          case "$PACKAGE_MANAGER" in npm) lock_file=package-lock.json ;; pnpm) lock_file=pnpm-lock.yaml ;; *) echo "::error::packageManager accepts only npm or pnpm"; exit 1 ;; esac
-          [ -f "$lock_file" ] || { echo "::error::$lock_file is required"; exit 1; }
-          if find . -name .npmrc -print -quit | grep -q .; then
-            echo "::error::private container dependency acquisition rejects project-controlled .npmrc"
-            exit 1
-          fi
-          if [ "$EVENT_NAME" = pull_request ]; then
-            [ "$HEAD_REPOSITORY" = "$REPOSITORY" ] || {
-              [ "$APPROVED_PRIVATE_PACKAGES" = '[]' ] || { echo "::error::fork pull requests cannot acquire private container dependencies"; exit 1; }
-            }
-            [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::pull request base SHA is missing"; exit 1; }
-            base_config="$RUNNER_TEMP/container-candidate-base.json"
-            git show "$BASE_SHA:$CONFIG_PATH" > "$base_config" 2>/dev/null || { echo "::error::candidate config must exist at the reviewed base SHA"; exit 1; }
-            base_approved="$(jq -ce '.privateNodePackages // []' "$base_config")" || { echo "::error::reviewed base privateNodePackages is invalid"; exit 1; }
-            [ "$base_approved" = "$APPROVED_PRIVATE_PACKAGES" ] || { echo "::error::privateNodePackages differs from the reviewed base configuration"; exit 1; }
-            base_package_manager="$(jq -re '.packageManager // "npm"' "$base_config")" || { echo "::error::reviewed base packageManager is invalid"; exit 1; }
-            [ "$base_package_manager" = "$PACKAGE_MANAGER" ] || { echo "::error::packageManager differs from the reviewed base configuration"; exit 1; }
-            if [ "$PACKAGE_MANAGER" = pnpm ]; then
-              head_package_manager_spec="$(jq -er '.packageManager' package.json)" || { echo "::error::pnpm packageManager spec is missing"; exit 1; }
-              base_manifest="$RUNNER_TEMP/container-candidate-base-package.json"
-              git show "$BASE_SHA:package.json" > "$base_manifest" 2>/dev/null || { echo "::error::package.json must exist at the reviewed base SHA"; exit 1; }
-              base_package_manager_spec="$(jq -er '.packageManager' "$base_manifest")" || { echo "::error::reviewed base pnpm packageManager spec is missing"; exit 1; }
-              [ "$base_package_manager_spec" = "$head_package_manager_spec" ] || { echo "::error::pnpm packageManager spec differs from the reviewed base"; exit 1; }
-            fi
-          fi
-          if [ "$APPROVED_PRIVATE_PACKAGES" != '[]' ]; then
-            [ -n "$NODE_AUTH_TOKEN" ] || { echo "::error::private container dependency acquisition requires NODE_AUTH_TOKEN"; exit 1; }
-          fi
-          acquisition="$RUNNER_TEMP/container_private_dependencies.py"
-          curl -fsSL "https://raw.githubusercontent.com/Verjson/.github/${{ inputs.contract-ref }}/scripts/container_private_dependencies.py" -o "$acquisition"
-          printf '%s  %s\n' '${{ inputs.acquisition-sha256 }}' "$acquisition" | sha256sum --check --strict
-          validator_args=(--package-manager "$PACKAGE_MANAGER" --lock "$lock_file" --approved "$APPROVED_PRIVATE_PACKAGES")
-          [ "$PACKAGE_MANAGER" = npm ] || validator_args+=(--manifest package.json --project-root .)
-          [ -z "$base_manifest" ] || validator_args+=(--reviewed-manifest "$base_manifest")
-          python3 "$acquisition" "${validator_args[@]}"
-          user_config="$RUNNER_TEMP/container-user.npmrc"
-          global_config="$RUNNER_TEMP/container-global.npmrc"
-          npm_cache="$RUNNER_TEMP/container-npm-cache"
-          npm_home="$RUNNER_TEMP/container-npm-home"
-          mkdir -p "$npm_home"
-          : > "$global_config"
-          printf 'registry=https://registry.npmjs.org/\n' > "$user_config"
-          jq -r '.[] | split("/")[0]' <<<"$APPROVED_PRIVATE_PACKAGES" | sort -u \
-            | sed 's|$|:registry=https://npm.pkg.github.com/|' >> "$user_config"
-          # npm expands this placeholder from the isolated environment.
-          # shellcheck disable=SC2016
-          printf '//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}\n' >> "$user_config"
-          # Positional parameters expand inside the isolated child shell.
-          # shellcheck disable=SC2016
-          env -i \
-            HOME="$npm_home" \
-            NODE_AUTH_TOKEN="$NODE_AUTH_TOKEN" \
-            NPM_CONFIG_CACHE="$npm_cache" \
-            NPM_CONFIG_GLOBALCONFIG="$global_config" \
-            NPM_CONFIG_USERCONFIG="$user_config" \
-            PATH="$PATH" \
-            bash -c 'if [ "$1" = npm ]; then npm ci --ignore-scripts --no-audit --no-fund; else corepack pnpm install --frozen-lockfile --ignore-scripts; fi' _ "$PACKAGE_MANAGER"
-          artifact="$RUNNER_TEMP/container-node-modules"
-          mkdir -p "$artifact"
-          mv node_modules "$artifact/node_modules"
-          lock_digest="$(sha256sum "$lock_file" | cut -d' ' -f1)"
-          printf '%s\n' "$lock_digest" > "$artifact/.verjson-lock-sha256"
-          [ ! -e "$TRANSFER_DIR" ] && [ ! -L "$TRANSFER_DIR" ] || {
-            echo "::error::reserved container dependency transfer path exists"
-            exit 1
-          }
-          mkdir -p "$TRANSFER_DIR"
-          tar -czf "$TRANSFER_DIR/container-node-modules.tgz" -C "$artifact" .
-      - name: Create unguessable exact-attempt cache key
-        id: create-node-modules-cache-key
-        env:
-          RUN_ATTEMPT: ${{ github.run_attempt }}
-          RUN_ID: ${{ github.run_id }}
-        run: |
-          set -euo pipefail
-          [[ "$RUN_ID" =~ ^[1-9][0-9]*$ && "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || {
-            echo "::error::invalid container dependency cache run identity"
-            exit 1
-          }
-          nonce="$(openssl rand -hex 32)"
-          [[ "$nonce" =~ ^[0-9a-f]{64}$ ]] || {
-            echo "::error::could not generate container dependency cache nonce"
-            exit 1
-          }
-          cache_key="container-node-modules-${RUN_ID}-${RUN_ATTEMPT}-${nonce}"
-          printf 'cache-key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
-      - id: save-node-modules-transfer
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: .verjson-container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
-          key: ${{ steps.create-node-modules-cache-key.outputs.cache-key }}
-      - name: Remove local acquisition and transfer state
-        if: always()
-        env:
-          TRANSFER_DIR: ${{ github.workspace }}/.verjson-container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
-        run: |
-          rm -rf "$TRANSFER_DIR" "$RUNNER_TEMP/container-node-modules" \
-            "$RUNNER_TEMP/container-npm-cache" "$RUNNER_TEMP/container-npm-home"
-          rm -f "$RUNNER_TEMP/container-user.npmrc" "$RUNNER_TEMP/container-global.npmrc" \
-            "$RUNNER_TEMP/container_private_dependencies.py" "$RUNNER_TEMP/container-candidate-base-package.json"
+      - name: Explain skipped private-package candidate build
+        run: echo "::notice::pull-request candidate build skipped because privateNodePackages is configured; trusted publication builds it from the protected default branch"
 
   pull-request-build:
     if: >-
-      always()
-      && github.event_name == 'pull_request'
+      github.event_name == 'pull_request'
       && needs.prepare.result == 'success'
-      && (needs.acquire-private-node-dependencies.result == 'success'
-      || needs.acquire-private-node-dependencies.result == 'skipped')
-    needs: [prepare, acquire-private-node-dependencies]
+      && needs.prepare.outputs.has-private-node-packages == 'false'
+    needs: prepare
     permissions:
       contents: read
     strategy:
@@ -334,40 +203,6 @@ jobs:
             exit 1
           }
           mkdir "$context"
-      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: needs.prepare.outputs.has-private-node-packages == 'true'
-        with:
-          path: .verjson-container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
-          key: ${{ needs.acquire-private-node-dependencies.outputs.transfer-cache-key }}
-          fail-on-cache-miss: true
-      - name: Restore and verify credential-free node_modules context
-        if: needs.prepare.outputs.has-private-node-packages == 'true'
-        env:
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''
-          ACTIONS_ID_TOKEN_REQUEST_URL: ''
-          AWS_ACCESS_KEY_ID: ''
-          AWS_SECRET_ACCESS_KEY: ''
-          AZURE_CLIENT_SECRET: ''
-          GOOGLE_APPLICATION_CREDENTIALS: ''
-          GH_TOKEN: ''
-          GITHUB_TOKEN: ''
-          NODE_AUTH_TOKEN: ''
-          NPM_TOKEN: ''
-          LOCK_FILE: ${{ needs.prepare.outputs.lock-file }}
-          SOURCE_PATH: .container-candidate-build-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant }}
-          TRANSFER_DIR: ${{ github.workspace }}/.verjson-container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
-        run: |
-          set -euo pipefail
-          context="$RUNNER_TEMP/container-node-modules-context"
-          tar -xzf "$TRANSFER_DIR/container-node-modules.tgz" -C "$context"
-          case "$LOCK_FILE" in package-lock.json|pnpm-lock.yaml) ;; *) echo "::error::invalid lock-file output"; exit 1 ;; esac
-          expected="$(sha256sum "$SOURCE_PATH/$LOCK_FILE" | cut -d' ' -f1)"
-          [ "$(cat "$context/.verjson-lock-sha256")" = "$expected" ] || { echo "::error::node_modules artifact does not match $LOCK_FILE"; exit 1; }
-      - name: Remove local node_modules transfer state
-        if: always() && needs.prepare.outputs.has-private-node-packages == 'true'
-        env:
-          TRANSFER_DIR: ${{ github.workspace }}/.verjson-container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
-        run: rm -rf "$TRANSFER_DIR"
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
       - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         env:

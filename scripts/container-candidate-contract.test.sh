@@ -73,6 +73,25 @@ jq '.privateNodePackages = ["@verjson/private-package"]' \
 (cd "$private_consumer" && "$generator" contract-test "$ref" container-candidate.json) \
   > "$private_consumer/scripts/container-candidate-contract.test.sh"
 chmod +x "$private_consumer/scripts/"*.sh "$private_consumer/scripts/"*.py
+PRIVATE_CALLER="$private_consumer/.github/workflows/container-candidate.yml" python3 - <<'PY'
+import os
+import yaml
+
+with open(os.environ["PRIVATE_CALLER"], encoding="utf-8") as stream:
+    caller = yaml.safe_load(stream)
+
+validate = caller["jobs"]["validate"]
+assert validate["permissions"] == {"actions": "read", "contents": "read"}, (
+    "private-package pull-request validation must remain credential-free"
+)
+assert "secrets" not in validate, (
+    "private-package contents and credentials must not enter PR validation"
+)
+publish = caller["jobs"]["publish"]
+assert publish["secrets"] == {
+    "NODE_AUTH_TOKEN": "${{ secrets.NODE_AUTH_TOKEN }}"
+}, "trusted publication must retain the narrowly scoped package credential"
+PY
 bash "$private_consumer/scripts/container-candidate-contract.test.sh"
 
 workflow="$root/.github/workflows/container-candidate.yml"
@@ -155,7 +174,7 @@ expected_conditions = {
 
 def validate_authority(read_only, publication):
     assert set(read_only["jobs"]) == {
-        "prepare", "acquire-private-node-dependencies", "pull-request-build"
+        "prepare", "skip-private-node-build", "pull-request-build"
     }, "read-only entrypoint contains publication authority"
     assert set(publication["jobs"]) == {
         "prepare", "acquire-private-node-dependencies", "publish-base",
@@ -166,6 +185,31 @@ def validate_authority(read_only, publication):
             f"deployable publication job {job_name} must use an independently trusted hosted runner"
         )
     assert read_only["permissions"] == {"contents": "read"}
+    workflow_call = read_only.get("on", read_only.get(True, {})).get("workflow_call", {})
+    assert "secrets" not in workflow_call, "read-only entrypoint must not declare secret inputs"
+    assert "acquisition-sha256" not in workflow_call.get("inputs", {}), (
+        "read-only entrypoint must not accept private-acquisition code"
+    )
+    pull_request_build = read_only["jobs"]["pull-request-build"]
+    assert pull_request_build["needs"] == "prepare"
+    assert "needs.prepare.outputs.has-private-node-packages == 'false'" in pull_request_build["if"], (
+        "private-package pull requests must skip all PR-controlled Docker instructions"
+    )
+    pr_steps = pull_request_build["steps"]
+    assert not any(step.get("uses", "").startswith("actions/cache/restore@") for step in pr_steps), (
+        "PR builds must not restore a private dependency cache"
+    )
+    assert not any("tar -x" in step.get("run", "") for step in pr_steps), (
+        "PR builds must not extract private dependency contents"
+    )
+    assert not any("secrets." in str(step) for step in pr_steps), (
+        "PR-controlled Docker instructions must not receive a secret reference"
+    )
+    empty_context = next(step for step in pr_steps if step.get("name") == "Prepare credential-free dependency build context")
+    assert 'mkdir "$context"' in empty_context["run"]
+    skip_job = read_only["jobs"]["skip-private-node-build"]
+    assert "needs.prepare.outputs.has-private-node-packages == 'true'" in skip_job["if"]
+    assert any("privateNodePackages is configured" in step.get("run", "") for step in skip_job["steps"])
     assert publication["permissions"] == {"contents": "read"}
     for job_name, job in read_only["jobs"].items():
         requested = job.get("permissions", read_only["permissions"])
@@ -182,13 +226,14 @@ def validate_authority(read_only, publication):
         assert requested == {"contents": "read"}, (
             f"publication {job_name} must remain exact read-only preparation"
         )
-        read_only_job = dict(read_only["jobs"][job_name])
-        publication_job = dict(publication["jobs"][job_name])
-        read_only_job.pop("runs-on")
-        publication_job.pop("runs-on")
-        assert read_only_job == publication_job, (
-            f"shared trusted-input job {job_name} drifted beyond its trust-isolated runner assignment"
-        )
+        if job_name == "prepare":
+            read_only_job = dict(read_only["jobs"][job_name])
+            publication_job = dict(publication["jobs"][job_name])
+            read_only_job.pop("runs-on")
+            publication_job.pop("runs-on")
+            assert read_only_job == publication_job, (
+                f"shared trusted-input job {job_name} drifted beyond its trust-isolated runner assignment"
+            )
     prepare_steps = read_only["jobs"]["prepare"]["steps"]
     checkout = next(step for step in prepare_steps if step.get("uses", "").startswith("actions/checkout@"))
     assert checkout["with"] == {
@@ -258,7 +303,6 @@ assert candidate_manifest_runs({
     "publish-base": "success",
     "publish-derived": "success",
     "attest-sbom": "success",
-    "acquire-private-node-dependencies": "skipped",
 }), "optional skipped dependency suppressed complete candidate manifest"
 for terminal_status in ("skipped", "cancelled", "failure"):
     for producer in candidate_producers:
@@ -718,8 +762,8 @@ fi
 }
 jq -e '.repository == "Verjson/.github" and .images[0].platforms == [{"os":"linux","architecture":"amd64"}]' \
   "$root/scripts/fixtures/container-candidate/canary.json" >/dev/null
-prepare_job="$(awk '/^  prepare:/{seen=1} /^  acquire-private-node-dependencies:/{seen=0} seen' "$workflow")"
-acquisition_job="$(awk '/^  acquire-private-node-dependencies:/{seen=1} /^  pull-request-build:/{seen=0} seen' "$workflow")"
+prepare_job="$(awk '/^  prepare:/{seen=1} /^  pull-request-build:/{seen=0} seen' "$workflow")"
+acquisition_job="$(awk '/^  acquire-private-node-dependencies:/{seen=1} /^  publish-base:/{seen=0} seen' "$publish_workflow")"
 grep -qF 'has-private-node-packages: ${{ steps.config.outputs.has-private-node-packages }}' <<<"$prepare_job"
 grep -qF 'has-private-node-packages=$(jq -r' <<<"$prepare_job"
 grep -qF 'length > 0)' <<<"$prepare_job"
@@ -782,14 +826,21 @@ if grep -qF 'actions/upload-artifact@' <<<"$acquisition_job"; then
 fi
 grep -qF 'name: Remove local acquisition and transfer state' <<<"$acquisition_job"
 grep -qF 'if: always()' <<<"$acquisition_job"
-for build_job in pull-request-build publish-base publish-derived; do
-  build_workflow="$workflow"
-  [ "$build_job" = pull-request-build ] || build_workflow="$publish_workflow"
+pr_build_block="$(awk '/^  pull-request-build:/{seen=1} seen && /^  [A-Za-z0-9_.-]+:/{if (seen++ > 1) exit} seen {print}' "$workflow")"
+grep -qF "needs.prepare.outputs.has-private-node-packages == 'false'" <<<"$pr_build_block"
+grep -qF 'mkdir "$context"' <<<"$pr_build_block"
+grep -qF 'build-contexts: verjson_node_modules=${{ runner.temp }}/container-node-modules-context' <<<"$pr_build_block"
+  if grep -Eq 'actions/cache/restore@|container-node-modules.tgz|\.verjson-container-node-modules-|secrets\.NODE_AUTH_TOKEN' <<<"$pr_build_block" \
+    || grep -Fq 'NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}' <<<"$pr_build_block"; then
+  echo "pull-request build can receive private dependency contents or credentials" >&2
+  exit 1
+fi
+for build_job in publish-base publish-derived; do
   build_block="$(awk -v start="  $build_job:" '
     $0 == start { seen=1; next }
     seen && /^  [A-Za-z0-9_.-]+:/ { exit }
     seen { print }
-  ' "$build_workflow")"
+  ' "$publish_workflow")"
   job_if="$(awk '
     /^    if:/ { seen=1; print; next }
     seen && /^      / { print; next }
@@ -819,7 +870,7 @@ for build_job in pull-request-build publish-base publish-derived; do
   grep -qF "NODE_AUTH_TOKEN: ''" <<<"$build_block"
   grep -qF "ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''" <<<"$build_block"
   if grep -Eq 'secrets\.|secret-envs:|^[[:space:]]+secrets:' <<<"$build_block"; then
-    echo "$build_job exposes a credential to PR-controlled Docker execution" >&2
+    echo "$build_job exposes a credential to Docker execution" >&2
     exit 1
   fi
 done
@@ -834,7 +885,7 @@ with open(os.environ["PUBLISH_WORKFLOW"], encoding="utf-8") as stream:
     publisher = yaml.safe_load(stream)
 
 private_gate = "needs.prepare.outputs.has-private-node-packages == 'true'"
-for job_name in ("pull-request-build", "publish-base", "publish-derived"):
+for job_name in ("publish-base", "publish-derived"):
     source = workflow if job_name == "pull-request-build" else publisher
     steps = source["jobs"][job_name]["steps"]
     context_steps = [
