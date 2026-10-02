@@ -253,6 +253,14 @@ QUOTED_EXPRESSION_STRING = re.compile(r"'(?:''|[^'])*'")
 BRACKET_DEREFERENCE = re.compile(
     r"\b(vars|inputs|matrix|github|needs)\[(?:'([^']+)'|\"([^\"]+)\")\]"
 )
+CANONICAL_CONTAINER_CANDIDATE = "container-candidate.yml"
+CANONICAL_CONTAINER_CANDIDATE_EXPRESSION = (
+    "github.event_name != 'pull_request' && inputs.runner != '' && fromJSON(inputs.runner) "
+    "|| github.repository_owner != 'Verjson' && 'ubuntu-24.04' "
+    "|| github.event.repository.private == true && fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]') "
+    "|| fromJSON(vars.CI_LANE_UNTRUSTED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]')"
+)
+CANONICAL_CONTAINER_CANDIDATE_SELECTOR = "${{ " + CANONICAL_CONTAINER_CANDIDATE_EXPRESSION + " }}"
 
 # Complete routing expressions reviewed by the organization contract. This is
 # deliberately a full-expression allowlist, not a list of blessed reference
@@ -365,8 +373,6 @@ CANONICAL_RUNNER_CANARY_SELECTOR = [
     "self-hosted",
     "${{ inputs.runner_label }}",
 ]
-
-
 def is_canonical_changelog_pr_gate(document: dict) -> bool:
     # This PR-authored test must stay on a disposable hosted runner. Match every
     # executable field, not a filename or a forgeable generated-file comment.
@@ -452,7 +458,9 @@ def canonical_runner_canary_jobs(
     return frozenset({name}) if valid_trigger else frozenset()
 
 
-def canonical_runner_canary_path(workflow_dir: str, consumer_policy: bool) -> str | None:
+def canonical_policy_workflow_path(
+    workflow_dir: str, consumer_policy: bool, workflow_name: str
+) -> str | None:
     """Resolve authority from the policy checkout, never the process cwd."""
     if consumer_policy:
         return None
@@ -520,15 +528,15 @@ def canonical_runner_canary_path(workflow_dir: str, consumer_policy: bool) -> st
     supplied_dir = os.path.abspath(workflow_dir)
     if supplied_dir != expected_dir or os.path.realpath(supplied_dir) != expected_dir:
         return None
-    candidate = os.path.join(expected_dir, CANONICAL_RUNNER_CANARY)
+    candidate = os.path.join(expected_dir, workflow_name)
     if os.path.lexists(candidate):
         try:
             mode = os.lstat(candidate).st_mode
         except OSError as error:
-            raise Undetermined(f"{candidate}: cannot lstat canonical runner canary: {error}") from error
+            raise Undetermined(f"{candidate}: cannot lstat canonical workflow: {error}") from error
         if not stat.S_ISREG(mode):
             raise Undetermined(
-                f"{candidate}: canonical runner canary must be a regular non-symlink file"
+                f"{candidate}: canonical workflow must be a regular non-symlink file"
             )
         tracked_candidate = git(
             [
@@ -536,15 +544,52 @@ def canonical_runner_canary_path(workflow_dir: str, consumer_policy: bool) -> st
                 "ls-files",
                 "--error-unmatch",
                 "--",
-                os.path.join(".github", "workflows", CANONICAL_RUNNER_CANARY),
+                os.path.join(".github", "workflows", workflow_name),
             ],
             repository_root,
         )
         if tracked_candidate.returncode != 0:
             raise Undetermined(
-                f"{candidate}: canonical runner canary is not tracked by its Git worktree"
+                f"{candidate}: canonical workflow is not tracked by its Git worktree"
             )
     return candidate
+
+
+def canonical_runner_canary_path(workflow_dir: str, consumer_policy: bool) -> str | None:
+    return canonical_policy_workflow_path(
+        workflow_dir, consumer_policy, CANONICAL_RUNNER_CANARY
+    )
+
+
+def canonical_container_candidate_path(workflow_dir: str, consumer_policy: bool) -> str | None:
+    return canonical_policy_workflow_path(
+        workflow_dir, consumer_policy, CANONICAL_CONTAINER_CANDIDATE
+    )
+
+
+def canonical_container_candidate_jobs(
+    report: Report,
+    path: str,
+    jobs: list[tuple[str, dict, int]],
+    consumer_policy: bool,
+    canonical_path: str | None,
+) -> frozenset[str]:
+    if consumer_policy or canonical_path is None or os.path.abspath(path) != canonical_path:
+        return frozenset()
+    expected = {"prepare", "skip-private-node-build", "pull-request-build"}
+    if {name for name, _, _ in jobs} != expected:
+        report.violation(path, 0, "canonical candidate workflow job set changed")
+        return frozenset()
+    valid = True
+    for name, body, line in jobs:
+        if body.get("runs-on") != CANONICAL_CONTAINER_CANDIDATE_SELECTOR:
+            report.violation(
+                path,
+                getattr(body, "lines", {}).get("runs-on", line),
+                f"canonical candidate job '{name}' must retain the pull-request runner guard",
+            )
+            valid = False
+    return frozenset(expected) if valid else frozenset()
 
 
 def normalize_dereferences(text: str) -> str:
@@ -718,6 +763,7 @@ def check_reusable_runner_inputs(
 def check_job(report: Report, path: str, name: str, body: dict, line: int,
               visibility: str, consumer_policy: bool = False,
               canonical_canary: bool = False,
+              canonical_container_candidate: bool = False,
               canonical_changelog_pr_gate: bool = False,
               guarded_fastlane_caller: bool = False) -> None:
     if consumer_policy:
@@ -743,11 +789,14 @@ def check_job(report: Report, path: str, name: str, body: dict, line: int,
     if "matrix." in normalize_dereferences(raw_runs_on):
         selector_values.append(body.get("strategy"))
     try:
-        reviewed_expressions = (
-            frozenset({"inputs.runner_label"})
-            if canonical_canary
-            else REVIEWED_SELECTOR_EXPRESSIONS
-        )
+        if canonical_canary:
+            reviewed_expressions = frozenset({"inputs.runner_label"})
+        elif canonical_container_candidate:
+            reviewed_expressions = REVIEWED_SELECTOR_EXPRESSIONS | frozenset(
+                {CANONICAL_CONTAINER_CANDIDATE_EXPRESSION}
+            )
+        else:
+            reviewed_expressions = REVIEWED_SELECTOR_EXPRESSIONS
         for value in selector_values:
             validate_selector_expressions(value, reviewed_expressions)
     except Undetermined as error:
@@ -1042,6 +1091,9 @@ def main(argv: list[str]) -> int:
         canonical_canary_path = canonical_runner_canary_path(
             arguments.workflow_dir, arguments.consumer_policy
         )
+        canonical_candidate_path = canonical_container_candidate_path(
+            arguments.workflow_dir, arguments.consumer_policy
+        )
         workflow_files = collect_workflow_files(arguments.workflow_dir)
     except Undetermined as error:
         print(f"UNDETERMINED: {error}", file=sys.stderr)
@@ -1070,6 +1122,13 @@ def main(argv: list[str]) -> int:
             arguments.consumer_policy,
             canonical_canary_path,
         )
+        canonical_candidate_jobs = canonical_container_candidate_jobs(
+            report,
+            path,
+            jobs,
+            arguments.consumer_policy,
+            canonical_candidate_path,
+        )
         for name, body, line in jobs:
             check_job(
                 report,
@@ -1080,6 +1139,7 @@ def main(argv: list[str]) -> int:
                 arguments.visibility,
                 arguments.consumer_policy,
                 name in canonical_jobs,
+                name in canonical_candidate_jobs,
                 arguments.consumer_policy and is_canonical_changelog_pr_gate(document),
                 arguments.consumer_policy and is_guarded_fastlane_caller(document),
             )
