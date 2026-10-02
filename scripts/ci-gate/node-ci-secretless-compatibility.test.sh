@@ -132,6 +132,50 @@ assert inputs["secretless-compatibility-ranges"]["default"] == ""
 jobs = doc["jobs"]
 steps = {step.get("name"): step for job in jobs.values()
          for step in job.get("steps", []) if step.get("name")}
+acquire_steps = jobs["acquire-secretless-dependencies"]["steps"]
+build_steps = jobs["build-test"]["steps"]
+acquire_download = next(
+    step for step in acquire_steps
+    if step.get("name") == "Download pinned secretless dependency transfer implementation"
+)
+package = next(step for step in acquire_steps
+               if step.get("name") == "Package bounded credential-free npm cache")
+build_download = next(
+    step for step in build_steps
+    if step.get("name") == "Download pinned secretless dependency transfer implementation"
+)
+decrypt = next(step for step in build_steps
+               if step.get("name") == "Decrypt run-scoped secretless dependency payload")
+install = next(step for step in build_steps
+               if step.get("name") == "Install from verified secretless npm cache")
+def assert_step_order(job_steps, *names):
+    positions = [next(i for i, step in enumerate(job_steps)
+                      if step.get("name") == name) for name in names]
+    assert positions == sorted(positions), (names, positions)
+
+assert_step_order(
+    acquire_steps,
+    "Download pinned secretless dependency transfer implementation",
+    "Package bounded credential-free npm cache",
+)
+assert_step_order(
+    build_steps,
+    "Download pinned secretless dependency transfer implementation",
+    "Decrypt run-scoped secretless dependency payload",
+    "Install from verified secretless npm cache",
+)
+workflow_sha = "${{ fromJSON(toJSON(job)).workflow_sha }}"
+for download in (acquire_download, build_download):
+    assert download["env"]["JOB_WORKFLOW_SHA"] == workflow_sha
+    assert "${JOB_WORKFLOW_SHA}/scripts/container_dependency_transfer.py" in download["run"]
+assert "container_dependency_transfer.py" in package["run"]
+assert "container_dependency_transfer.py" in decrypt["run"]
+assert decrypt["env"]["TRANSFER_KEY"] == (
+    "${{ needs.acquire-secretless-dependencies.outputs.transfer-encryption-key }}"
+)
+assert jobs["acquire-secretless-dependencies"]["outputs"]["transfer-encryption-key"] == (
+    "${{ steps.package-secretless-transfer.outputs.encryption-key }}"
+)
 for name, filename in {
     "Validate approved internal dependency lock": "validate.sh",
     "Resolve approved compatibility ranges without lifecycle execution": "resolve.sh",
@@ -533,24 +577,36 @@ PY
   CACHE_DIR="$tmp/e2e/acquire/cache" COMPATIBILITY_ROOT="$tmp/e2e/acquire/compat" COMPATIBILITY_RANGES="$request" \
   GITHUB_OUTPUT="$tmp/e2e/acquire/package.output" GITHUB_WORKSPACE="$tmp/e2e/acquire" MAX_PAYLOAD_BYTES=83886080 \
   PACKAGE_MANAGER=npm RUN_ATTEMPT=1 RUN_ID=1103 RUNNER_TEMP="$tmp/e2e/acquire/runner-temp" TRANSFER_DIR="$tmp/e2e/acquire/transfer" bash "$tmp/package.sh")
-[ "$?" -eq 0 ] && grep -q '^compatibility_provenance_sha256=' "$tmp/e2e/acquire/transfer/manifest" \
-  && pass "compatibility provenance shares the bounded transfer" || fail "compatibility provenance was not packaged through the canonical transfer"
+[ "$?" -eq 0 ] \
+  && [ -f "$tmp/e2e/acquire/transfer/npm-private-cache.tar.enc" ] \
+  && [ ! -e "$tmp/e2e/acquire/transfer/npm-private-cache.tar" ] \
+  && grep -q '^compatibility_provenance_sha256=' "$tmp/e2e/acquire/transfer/manifest" \
+  && pass "compatibility provenance shares an encrypted bounded transfer" \
+  || fail "compatibility provenance was not packaged as encrypted canonical transfer"
 
 mkdir -p "$tmp/e2e/build/bin"
 cp "$tmp/e2e/acquire/package-lock.json" "$tmp/e2e/build/package-lock.json" && cp -R "$tmp/e2e/acquire/transfer" "$tmp/e2e/build/transfer"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "$*" >> "$NPM_STUB_LOG"' '[ "${1:-}" = ci ]' > "$tmp/e2e/build/bin/npm"
 chmod +x "$tmp/e2e/build/bin/npm"
 provenance_sha="$(sed -n 's/^compatibility_provenance_sha256=//p' "$tmp/e2e/build/transfer/manifest")"
+decrypt_transfer() {
+  local fixture="$1"
+  local runner_temp="$fixture/runner-temp"
+  local transfer_key
+  transfer_key="$(sed -n 's/^encryption-key=//p' "$tmp/e2e/acquire/package.output")"
+  [ -f "$fixture/transfer/npm-private-cache.tar.enc" ] \
+    && [ ! -e "$fixture/transfer/npm-private-cache.tar" ] || return 1
+  mkdir -p "$runner_temp"
+  cp "$root/scripts/container_dependency_transfer.py" "$runner_temp/container_dependency_transfer.py"
+  (cd "$fixture" && RUNNER_TEMP="$runner_temp" TRANSFER_DIR="$fixture/transfer" \
+    TRANSFER_KEY="$transfer_key" bash "$tmp/decrypt.sh") || return 1
+  [ -f "$fixture/transfer/npm-private-cache.tar" ] \
+    && [ ! -e "$runner_temp/container_dependency_transfer.py" ]
+}
+
 run_install() {
   local fixture="$1"
   local runner_temp="$fixture/runner-temp"
-  if [ ! -f "$fixture/transfer/npm-private-cache.tar" ]; then
-    mkdir -p "$runner_temp"
-    cp "$root/scripts/container_dependency_transfer.py" "$runner_temp/container_dependency_transfer.py"
-    (cd "$fixture" && RUNNER_TEMP="$runner_temp" TRANSFER_DIR="$fixture/transfer" \
-      TRANSFER_KEY="$(sed -n 's/^encryption-key=//p' "$tmp/e2e/acquire/package.output")" \
-      bash "$tmp/decrypt.sh")
-  fi
   (cd "$fixture" && RUNNER_TEMP="$runner_temp" PATH="$tmp/e2e/build/bin:$PATH" NPM_STUB_LOG="$fixture/npm.log" APPROVED_INTERNAL_SCOPES=@verjson \
     COMPATIBILITY_RANGES="$request" COMPATIBILITY_ARTIFACT_DIR="$fixture/artifacts" EXPECTED_AUXILIARY_COMMIT='' \
     EXPECTED_AUXILIARY_CONTENT_PATH='' EXPECTED_AUXILIARY_REPOSITORY='' EXPECTED_COMPATIBILITY_PROVENANCE_SHA256="$provenance_sha" \
@@ -559,14 +615,19 @@ run_install() {
     NPM_CONFIG_USERCONFIG="$fixture/user.npmrc" PACKAGE_MANAGER=npm SECRETLESS_CACHE_DIR="$fixture/secretless-cache" TRANSFER_DIR="$fixture/transfer" \
     MAX_PAYLOAD_BYTES=83886080 RUN_ATTEMPT=1 RUN_ID=1103 bash "$tmp/install.sh")
 }
-if run_install "$tmp/e2e/build" && [ -f "$tmp/e2e/build/artifacts/lane-0.tgz" ]; then pass "credentialless restore reconstructs the exact compatibility tarball"; else fail "credentialless restore did not reconstruct the compatibility tarball"; fi
+if decrypt_transfer "$tmp/e2e/build" && run_install "$tmp/e2e/build" \
+    && [ -f "$tmp/e2e/build/artifacts/lane-0.tgz" ]; then
+  pass "credentialless restore decrypts before reconstructing the exact compatibility tarball"
+else
+  fail "credentialless restore did not decrypt and reconstruct the compatibility tarball"
+fi
 
 for mutation in provenance payload; do
   fixture="$tmp/e2e/tampered-$mutation"; mkdir -p "$fixture"; cp "$tmp/e2e/acquire/package-lock.json" "$fixture/package-lock.json"; cp -R "$tmp/e2e/acquire/transfer" "$fixture/transfer"
-  mkdir -p "$fixture/runner-temp"
-  cp "$root/scripts/container_dependency_transfer.py" "$fixture/runner-temp/container_dependency_transfer.py"
-  (cd "$fixture" && RUNNER_TEMP="$fixture/runner-temp" TRANSFER_DIR="$fixture/transfer" \
-    TRANSFER_KEY="$(sed -n 's/^encryption-key=//p' "$tmp/e2e/acquire/package.output")" bash "$tmp/decrypt.sh")
+  if ! decrypt_transfer "$fixture"; then
+    fail "the $mutation fixture could not decrypt the bounded transfer"
+    continue
+  fi
   python3 - "$fixture/transfer/npm-private-cache.tar" "$mutation" <<'PY'
 import json,pathlib,tarfile,tempfile,sys
 p=pathlib.Path(sys.argv[1]);m=sys.argv[2]
