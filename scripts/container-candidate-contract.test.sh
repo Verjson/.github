@@ -171,6 +171,17 @@ expected_conditions = {
     ),
     "candidate-manifest": candidate_condition,
 }
+expected_acquisition_condition = (
+    "always() && (" + authority_condition + ") "
+    "&& needs.prepare.result == 'success' "
+    "&& needs.prepare.outputs.has-private-node-packages == 'true'"
+)
+expected_pr_runner_selector = (
+    "${{ github.event_name != 'pull_request' && inputs.runner != '' && fromJSON(inputs.runner) "
+    "|| github.repository_owner != 'Verjson' && 'ubuntu-24.04' "
+    "|| github.event.repository.private == true && fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]') "
+    "|| fromJSON(vars.CI_LANE_UNTRUSTED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]') }}"
+)
 
 def validate_authority(read_only, publication):
     assert set(read_only["jobs"]) == {
@@ -184,6 +195,10 @@ def validate_authority(read_only, publication):
         assert publication["jobs"][job_name]["runs-on"] == "ubuntu-24.04", (
             f"deployable publication job {job_name} must use an independently trusted hosted runner"
         )
+    acquisition = publication["jobs"]["acquire-private-node-dependencies"]
+    assert acquisition["if"] == expected_acquisition_condition, (
+        "private dependency acquisition must run only on trusted publication events"
+    )
     assert read_only["permissions"] == {"contents": "read"}
     workflow_call = read_only.get("on", read_only.get(True, {})).get("workflow_call", {})
     assert "secrets" not in workflow_call, "read-only entrypoint must not declare secret inputs"
@@ -195,6 +210,10 @@ def validate_authority(read_only, publication):
     assert "needs.prepare.outputs.has-private-node-packages == 'false'" in pull_request_build["if"], (
         "private-package pull requests must skip all PR-controlled Docker instructions"
     )
+    for job_name in ("prepare", "skip-private-node-build", "pull-request-build"):
+        assert read_only["jobs"][job_name]["runs-on"] == expected_pr_runner_selector, (
+            f"read-only {job_name} runner selection must keep caller overrides off pull requests"
+        )
     pr_steps = pull_request_build["steps"]
     assert not any(step.get("uses", "").startswith("actions/cache/restore@") for step in pr_steps), (
         "PR builds must not restore a private dependency cache"
@@ -767,7 +786,9 @@ acquisition_job="$(awk '/^  acquire-private-node-dependencies:/{seen=1} /^  publ
 grep -qF 'has-private-node-packages: ${{ steps.config.outputs.has-private-node-packages }}' <<<"$prepare_job"
 grep -qF 'has-private-node-packages=$(jq -r' <<<"$prepare_job"
 grep -qF 'length > 0)' <<<"$prepare_job"
-grep -qF "if: needs.prepare.outputs.has-private-node-packages == 'true'" <<<"$acquisition_job"
+grep -qF "needs.prepare.outputs.has-private-node-packages == 'true'" <<<"$acquisition_job"
+grep -qF "github.event_name == 'push'" <<<"$acquisition_job"
+grep -qF "github.event_name == 'workflow_dispatch'" <<<"$acquisition_job"
 grep -qF 'NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}' <<<"$acquisition_job"
 grep -qF "# static schema predates job.workflow_sha." "$workflow"
 grep -qF 'JOB_WORKFLOW_SHA: ${{ fromJSON(toJSON(job)).workflow_sha }}' "$workflow"
