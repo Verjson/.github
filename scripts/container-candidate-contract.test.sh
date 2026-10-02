@@ -835,6 +835,7 @@ grep -q "needs.prepare.outputs.has-gar == 'true'" <<<"$mirror_gar_job"
 grep -q 'id-token: write' <<<"$mirror_gar_job"
 grep -q 'google-github-actions/auth@[0-9a-f]\{40\}' <<<"$mirror_gar_job"
 grep -q 'steps.gar-auth.outputs.auth_token' <<<"$mirror_gar_job"
+grep -qF '[.[] | select(.variant == $variant)] | if length == 1 then (.[0] | del(.variant))' "$publish_workflow"
 grep -q -- '--preserve-digests' "$root/scripts/container_registry_destinations.py"
 grep -q 'needs.mirror-gar.result' "$publish_workflow"
 if grep -Eq 'GITHUB_WORKFLOW_(REF|SHA)|github\.workflow_(ref|sha)' "$workflow" "$publish_workflow"; then

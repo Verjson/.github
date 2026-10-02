@@ -1023,7 +1023,7 @@ jobs:
             expected_destinations="$(python3 "$destination_helper" --config "$CONFIG_PATH" --owner "$GITHUB_REPOSITORY_OWNER" --variant "$variant" --digest "$index_digest" --published-at "$candidate_published_at")"
             ghcr_receipt="$(python3 "$destination_helper" --config "$CONFIG_PATH" --owner "$GITHUB_REPOSITORY_OWNER" --verify-provider ghcr --variant "$variant" --tag "$CANDIDATE" --digest "$index_digest" --authfile "$HOME/.docker/config.json" --published-at "$candidate_published_at")"
             if [ "$HAS_GAR" = true ]; then
-              gar_receipt="$(jq -cs --arg variant "$variant" '[.[] | select(.variant == $variant)] | if length == 1 then .[0] else error("expected one verified GAR receipt for image variant") end' candidate-registry/*/registry-receipt.json)"
+              gar_receipt="$(jq -cs --arg variant "$variant" '[.[] | select(.variant == $variant)] | if length == 1 then (.[0] | del(.variant)) else error("expected one verified GAR receipt for image variant") end' candidate-registry/*/registry-receipt.json)"
               receipts="$(jq -cn --argjson ghcr "$ghcr_receipt" --argjson gar "$gar_receipt" '[$ghcr,$gar]')"
             else
               receipts="[$ghcr_receipt]"

@@ -83,7 +83,7 @@ def normalize_destinations(config: dict[str, Any], owner: str) -> list[dict[str,
             if set(item) - {"provider", "namespace", "candidateRetentionDays"}:
                 raise DestinationError(f"{field} contains unsupported GHCR settings")
             retention_days = item.get("candidateRetentionDays", DEFAULT_CANDIDATE_RETENTION_DAYS)
-            if not isinstance(retention_days, int) or not 1 <= retention_days <= DEFAULT_CANDIDATE_RETENTION_DAYS:
+            if type(retention_days) is not int or not 1 <= retention_days <= DEFAULT_CANDIDATE_RETENTION_DAYS:
                 raise DestinationError(f"{field}.candidateRetentionDays must be 1 through {DEFAULT_CANDIDATE_RETENTION_DAYS}")
             destinations.append({
                 "provider": provider,
@@ -103,7 +103,7 @@ def normalize_destinations(config: dict[str, Any], owner: str) -> list[dict[str,
                 raise DestinationError(f"{field}.workloadIdentityProvider is not a Google WIF provider resource")
             if SERVICE_ACCOUNT.fullmatch(service_account) is None:
                 raise DestinationError(f"{field}.serviceAccount is not a Google service-account address")
-            if not isinstance(retention_days, int) or not 1 <= retention_days <= DEFAULT_CANDIDATE_RETENTION_DAYS:
+            if type(retention_days) is not int or not 1 <= retention_days <= DEFAULT_CANDIDATE_RETENTION_DAYS:
                 raise DestinationError(f"{field}.candidateRetentionDays must be 1 through {DEFAULT_CANDIDATE_RETENTION_DAYS}")
             if destinations and destinations[0]["provider"] != "ghcr":
                 raise DestinationError("GAR destinations require GHCR as the canonical build and provenance source")
@@ -205,7 +205,12 @@ def mirror_candidate(
     observed = _remote_digest(target, authfile)
     if observed != digest:
         raise DestinationError("destination digest differs from the candidate digest")
-    receipt = {"provider": provider, "repository": destination["repository"], "digest": digest}
+    receipt = {
+        "provider": provider,
+        "variant": variant,
+        "repository": destination["repository"],
+        "digest": digest,
+    }
     return _with_candidate_expiry(receipt, config, owner, variant, digest, published_at)
 
 

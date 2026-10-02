@@ -89,6 +89,20 @@ class RegistryDestinationTests(unittest.TestCase):
         with self.assertRaises(DestinationError):
             normalize_destinations(self.config, OWNER)
 
+    def test_retention_days_must_be_integers_and_reject_booleans(self):
+        self.config["registryDestinations"] = [
+            {"provider": "ghcr", "namespace": GHCR, "candidateRetentionDays": True}
+        ]
+        with self.assertRaises(DestinationError):
+            normalize_destinations(self.config, OWNER)
+
+        self.config["registryDestinations"] = [
+            {"provider": "ghcr", "namespace": GHCR},
+            {**GAR_DESTINATION, "candidateRetentionDays": True},
+        ]
+        with self.assertRaises(DestinationError):
+            normalize_destinations(self.config, OWNER)
+
     def test_image_must_stay_under_the_canonical_namespace(self):
         with self.assertRaises(DestinationError):
             expand_image_destinations(self.config, OWNER, {"repository": "ghcr.io/unrelated/api"})
@@ -108,7 +122,9 @@ class RegistryDestinationTests(unittest.TestCase):
                 receipt = destinations.mirror_candidate(
                     self.config, OWNER, "api", "gar", "1.2.3-rc.123.1", digest, authfile
                 )
-        self.assertEqual(receipt, {"provider": "gar", "repository": f"{GAR}/api", "digest": digest})
+        self.assertEqual(receipt, {
+            "provider": "gar", "variant": "api", "repository": f"{GAR}/api", "digest": digest,
+        })
         copy_args = run.call_args_list[1].args[0]
         self.assertIn("--all", copy_args)
         self.assertIn("--preserve-digests", copy_args)
@@ -153,6 +169,7 @@ class RegistryDestinationTests(unittest.TestCase):
                 )
         self.assertEqual(receipt["candidateExpiresAt"], "2026-12-29T00:00:00Z")
         self.assertRegex(receipt["verifiedAt"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+        self.assertEqual(receipt["variant"], "api")
         self.assertEqual(receipt["digest"], digest)
 
     def test_canonical_candidate_readback_returns_the_same_expiry_contract(self):
