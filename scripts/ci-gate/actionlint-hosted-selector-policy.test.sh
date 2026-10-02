@@ -46,6 +46,8 @@ for step in (install, enforce, cleanup):
     assert 'runner_temp="$(cd "${{ runner.temp }}" && pwd -P)"' in step["run"]
 assert "policy_mode=(--consumer-policy)" in enforce["run"]
 assert "GITHUB_REPOSITORY" in enforce["run"]
+assert 'repository="${GITHUB_REPOSITORY:?repository identity is unavailable}"' in enforce["run"]
+assert '[ "${repository,,}" = "verjson/.github" ]' in enforce["run"]
 assert "policy_mode=(--visibility public)" in enforce["run"]
 assert "python3 -S" in enforce["run"]
 assert 'mktemp -d "$runner_temp/verjson-hosted-selector-policy.XXXXXX"' in install["run"]
@@ -247,7 +249,7 @@ cp "$root/.github/workflows/ai-privileged-merge.yml" \
 (cd "$source_dir" && \
   RUNNER_TEMP="$GOOD_RUNNER_TEMP" \
   GITHUB_WORKSPACE="$GOOD_WORKSPACE" \
-  GITHUB_REPOSITORY="Verjson/.github" \
+  GITHUB_REPOSITORY="verJSON/.github" \
   VERJSON_HOSTED_SELECTOR_POLICY_DIR="$GOOD_POLICY_DIR" \
   bash "$enforce_script") >"$tmp/local-policy.out" 2>&1
 local_policy_rc=$?

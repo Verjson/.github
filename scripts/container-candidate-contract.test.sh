@@ -195,14 +195,9 @@ def validate_authority(read_only, publication):
         "prepare", "acquire-private-node-dependencies", "publish-base",
         "publish-derived", "attest-sbom", "mirror-gar", "candidate-manifest"
     }, "publication entrypoint has an unexpected static graph"
-    trusted_runner = (
-        "${{ github.repository_owner != 'Verjson' && 'ubuntu-24.04' || "
-        "fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || "
-        "'[\"ubuntu-24.04\"]') }}"
-    )
     for job_name in publication["jobs"]:
-        assert publication["jobs"][job_name]["runs-on"] == trusted_runner, (
-            f"publication job {job_name} must use the organization-trusted runner lane"
+        assert publication["jobs"][job_name]["runs-on"] == "ubuntu-24.04", (
+            f"deployable publication job {job_name} must use an independently trusted hosted runner"
         )
     assert read_only["permissions"] == {"contents": "read"}
     workflow_call = read_only.get("on", read_only.get(True, {})).get("workflow_call", {})
