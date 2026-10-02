@@ -984,7 +984,7 @@ def main() -> int:
                 ('[ "$(<"$tmp/arm-workflow-id")" = "$arm_workflow_id" ]',
                  'actions/required_workflows/$arm_workflow_id',
                  'workflow_api arm-rules', '--paginate',
-                 '.source_type == "Organization"', '.source == "Verjson"',
+                 '.source_type == "Organization"', '(.source | ascii_downcase) == "verjson"',
                  '.repository_id == 1269388380', '.ref == "refs/heads/main"',
                  '.event == "pull_request_target"',
                  '.path == ".github/workflows/gate-rearm.yml"', ".external_id == $external_id",

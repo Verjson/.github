@@ -98,7 +98,7 @@ jobs:
           run_id="$(jq -r .run_id <<<"$evidence")"
           run="$(gh api "repos/$TARGET_REPO/actions/runs/$run_id")"
           jq -e --arg repo "$TARGET_REPO" --arg default_branch "$DEFAULT_BRANCH" '
-            .repository.full_name == $repo and .head_branch == $default_branch and .event == "workflow_dispatch"
+            (.repository.full_name | ascii_downcase) == ($repo | ascii_downcase) and .head_branch == $default_branch and .event == "workflow_dispatch"
             and .status == "completed" and .conclusion == "success"
             and .path == ".github/workflows/ai-review-merge.yml"' <<<"$run" >/dev/null
           if [ "$legacy_authorization" = true ]; then

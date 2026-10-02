@@ -58,12 +58,30 @@ def publisher_reconciliation(preflight: dict[str, Any], repository: dict[str, An
     return True
 
 
+CANONICAL_REPOSITORY = "Verjson/.github"
+CANONICAL_REVIEW_WORKFLOW = ".github/workflows/container-deployment-review-producer.yml"
+
+
+def is_canonical_repository(repository: object) -> bool:
+    return (
+        isinstance(repository, str)
+        and re.fullmatch(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+", repository) is not None
+        and repository.lower() == CANONICAL_REPOSITORY.lower()
+    )
+
+
 def validate_workflow_identity(workflow_ref: str, workflow_sha: str, contract_ref: str) -> tuple[str, str]:
     if re.fullmatch(r"[0-9a-f]{40}", contract_ref) is None or workflow_sha != contract_ref or "@" not in workflow_ref:
         raise ValueError("executing producer workflow identity is malformed")
     workflow_path, selected_ref = workflow_ref.rsplit("@", 1)
-    expected_path = "Verjson/.github/.github/workflows/container-deployment-review-producer.yml"
-    if workflow_path != expected_path or selected_ref != contract_ref:
+    path_parts = workflow_path.split("/", 2)
+    repository = "/".join(path_parts[:2])
+    workflow_path_suffix = path_parts[2] if len(path_parts) == 3 else ""
+    if (
+        not is_canonical_repository(repository)
+        or workflow_path_suffix != CANONICAL_REVIEW_WORKFLOW
+        or selected_ref != contract_ref
+    ):
         raise ValueError("executing producer workflow is not immutable canonical contract")
     return workflow_path, selected_ref
 
@@ -72,7 +90,7 @@ def validate_serialized_job_context(job_context: dict[str, Any]) -> tuple[str, s
     repository = job_context.get("workflow_repository")
     workflow_ref = job_context.get("workflow_ref")
     workflow_sha = job_context.get("workflow_sha")
-    if repository != "Verjson/.github" or not isinstance(workflow_ref, str) or not isinstance(workflow_sha, str):
+    if not is_canonical_repository(repository) or not isinstance(workflow_ref, str) or not isinstance(workflow_sha, str):
         raise ValueError("called workflow job authority is missing")
     validate_workflow_identity(workflow_ref, workflow_sha, workflow_sha)
     return repository, workflow_ref, workflow_sha

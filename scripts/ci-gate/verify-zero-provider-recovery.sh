@@ -46,8 +46,8 @@ jq -e --argjson run "$REVIEW_RUN_ID" --argjson attempt "$REVIEW_RUN_ATTEMPT" \
   --arg title "$expected_title" --arg branch "$DEFAULT_BRANCH" --arg repo "$TARGET_REPO" '
     .id == $run and .run_attempt == $attempt and .event == "workflow_dispatch" and
     .path == ".github/workflows/ai-review-merge.yml" and .display_title == $title and
-    .head_branch == $branch and .head_repository.full_name == $repo and
-    .repository.full_name == $repo and
+    .head_branch == $branch and (.head_repository.full_name | ascii_downcase) == ($repo | ascii_downcase) and
+    (.repository.full_name | ascii_downcase) == ($repo | ascii_downcase) and
     # A workflow_dispatch run can remain queued while an environment-gated
     # sibling job is waiting for admission. That live status is still the
     # current run and must not be mistaken for a different dispatch (#1393).
@@ -107,7 +107,7 @@ if [ "$REVIEW_RUN_ATTEMPT" -eq 1 ]; then
   select_matching='[.[].workflow_runs[] | select(
       .display_title == $title and .event == "workflow_dispatch" and
       .path == ".github/workflows/ai-review-merge.yml" and .head_branch == $branch and
-      .head_repository.full_name == $repo and .repository.full_name == $repo
+      (.head_repository.full_name | ascii_downcase) == ($repo | ascii_downcase) and (.repository.full_name | ascii_downcase) == ($repo | ascii_downcase)
     )]'
   runlist_attempts=5
   matching_count=0

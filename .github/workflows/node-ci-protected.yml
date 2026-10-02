@@ -1358,7 +1358,8 @@ jobs:
                       or tarball != f"https://npm.pkg.github.com{path}" or "\\" in path
                       or len(parts) != 6 or parts[1] != "download"
                       or any(part in ("", ".", "..") for part in parts[1:])
-                      or expected_name != package or parts[4] != version):
+                      or not expected_name.isascii() or not package.isascii()
+            or expected_name.lower() != package.lower() or parts[4] != version):
                   raise SystemExit("registry exact-version provenance has an invalid GitHub Packages URL")
               digest_hex = digest.hex()
               prior_digest = known_downloads.setdefault(tarball, digest_hex)
