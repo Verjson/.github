@@ -264,6 +264,7 @@ doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
 root = sys.argv[2]
 names = {
     "Package bounded credential-free npm cache": "package.sh",
+    "Decrypt run-scoped secretless dependency payload": "decrypt.sh",
     "Install from verified secretless npm cache": "install.sh",
 }
 for job in doc["jobs"].values():
@@ -296,7 +297,9 @@ done
 
 run_package() {
   local fixture="$1" nested="$2"
-  (cd "$fixture" && PATH="$tmp/bin:$PATH" NPM_STUB_LOG="$fixture/npm.log" \
+  mkdir -p "$fixture/runner-temp"
+  cp "$root/scripts/container_dependency_transfer.py" "$fixture/runner-temp/container_dependency_transfer.py"
+  (cd "$fixture" && RUNNER_TEMP="$fixture/runner-temp" PATH="$tmp/bin:$PATH" NPM_STUB_LOG="$fixture/npm.log" \
     CACHE_DIR="$fixture/package-cache" TRANSFER_DIR="$fixture/transfer" \
     AUXILIARY_COMMIT='' AUXILIARY_CONTENT_PATH='' AUXILIARY_REPOSITORY='' \
     NESTED_MANIFESTS="$nested" GITHUB_WORKSPACE="$fixture" \
@@ -312,6 +315,9 @@ run_nested_install() {
   expected_payload_sha256="$(sed -n 's/^payload_sha256=//p' "$fixture/transfer/manifest")"
   expected_payload_bytes="$(sed -n 's/^payload_bytes=//p' "$fixture/transfer/manifest")"
   mkdir -p "$fixture/runner-temp"
+  cp "$root/scripts/container_dependency_transfer.py" "$fixture/runner-temp/container_dependency_transfer.py"
+  (cd "$fixture" && RUNNER_TEMP="$fixture/runner-temp" TRANSFER_DIR="$fixture/transfer" \
+    TRANSFER_KEY="$(sed -n 's/^encryption-key=//p' "$fixture/package.outputs")" bash "$tmp/decrypt.sh")
   (cd "$fixture" && PATH="$tmp/bin:$PATH" NPM_STUB_LOG="$fixture/npm.log" \
     GITHUB_ENV="$fixture/github.env" NPM_CONFIG_USERCONFIG="$fixture/empty.npmrc" \
     NPM_CONFIG_CACHE="$fixture/runtime-cache" \
