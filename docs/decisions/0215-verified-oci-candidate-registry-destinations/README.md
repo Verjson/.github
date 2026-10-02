@@ -1,0 +1,42 @@
+# 0215 — Verify OCI candidate registry destinations
+
+- **Date:** 2026-10-02
+- **Status:** Accepted
+- **Issue:** [#1667](https://github.com/Verjson/.github/issues/1667)
+- **Category:** CI authority and artifact publication (sensitive class)
+- **Related:** [verjson-ci#30](https://github.com/Verjson/verjson-ci/issues/30)
+
+## Context
+
+The candidate publisher built and attested OCI images only in GHCR. Adopters using
+another runtime registry had to maintain a second publisher, while a hand-written
+copy job could silently change a multi-platform index digest or leave one platform
+missing. A candidate manifest also needed to say how long each immutable digest was
+expected to remain available so release promotion would not rebuild or substitute an
+expired candidate.
+
+## Decision
+
+GHCR remains the canonical build, provenance, and promotion source. An adopter may
+add a narrowly configured destination with provider-specific OIDC identity. The
+publisher builds once, copies every platform while preserving the manifest digest,
+and fails unless each configured destination reads back the exact candidate digest.
+The candidate manifest records the verified digest, the source run start, and a
+per-destination expiry. Retention is bounded to 88 days. Stable promotion checks the
+canonical GHCR expiry and fails closed after it; it never rebuilds or selects a
+different candidate digest to recover an expired image.
+
+Only destination adapters with complete multi-platform support and exact digest
+read-back may be enabled. GAR is supported by this contract. Nexus remains disabled
+until [verjson-ci#30](https://github.com/Verjson/verjson-ci/issues/30) completes its
+OIDC multi-platform index publisher and live acceptance.
+
+## Consequences
+
+- GHCR-only adopters keep the existing behavior by omitting `registryDestinations`.
+- A GAR destination requires a reviewed Workload Identity provider, service account,
+  Docker repository namespace, and explicit retention limit.
+- Missing destinations, authorization failures, conflicts, copy errors, digest
+  mismatches, and expired candidate records stop publication or promotion.
+- Registry bytes may remain after their declared expiry, but automation treats them
+  as unavailable. No cleanup job is required for correctness.

@@ -30,7 +30,7 @@ for reconcile_path in ${reconcile_paths[@]+"${reconcile_paths[@]}"}; do
   case "$reconcile_path" in
     .git*|*/.git*) echo "--reconcile-allow may not name a Git or workflow surface" >&2; exit 2 ;;
     RELEASES/*|CHANGELOG/*|NEXT/*) echo "--reconcile-allow may not name a release-engine surface" >&2; exit 2 ;;
-    scripts/release-reconcile.sh|scripts/container_release_promotion.py|scripts/container_release_manifest.py|scripts/container_artifact_extract.py|scripts/container_attestation_verify.py|scripts/container_release_reconcile.py|scripts/container-release-contract.test.sh)
+  scripts/release-reconcile.sh|scripts/container_release_promotion.py|scripts/container_release_manifest.py|scripts/container_registry_destinations.py|scripts/container_artifact_extract.py|scripts/container_attestation_verify.py|scripts/container_release_reconcile.py|scripts/container-release-contract.test.sh)
       echo "--reconcile-allow may not name a release-engine surface" >&2; exit 2 ;;
   esac
   for seen in ${reconcile_seen[@]+"${reconcile_seen[@]}"}; do
@@ -82,6 +82,16 @@ HEADER
 git -C "$root" show "$ref:scripts/container_release_manifest.py" \
   | sed '1{/^#!\/usr\/bin\/env python3$/d;}'
 ;;
+destination-helper)
+  cat <<HEADER
+#!/usr/bin/env python3
+# GENERATED FILE — do not edit by hand.
+# Contract: $ref
+# Source: Verjson/.github/scripts/container_registry_destinations.py@$ref
+HEADER
+  git -C "$root" show "$ref:scripts/container_registry_destinations.py" \
+    | sed '1{/^#!\/usr\/bin\/env python3$/d;}'
+  ;;
 artifact-extractor) git -C "$root" show "$ref:scripts/container_artifact_extract.py" ;;
 attestation-verifier) git -C "$root" show "$ref:scripts/container_attestation_verify.py" ;;
 contract-test)
@@ -93,6 +103,7 @@ workflow_digest="$("$0" workflow "$ref" "$config" ${reconcile_args[@]+"${reconci
 promotion_digest="$(git -C "$root" show "$ref:scripts/container_release_promotion.py" | sha256sum | cut -d' ' -f1)"
 manifest_validator="$("$0" manifest-validator "$ref" "$config")"
 manifest_digest="$(printf '%s\n' "$manifest_validator" | sha256sum | cut -d' ' -f1)"
+destination_helper_digest="$("$0" destination-helper "$ref" "$config" | sha256sum | cut -d' ' -f1)"
 extractor_digest="$(git -C "$root" show "$ref:scripts/container_artifact_extract.py" | sha256sum | cut -d' ' -f1)"
 attestation_verifier_digest="$(git -C "$root" show "$ref:scripts/container_attestation_verify.py" | sha256sum | cut -d' ' -f1)"
 if [ -z "$reconcile_json" ]; then
@@ -128,10 +139,12 @@ legacy_org_release_token='VERJSON_RELEASE_'"TOKEN"
 ! grep -Eq "\$legacy_release_token|\$legacy_org_release_token" .github/workflows/container-release.yml
 test -f scripts/container_release_promotion.py
 test -f scripts/container_release_manifest.py
+test -f scripts/container_registry_destinations.py
 test -f scripts/container_artifact_extract.py
 test -f scripts/container_attestation_verify.py
 printf '%s  %s\n' '$promotion_digest' scripts/container_release_promotion.py | sha256sum --check --strict
 printf '%s  %s\n' '$manifest_digest' scripts/container_release_manifest.py | sha256sum --check --strict
+printf '%s  %s\n' '$destination_helper_digest' scripts/container_registry_destinations.py | sha256sum --check --strict
 printf '%s  %s\n' '$extractor_digest' scripts/container_artifact_extract.py | sha256sum --check --strict
 printf '%s  %s\n' '$attestation_verifier_digest' scripts/container_attestation_verify.py | sha256sum --check --strict
 grep -q '^  attestations: write\$' .github/workflows/container-release.yml

@@ -8,7 +8,7 @@ config_path="${3-container-candidate.json}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 
 usage() {
-  echo "usage: $(basename "$0") {workflow|validator|contract-test} <40-hex-contract-ref> [config-path]" >&2
+  echo "usage: $(basename "$0") {workflow|validator|destination-helper|contract-test} <40-hex-contract-ref> [config-path]" >&2
   exit 2
 }
 
@@ -87,12 +87,23 @@ HEADER
   git -C "$root" show "$ref:scripts/container_release_manifest.py" \
     | sed '1{/^#!\/usr\/bin\/env python3$/d;}'
   ;;
+destination-helper)
+  cat <<HEADER
+#!/usr/bin/env python3
+# GENERATED FILE — do not edit by hand.
+# Contract: $ref
+# Source: Verjson/.github/scripts/container_registry_destinations.py@$ref
+HEADER
+  git -C "$root" show "$ref:scripts/container_registry_destinations.py" \
+    | sed '1{/^#!\/usr\/bin\/env python3$/d;}'
+  ;;
 contract-test)
   acquisition_sha256="$(git -C "$root" show "$ref:scripts/container_private_dependencies.py" | sha256sum | cut -d' ' -f1)"
   retry_sha256="$(git -C "$root" show "$ref:scripts/container_candidate_retry.py" | sha256sum | cut -d' ' -f1)"
   private_packages="$(private_package_mode)"
   workflow_digest="$("$0" workflow "$ref" "$config_path" | sha256sum | cut -d' ' -f1)"
   validator_digest="$("$0" validator "$ref" "$config_path" | sha256sum | cut -d' ' -f1)"
+  destination_helper_digest="$("$0" destination-helper "$ref" "$config_path" | sha256sum | cut -d' ' -f1)"
   cat <<TEST
 #!/usr/bin/env bash
 # GENERATED FILE — do not edit by hand.
@@ -101,12 +112,15 @@ set -euo pipefail
 root="\$(cd "\$(dirname "\$0")/.." && pwd)"
 caller="\$root/.github/workflows/container-candidate.yml"
 validator="\$root/scripts/container_release_manifest.py"
+destination_helper="\$root/scripts/container_registry_destinations.py"
 fail() { echo "ERROR: \$*" >&2; exit 1; }
 
 [ -f "\$caller" ] || fail "generated caller is missing"
 [ -f "\$validator" ] || fail "generated validator is missing"
+[ -f "\$destination_helper" ] || fail "generated destination helper is missing"
 grep -qx '# Contract: $ref' "\$caller" || fail "caller contract pin differs"
 grep -qx '# Contract: $ref' "\$validator" || fail "validator contract pin differs"
+grep -qx '# Contract: $ref' "\$destination_helper" || fail "destination helper contract pin differs"
 [ "\$(grep -c 'uses: Verjson/.github/.github/workflows/container-candidate.yml@$ref' "\$caller")" -eq 1 ] || fail "validation does not use the pinned read-only reusable workflow"
 [ "\$(grep -c 'uses: Verjson/.github/.github/workflows/container-candidate-publish.yml@$ref' "\$caller")" -eq 1 ] || fail "publication does not use the pinned publication reusable workflow"
 [ "\$(grep -c 'contract-ref: $ref' "\$caller")" -eq 2 ] || fail "caller does not pass the shared pin to both event paths"
@@ -121,6 +135,7 @@ grep -q "if: github.event_name == 'pull_request'" "\$caller" || fail "validation
 grep -q "if: github.event_name == 'push' && github.ref == 'refs/heads/main'" "\$caller" || fail "publication is not restricted to trusted main pushes"
 [ "\$(sha256sum "\$caller" | cut -d' ' -f1)" = "$workflow_digest" ] || fail "generated caller was edited"
 [ "\$(sha256sum "\$validator" | cut -d' ' -f1)" = "$validator_digest" ] || fail "generated validator was edited"
+[ "\$(sha256sum "\$destination_helper" | cut -d' ' -f1)" = "$destination_helper_digest" ] || fail "generated destination helper was edited"
 if grep -Eq 'secrets: inherit|registry-namespace:|environment:' "\$caller"; then
   fail "caller may not inherit credentials or inject registry namespaces or environments"
 fi

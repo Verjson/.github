@@ -2,13 +2,14 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/contract/scripts" "$tmp/consumer/.github/workflows" "$tmp/consumer/scripts"
-cp "$root/scripts/gen-container-release.sh" "$root/scripts/changelog.py" "$root/scripts/container_release_promotion.py" "$root/scripts/container_release_manifest.py" "$root/scripts/container_artifact_extract.py" "$root/scripts/container_attestation_verify.py" "$tmp/contract/scripts/"
+cp "$root/scripts/gen-container-release.sh" "$root/scripts/changelog.py" "$root/scripts/container_release_promotion.py" "$root/scripts/container_release_manifest.py" "$root/scripts/container_registry_destinations.py" "$root/scripts/container_artifact_extract.py" "$root/scripts/container_attestation_verify.py" "$tmp/contract/scripts/"
 git -C "$tmp/contract" init -q; git -C "$tmp/contract" config user.name fixture; git -C "$tmp/contract" config user.email fixture@example.invalid
 git -C "$tmp/contract" add scripts; git -C "$tmp/contract" commit -qm fixture; ref="$(git -C "$tmp/contract" rev-parse HEAD)"
 generator="$tmp/contract/scripts/gen-container-release.sh"
 "$generator" workflow "$ref" >"$tmp/consumer/.github/workflows/container-release.yml"
 "$generator" validator "$ref" >"$tmp/consumer/scripts/container_release_promotion.py"
 "$generator" manifest-validator "$ref" >"$tmp/consumer/scripts/container_release_manifest.py"
+"$generator" destination-helper "$ref" >"$tmp/consumer/scripts/container_registry_destinations.py"
 "$generator" artifact-extractor "$ref" >"$tmp/consumer/scripts/container_artifact_extract.py"
 "$generator" attestation-verifier "$ref" >"$tmp/consumer/scripts/container_attestation_verify.py"
 "$generator" contract-test "$ref" >"$tmp/consumer/scripts/container-release-contract.test.sh"
@@ -82,6 +83,7 @@ reject_generation 'CHANGELOG/v1.0.0.md'
 reject_generation 'NEXT/entry.md'
 reject_generation 'scripts/release-reconcile.sh'
 reject_generation 'scripts/container_release_promotion.py'
+reject_generation 'scripts/container_registry_destinations.py'
 reject_generation 'Docker file'
 reject_generation '$(id)'
 if "$generator" workflow "$ref" container-candidate.json \
@@ -105,6 +107,7 @@ if grep -A6 '^    inputs:$' "$tmp/adopter/.github/workflows/container-release.ym
 fi
 "$generator" validator "$ref" >"$tmp/adopter/scripts/container_release_promotion.py"
 "$generator" manifest-validator "$ref" >"$tmp/adopter/scripts/container_release_manifest.py"
+"$generator" destination-helper "$ref" >"$tmp/adopter/scripts/container_registry_destinations.py"
 "$generator" artifact-extractor "$ref" >"$tmp/adopter/scripts/container_artifact_extract.py"
 "$generator" attestation-verifier "$ref" >"$tmp/adopter/scripts/container_attestation_verify.py"
 "$generator" contract-test "$ref" container-candidate.json \

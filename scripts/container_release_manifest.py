@@ -4,8 +4,11 @@ import argparse
 import json
 import re
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+
+from container_registry_destinations import DestinationError, manifest_destinations
 
 
 class ManifestError(ValueError):
@@ -38,6 +41,17 @@ def _digest(value: Any, field: str) -> str:
     if not DIGEST.fullmatch(value):
         raise ManifestError(f"{field} must be a lowercase sha256 digest")
     return value
+
+
+def _utc_timestamp(value: Any, field: str) -> datetime:
+    text = _text(value, field)
+    try:
+        timestamp = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ManifestError(f"{field} must be an RFC3339 UTC timestamp") from error
+    if timestamp.tzinfo is None or timestamp.utcoffset() != timedelta(0):
+        raise ManifestError(f"{field} must be an RFC3339 UTC timestamp")
+    return timestamp
 
 
 def _platform_identity(platform: dict[str, Any], field: str) -> tuple[str, str, str]:
@@ -87,8 +101,11 @@ def validate_manifest(manifest: dict[str, Any], config: dict[str, Any]) -> None:
     expected_repository = _text(config.get("repository"), "config.repository")
     if source.get("repository") != expected_repository:
         raise ManifestError("manifest source repository differs from reviewed config")
-    for key in ("commit", "ref", "workflow", "runId", "runAttempt"):
+    for key in ("commit", "ref", "workflow", "runId", "runAttempt", "candidatePublishedAt"):
         _text(source.get(key), f"manifest.source.{key}")
+    candidate_published_at = _utc_timestamp(
+        source["candidatePublishedAt"], "manifest.source.candidatePublishedAt"
+    )
     if source["ref"] != "refs/heads/main":
         raise ManifestError("candidate source ref must be refs/heads/main")
     if not re.fullmatch(r"[0-9a-f]{40}", source["commit"]):
@@ -127,7 +144,38 @@ def validate_manifest(manifest: dict[str, Any], config: dict[str, Any]) -> None:
         namespace = _text(config.get("registryNamespace"), "config.registryNamespace").rstrip("/")
         if not repository.startswith(namespace + "/"):
             raise ManifestError(f"image repository escapes registry namespace for variant {variant!r}")
-        _digest(actual.get("indexDigest"), f"manifest.images[{variant!r}].indexDigest")
+        index_digest = _digest(
+            actual.get("indexDigest"), f"manifest.images[{variant!r}].indexDigest"
+        )
+        try:
+            expected_destinations = manifest_destinations(
+                config,
+                expected_repository.split("/", 1)[0],
+                variant,
+                index_digest,
+                source["candidatePublishedAt"],
+            )
+        except DestinationError as error:
+            raise ManifestError(f"candidate destination contract is invalid: {error}") from error
+        destinations = _objects(
+            actual.get("destinations"), f"manifest.images[{variant!r}].destinations"
+        )
+        if len(destinations) != len(expected_destinations):
+            raise ManifestError(f"candidate destination receipts differ for variant {variant!r}")
+        for receipt, expected_destination in zip(destinations, expected_destinations, strict=True):
+            if set(receipt) != {*expected_destination, "verifiedAt"}:
+                raise ManifestError(f"candidate destination receipt fields differ for variant {variant!r}")
+            if any(receipt.get(key) != value for key, value in expected_destination.items()):
+                raise ManifestError(f"candidate destination digest or expiry differs for variant {variant!r}")
+            verified_at = _utc_timestamp(
+                receipt.get("verifiedAt"), f"manifest.images[{variant!r}].destinations.verifiedAt"
+            )
+            expiry = _utc_timestamp(
+                receipt.get("candidateExpiresAt"),
+                f"manifest.images[{variant!r}].destinations.candidateExpiresAt",
+            )
+            if verified_at < candidate_published_at or verified_at >= expiry:
+                raise ManifestError(f"candidate destination was not verified before expiry for variant {variant!r}")
         identities = actual.get("identities")
         if not isinstance(identities, dict):
             raise ManifestError(f"identities must be an object for variant {variant!r}")

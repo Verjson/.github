@@ -39,6 +39,8 @@ jobs:
       has-private-node-packages: ${{ steps.config.outputs.has-private-node-packages }}
       package-manager: ${{ steps.config.outputs.package-manager }}
       lock-file: ${{ steps.config.outputs.lock-file }}
+      registry-destinations: ${{ steps.config.outputs.registry-destinations }}
+      has-gar: ${{ steps.config.outputs.has-gar }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -67,6 +69,9 @@ jobs:
           case "$config_path" in "$source_root"/*) ;; *) echo "::error::candidate config escapes isolated source"; exit 1;; esac
           [ -f "$config_path" ] || { echo "::error::candidate config is not a regular file"; exit 1; }
           CONFIG_PATH="$config_path"
+          destination_helper="$RUNNER_TEMP/container_registry_destinations.py"
+          curl -fsSL "https://raw.githubusercontent.com/Verjson/.github/$CONTRACT_REF/scripts/container_registry_destinations.py" -o "$destination_helper"
+          destination_contract="$(python3 "$destination_helper" --config "$CONFIG_PATH" --owner "$GITHUB_REPOSITORY_OWNER")"
           expected_namespace="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
           jq -e --arg repository "$GITHUB_REPOSITORY" --arg namespace "$expected_namespace" '
             def safe_component:
@@ -109,12 +114,14 @@ jobs:
             and (all(.images[] | select(.baseVariant != null); .baseVariant as $base | any($variants[]; . == $base)))
           ' --argjson variants "$(jq -c '[.images[].variant]' "$CONFIG_PATH")" "$CONFIG_PATH" >/dev/null \
             || { echo "::error::duplicate matrix or artifact identity, or unknown base variant"; exit 1; }
-          matrix="$(jq -c '[.images[] | {
-            variant, repository,
-            platforms: ([.platforms[] | ((.os + "/" + .architecture) + (if (.variant // "") == "" then "" else "/" + .variant end))] | join(",")),
-            context: (.context // "."), file: (.file // "Dockerfile"), target: (.target // ""),
-            baseVariant: (.baseVariant // ""),
-            artifact: ("candidate-image-" + (.variant | gsub("[^A-Za-z0-9._-]"; "-")))
+          matrix="$(jq -c --argjson destination_contract "$destination_contract" '[.images[] as $image | {
+            variant: $image.variant, repository: $image.repository,
+            platforms: ([$image.platforms[] | ((.os + "/" + .architecture) + (if (.variant // "") == "" then "" else "/" + .variant end))] | join(",")),
+            context: ($image.context // "."), file: ($image.file // "Dockerfile"), target: ($image.target // ""),
+            baseVariant: ($image.baseVariant // ""),
+            artifact: ("candidate-image-" + ($image.variant | gsub("[^A-Za-z0-9._-]"; "-"))),
+            destinations: ([$destination_contract.images[] | select(.variant == $image.variant) | .destinations[]]),
+            gar: ([$destination_contract.images[] | select(.variant == $image.variant) | .destinations[] | select(.provider == "gar")] | if length == 0 then {} else .[0] end)
           }]' "$CONFIG_PATH")"
           sbom_matrix="$(jq -c '[.images[] as $image | $image.platforms[] | {
             imageVariant: $image.variant,
@@ -134,6 +141,8 @@ jobs:
             echo "has-private-node-packages=$(jq -r '((.privateNodePackages // []) | length > 0)' "$CONFIG_PATH")"
             echo "package-manager=$(jq -r '.packageManager // "npm"' "$CONFIG_PATH")"
             echo "lock-file=$(jq -r 'if (.packageManager // "npm") == "pnpm" then "pnpm-lock.yaml" else "package-lock.json" end' "$CONFIG_PATH")"
+            echo "registry-destinations=$(jq -c '.destinations' <<<"$destination_contract")"
+            echo "has-gar=$(jq -r 'any(.destinations[]; .provider == "gar")' <<<"$destination_contract")"
           } >> "$GITHUB_OUTPUT"
       - name: Remove isolated candidate source
         if: always()

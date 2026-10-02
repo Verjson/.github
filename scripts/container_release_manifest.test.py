@@ -6,6 +6,9 @@ import sys
 import unittest
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+
 MODULE_PATH = Path(__file__).with_name("container_release_manifest.py")
 SPEC = importlib.util.spec_from_file_location("container_release_manifest", MODULE_PATH)
 assert SPEC and SPEC.loader
@@ -48,12 +51,22 @@ def manifest():
             "workflow": "Verjson/.github/.github/workflows/container-candidate-publish.yml@" + "b" * 40,
             "runId": "123",
             "runAttempt": "1",
+            "candidatePublishedAt": "2026-10-02T00:00:00Z",
         },
         "images": [
             {
                 "variant": "default",
                 "repository": "ghcr.io/verjson/runner",
                 "indexDigest": "sha256:" + "1" * 64,
+                "destinations": [
+                    {
+                        "provider": "ghcr",
+                        "repository": "ghcr.io/verjson/runner",
+                        "digest": "sha256:" + "1" * 64,
+                        "candidateExpiresAt": "2026-12-29T00:00:00Z",
+                        "verifiedAt": "2026-10-02T00:02:00Z",
+                    }
+                ],
                 "identities": {"commit": "sha-" + "a" * 40, "candidate": "2.4.0-rc.123.1"},
                 "platforms": [
                     {
@@ -104,6 +117,45 @@ class ContainerReleaseManifestTests(unittest.TestCase):
 
     def test_accepts_complete_manifest_bound_to_reviewed_identity(self):
         manifest_contract.validate_manifest(manifest(), config())
+
+    def test_accepts_verified_multi_registry_destinations(self):
+        reviewed = config()
+        reviewed["registryDestinations"] = [
+            {"provider": "ghcr", "namespace": "ghcr.io/verjson"},
+            {
+                "provider": "gar",
+                "namespace": "us-central1-docker.pkg.dev/verjson-artifacts/containers",
+                "workloadIdentityProvider": "projects/123456789/locations/global/workloadIdentityPools/github/providers/verjson",
+                "serviceAccount": "container-publisher@verjson-artifacts.iam.gserviceaccount.com",
+                "candidateRetentionDays": 30,
+            },
+        ]
+        candidate = manifest()
+        candidate["images"][0]["destinations"].append(
+            {
+                "provider": "gar",
+                "repository": "us-central1-docker.pkg.dev/verjson-artifacts/containers/runner",
+                "digest": "sha256:" + "1" * 64,
+                "candidateExpiresAt": "2026-11-01T00:00:00Z",
+                "verifiedAt": "2026-10-02T00:03:00Z",
+            }
+        )
+        manifest_contract.validate_manifest(candidate, reviewed)
+
+    def test_rejects_missing_registry_receipt(self):
+        reviewed = config()
+        reviewed["registryDestinations"] = [
+            {"provider": "ghcr", "namespace": "ghcr.io/verjson"},
+            {
+                "provider": "gar",
+                "namespace": "us-central1-docker.pkg.dev/verjson-artifacts/containers",
+                "workloadIdentityProvider": "projects/123456789/locations/global/workloadIdentityPools/github/providers/verjson",
+                "serviceAccount": "container-publisher@verjson-artifacts.iam.gserviceaccount.com",
+                "candidateRetentionDays": 30,
+            },
+        ]
+        with self.assertRaisesRegex(manifest_contract.ManifestError, "destination receipts"):
+            manifest_contract.validate_manifest(manifest(), reviewed)
 
     def test_accepts_exact_reviewed_private_node_packages(self):
         reviewed = config()
@@ -226,6 +278,7 @@ class ContainerReleaseManifestTests(unittest.TestCase):
         derived = copy.deepcopy(candidate["images"][0])
         derived["variant"] = "debug"
         derived["indexDigest"] = "sha256:" + "6" * 64
+        derived["destinations"][0]["digest"] = derived["indexDigest"]
         derived["provenance"]["subjectDigest"] = derived["indexDigest"]
         derived["base"] = {"variant": "default", "digest": candidate["images"][0]["indexDigest"]}
         candidate["images"].append(derived)
@@ -241,6 +294,7 @@ class ContainerReleaseManifestTests(unittest.TestCase):
         derived = copy.deepcopy(candidate["images"][0])
         derived["variant"] = "debug"
         derived["indexDigest"] = "sha256:" + "6" * 64
+        derived["destinations"][0]["digest"] = derived["indexDigest"]
         derived["provenance"]["subjectDigest"] = derived["indexDigest"]
         derived["base"] = {"variant": "default", "digest": "sha256:" + "9" * 64}
         candidate["images"].append(derived)

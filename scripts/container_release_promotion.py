@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+from datetime import datetime, timezone
 import json
 import re
 import sys
@@ -19,8 +20,29 @@ def load(path: Path) -> dict:
     return value
 
 
-def release(candidate: dict, config: dict, state: dict, version: str) -> dict:
+def release(
+    candidate: dict, config: dict, state: dict, version: str,
+    now: datetime | None = None,
+) -> dict:
     validate_manifest(candidate, config)
+    current_time = now or datetime.now(timezone.utc)
+    if current_time.tzinfo is None or current_time.utcoffset() is None:
+        raise ManifestError("release check time must be timezone-aware")
+    current_time = current_time.astimezone(timezone.utc)
+    for image in candidate["images"]:
+        canonical = next(
+            (item for item in image["destinations"] if item["provider"] == "ghcr"),
+            None,
+        )
+        if canonical is None:
+            raise ManifestError("candidate has no canonical GHCR source")
+        expires_at = datetime.fromisoformat(
+            canonical["candidateExpiresAt"].replace("Z", "+00:00")
+        )
+        if current_time >= expires_at:
+            raise ManifestError(
+                "candidate GHCR digest has expired; rebuilding or substituting is forbidden"
+            )
     if not SEMVER.fullmatch(version) or version != config.get("nextStableVersion"):
         raise ManifestError("release version must be the reviewed next stable SemVer")
     if state.get("gitTag") or state.get("changelogSnapshot") or state.get("githubRelease"):
@@ -64,6 +86,7 @@ def release(candidate: dict, config: dict, state: dict, version: str) -> dict:
         images.append({
             "variant": image["variant"], "repository": repository,
             "indexDigest": digest, "platforms": image["platforms"],
+            "destinations": image["destinations"],
             "provenance": {"predicateType": image["provenance"]["predicateType"], "attestationDigest": attestation_digest, "builderIdentity": image["provenance"]["builderIdentity"]},
             "sbom": {"predicateType": image["sbom"]["predicateType"], "attestationDigest": sbom_digest},
         })

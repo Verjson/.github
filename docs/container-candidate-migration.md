@@ -5,15 +5,44 @@ release or deploy anything. Commit a reviewed `container-candidate.json` with th
 repository, its exact `ghcr.io/<owner>` namespace, `nextStableVersion`, and the
 complete image, variant, and platform matrix. A derived image names `baseVariant`;
 the candidate manifest binds it to the base index digest produced by that run.
+GHCR remains the canonical build and provenance source. Omit `registryDestinations`
+to keep GHCR-only behavior, or add the reviewed Google Artifact Registry OIDC
+destination shown below. The publisher builds each image once and copies the full
+multi-platform index without converting its digest.
+
+```json
+{
+  "registryDestinations": [
+    {"provider": "ghcr", "namespace": "ghcr.io/<owner>"},
+    {
+      "provider": "gar",
+      "namespace": "<location>-docker.pkg.dev/<project>/<repository>",
+      "workloadIdentityProvider": "projects/<project-number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>",
+      "serviceAccount": "<publisher>@<project>.iam.gserviceaccount.com",
+      "candidateRetentionDays": 88
+    }
+  ]
+}
+```
+
+The GHCR destination must be first and match `registryNamespace`. GAR must name a
+Docker repository and a narrowly configured Workload Identity provider and service
+account; only the trusted publisher job receives `id-token: write`. `candidateRetentionDays`
+is required for GAR and may be 1 through 88 days. The canonical GHCR default is 88 days.
+Candidate manifests record each destination's verified digest and expiry from the
+source run start. Promotion checks the GHCR expiry and fails once it has passed; it
+does not rebuild or substitute another digest. Nexus remains unavailable until the
+upstream multi-platform OIDC publisher contract is ready.
 
 At one immutable `Verjson/.github` commit, acquire
-`scripts/gen-container-candidate.sh`, then generate and commit all three outputs:
+`scripts/gen-container-candidate.sh`, then generate and commit all four outputs:
 
 ```sh
 scripts/gen-container-candidate.sh workflow <contract-sha> container-candidate.json > .github/workflows/container-candidate.yml
 scripts/gen-container-candidate.sh validator <contract-sha> container-candidate.json > scripts/container_release_manifest.py
+scripts/gen-container-candidate.sh destination-helper <contract-sha> container-candidate.json > scripts/container_registry_destinations.py
 scripts/gen-container-candidate.sh contract-test <contract-sha> container-candidate.json > scripts/container-candidate-contract.test.sh
-chmod +x scripts/container_release_manifest.py scripts/container-candidate-contract.test.sh
+chmod +x scripts/container_release_manifest.py scripts/container_registry_destinations.py scripts/container-candidate-contract.test.sh
 ```
 
 The generated caller binds pull-request validation to `container-candidate.yml`
@@ -22,8 +51,8 @@ SHA. Do not collapse the two calls or grant publication permissions to validatio
 GitHub validates the complete reusable graph before evaluating runtime conditions.
 Each image's `provenance.builderIdentity` must name the publishing entrypoint,
 `Verjson/.github/.github/workflows/container-candidate-publish.yml@<contract-sha>`.
-Regenerate the workflow, validator, and contract test together when changing the
-contract SHA, and run the generated test in CI.
+Regenerate the workflow, validator, destination helper, and contract test together
+when changing the contract SHA, and run the generated test in CI.
 
 Default-branch pushes publish commit-addressed and
 `<nextStableVersion>-rc.<run_id>.<run_attempt>` identities and retain a complete
