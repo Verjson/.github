@@ -50,12 +50,22 @@ def candidate():
             "workflow": WORKFLOW,
             "runId": "123",
             "runAttempt": "1",
+            "candidatePublishedAt": "2026-10-02T15:00:00Z",
         },
         "images": [
             {
                 "variant": "default",
                 "repository": "ghcr.io/verjson/example",
                 "indexDigest": INDEX_DIGEST,
+                "destinations": [
+                    {
+                        "provider": "ghcr",
+                        "repository": "ghcr.io/verjson/example",
+                        "digest": INDEX_DIGEST,
+                        "candidateExpiresAt": "2026-12-29T15:00:00Z",
+                        "verifiedAt": "2026-10-02T15:00:01Z",
+                    }
+                ],
                 "identities": {
                     "commit": "sha-" + "a" * 40,
                     "candidate": "1.2.3-rc.123.1",
