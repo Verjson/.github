@@ -5,6 +5,10 @@ root="$(cd "$(dirname "$0")/../.." && pwd)"
 workflow="$root/.github/workflows/node-ci.yml"
 failures=0
 tmp="$(mktemp -d)"
+export TRANSFER_HELPER_SOURCE="$root/scripts/container_dependency_transfer.py"
+export PACKAGE_BODY_SCRIPT="$tmp/package-body.sh"
+export RUNNER_TEMP="$tmp/transfer-runner"
+mkdir -p "$RUNNER_TEMP"
 trap 'rm -rf "$tmp"' EXIT
 
 pass() { printf 'ok - %s\n' "$1"; }
@@ -43,6 +47,7 @@ assert inputs["browser-cache"]["type"] == "boolean"
 assert inputs["browser-cache"]["default"] is False
 
 assert acquire["outputs"]["transfer-cache-key"] == "${{ steps.create-secretless-cache-key.outputs.cache-key }}"
+assert acquire["outputs"]["transfer-encryption-key"] == "${{ steps.package-secretless-transfer.outputs.encryption-key }}"
 assert acquire["outputs"]["transfer-payload-bytes"] == "${{ steps.package-secretless-transfer.outputs.payload-bytes }}"
 assert acquire["outputs"]["transfer-payload-sha256"] == "${{ steps.package-secretless-transfer.outputs.payload-sha256 }}"
 assert "transfer-artifact-id" not in acquire["outputs"]
@@ -53,6 +58,13 @@ assert "secretless-npm-transfer-${RUN_ID}-${RUN_ATTEMPT}-${nonce}" in create_key
 save = next(step for step in acquire["steps"] if step.get("id") == "save-secretless-transfer")
 assert save["uses"] == "actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
 assert save["with"]["key"] == "${{ steps.create-secretless-cache-key.outputs.cache-key }}"
+acquire_transfer_download = next(
+    step for step in acquire["steps"]
+    if step.get("name") == "Download pinned secretless dependency transfer implementation"
+)
+assert "job)).workflow_sha" in acquire_transfer_download["env"]["JOB_WORKFLOW_SHA"]
+assert "JOB_WORKFLOW_SHA" in acquire_transfer_download["run"]
+assert "raw.githubusercontent.com/Verjson/.github/" in acquire_transfer_download["run"]
 stable_transfer_path = ".verjson-secretless-transfer-${{ github.run_id }}"
 assert save["with"]["path"] == stable_transfer_path
 assert "runner.temp" not in save["with"]["path"]
@@ -62,10 +74,15 @@ package = next(step for step in acquire["steps"] if step.get("name") == "Package
 assert package["id"] == "package-secretless-transfer"
 assert acquire["steps"].index(package) < acquire["steps"].index(save)
 assert package["env"]["MAX_PAYLOAD_BYTES"] == "83886080"
+assert acquire["steps"].index(acquire_transfer_download) < acquire["steps"].index(package)
 assert '[ ! -e "$TRANSFER_DIR" ] && [ ! -L "$TRANSFER_DIR" ]' in package["run"]
 assert "reserved secretless transfer path exists before packaging" in package["run"]
 assert "_cacache/content-v2" in package["run"]
 assert "npm-private-cache.tar" in package["run"]
+assert "npm-private-cache.tar.enc" in package["run"]
+assert 'rm -f "$TRANSFER_DIR/npm-private-cache.tar"' in package["run"]
+assert "container_dependency_transfer.py\" encrypt" in package["run"]
+assert "encryption-key=%s" in package["run"]
 assert "payload_bytes" in package["run"]
 assert "run_attempt=$RUN_ATTEMPT" in package["run"]
 assert "lock_sha256=$lock_sha256" in package["run"]
@@ -82,6 +99,15 @@ assert acquire_cleanup["env"]["CACHE_DIR"] == "${{ steps.populate-private-cache.
 stable_workspace_transfer = "${{ github.workspace }}/" + stable_transfer_path
 restore_guard = next(step for step in build["steps"] if step.get("name") == "Require an unused secretless restore path")
 restore = next(step for step in build["steps"] if step.get("id") == "restore-secretless-transfer")
+transfer_download = next(
+    step for step in build["steps"]
+    if step.get("name") == "Download pinned secretless dependency transfer implementation"
+)
+transfer_decrypt = next(
+    step for step in build["steps"]
+    if step.get("name") == "Decrypt run-scoped secretless dependency payload"
+)
+install = next(step for step in build["steps"] if step.get("name") == "Install from verified secretless npm cache")
 assert build["steps"].index(restore_guard) < build["steps"].index(restore)
 assert restore_guard["env"]["TRANSFER_DIR"] == stable_workspace_transfer
 assert '[ ! -e "$TRANSFER_DIR" ] && [ ! -L "$TRANSFER_DIR" ]' in restore_guard["run"]
@@ -91,6 +117,13 @@ assert restore["with"]["key"] == "${{ needs.acquire-secretless-dependencies.outp
 assert restore["with"]["path"] == stable_transfer_path
 assert restore["with"]["fail-on-cache-miss"] is True
 assert "restore-keys" not in restore["with"]
+assert build["steps"].index(restore) < build["steps"].index(transfer_download)
+assert build["steps"].index(transfer_download) < build["steps"].index(transfer_decrypt)
+assert build["steps"].index(transfer_decrypt) < build["steps"].index(install)
+assert transfer_decrypt["env"]["TRANSFER_KEY"] == "${{ needs.acquire-secretless-dependencies.outputs.transfer-encryption-key }}"
+assert 'npm-private-cache.tar.enc' in transfer_decrypt["run"]
+assert 'npm-private-cache.tar"' in transfer_decrypt["run"]
+assert "container_dependency_transfer.py\" decrypt" in transfer_decrypt["run"]
 assert save["with"]["path"] == restore["with"]["path"]
 
 public_restore = next(step for step in build["steps"] if step.get("id") == "restore-secretless-public-cache")
@@ -144,7 +177,6 @@ assert build["steps"].index(browser_validate) < build["steps"].index(browser_bou
 assert build["steps"].index(browser_bound) < build["steps"].index(browser_save)
 assert build["steps"].index(browser_save) < build["steps"].index(browser_cleanup)
 assert "~/.cache/ms-playwright" not in str(build)
-install = next(step for step in build["steps"] if step.get("name") == "Install from verified secretless npm cache")
 setup_index = next(index for index, step in enumerate(build["steps"]) if str(step.get("uses", "")).startswith("actions/setup-node@"))
 setup = build["steps"][setup_index]
 install_index = build["steps"].index(install)
@@ -231,6 +263,23 @@ assert 'Possible causes include package authorization' in populate["run"]
 assert '${diagnostic_line//$NODE_AUTH_TOKEN/[REDACTED]}' in populate["run"]
 assert 'tail -c 8192 "$npm_diagnostic" | tail -n 20' in populate["run"]
 PY
+
+mv "$tmp/package.sh" "$tmp/package-body.sh"
+cat > "$tmp/package.sh" <<'BASH'
+#!/usr/bin/env bash
+set -euo pipefail
+mkdir -p "$RUNNER_TEMP"
+cp "$TRANSFER_HELPER_SOURCE" "$RUNNER_TEMP/container_dependency_transfer.py"
+bash "$PACKAGE_BODY_SCRIPT"
+key="$(sed -n 's/^encryption-key=//p' "$GITHUB_OUTPUT")"
+cp "$TRANSFER_DIR/npm-private-cache.tar.enc" \
+  "$RUNNER_TEMP/cache-ciphertext-${RUN_ID}-${RUN_ATTEMPT}.bin"
+TRANSFER_KEY="$key" python3 "$TRANSFER_HELPER_SOURCE" decrypt \
+  --source "$TRANSFER_DIR/npm-private-cache.tar.enc" \
+  --destination "$TRANSFER_DIR/npm-private-cache.tar"
+rm -f "$TRANSFER_DIR/npm-private-cache.tar.enc"
+BASH
+chmod +x "$tmp/package.sh"
 
 browser_env="$tmp/browser.env"
 browser_output="$tmp/browser.output"
@@ -456,6 +505,7 @@ if (cd "$tmp/acquire" && PATH="$tmp/bin:$PATH" NPM_STUB_LOG="$tmp/npm.log" \
     && [ ! -d "$tmp/acquire/node_modules" ] \
     && grep -qFx 'run_id=7001' "$tmp/acquire/transfer/manifest" \
     && grep -qFx 'run_attempt=3' "$tmp/acquire/transfer/manifest" \
+    && ! grep -a -qF 'cached private package bytes' "$tmp/transfer-runner/cache-ciphertext-7001-3.bin" \
     && tar -tf "$tmp/acquire/transfer/npm-private-cache.tar" | grep '^_cacache/content-v2/' >/dev/null \
     && ! tar -tf "$tmp/acquire/transfer/npm-private-cache.tar" | grep 'index-v5' >/dev/null; then
   pass "packaging transfers only private content blobs and binds run, attempt, lock, digest, and size"
