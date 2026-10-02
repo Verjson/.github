@@ -562,7 +562,9 @@ jobs:
               echo "::error::secretless-pr is restricted to pull_request validation"
               exit 1
             }
-            [ "$HEAD_REPOSITORY" = "$REPOSITORY" ] || {
+          head_repository_normalized="$(printf '%s' "$HEAD_REPOSITORY" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+          repository_normalized="$(printf '%s' "$REPOSITORY" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+          [ "$head_repository_normalized" = "$repository_normalized" ] || {
               echo "::error::secretless-pr requires a same-repository pull request; fork PRs receive no package credential"
               exit 1
             }
