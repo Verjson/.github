@@ -17,6 +17,8 @@ gate="$here/hub-changelog-validate.sh"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 fails=0
+# GitHub exports the PR's base branch; fixtures use their own `main` refs.
+unset GITHUB_BASE_REF
 pass() { printf 'ok   - %s\n' "$1"; }
 fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 
