@@ -779,7 +779,7 @@ fi
   echo "reusable-call canary does not exercise both trust paths" >&2
   exit 1
 }
-jq -e '.repository == "Verjson/.github" and .images[0].platforms == [{"os":"linux","architecture":"amd64"}]' \
+jq -e '.repository == "verJSON/.github" and .images[0].platforms == [{"os":"linux","architecture":"amd64"}]' \
   "$root/scripts/fixtures/container-candidate/canary.json" >/dev/null
 prepare_job="$(awk '/^  prepare:/{seen=1} /^  pull-request-build:/{seen=0} seen' "$workflow")"
 acquisition_job="$(awk '/^  acquire-private-node-dependencies:/{seen=1} /^  publish-base:/{seen=0} seen' "$publish_workflow")"
