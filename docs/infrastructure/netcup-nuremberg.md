@@ -48,12 +48,14 @@ an existing one. Docker and npm authentication realms are enabled. Existing
 default Maven and NuGet repositories retain their previous anonymous read
 access; that access does not extend to these hosted registries.
 
-Registry readiness and consumer integration are coordinated in
-[#1264](https://github.com/Verjson/.github/issues/1264). Documentation updates
-started in [#1266](https://github.com/Verjson/.github/issues/1266). The deployed
-authentication configuration still needs to be incorporated into the generated
-bootstrap in [verjson-cli#214](https://github.com/Verjson/verjson-cli/issues/214)
-so future deployments reproduce it.
+Registry readiness and consumer integration remain coordinated in
+[#1264](https://github.com/Verjson/.github/issues/1264). Documentation work began
+in [#1266](https://github.com/Verjson/.github/issues/1266). The generated
+bootstrap now reproduces the authenticated Nexus registry configuration through
+merged [verjson-cli#216](https://github.com/Verjson/verjson-cli/pull/216), which
+closed [verjson-cli#214](https://github.com/Verjson/verjson-cli/issues/214). That
+code change did not validate a live deployment; environment rollout and endpoint
+verification remain part of #1264.
 
 ## Client settings
 

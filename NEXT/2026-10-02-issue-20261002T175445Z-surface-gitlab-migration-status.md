@@ -5,4 +5,4 @@ impact: patch
 title: Surface GitLab migration status
 ---
 
-The organization profile now links to the shared Nuremberg infrastructure guide, deployment implementation, and CI migration tracker. The infrastructure guide records the current service inventory and distinguishes deployed services from incomplete runner and publisher acceptance.
+The organization profile now links to the shared Nuremberg infrastructure guide, deployment implementation, and CI migration tracker. The infrastructure guide records the current service inventory, distinguishes deployed services from incomplete runner and publisher acceptance, and separates the merged Nexus bootstrap implementation from live validation still tracked in #1264.
