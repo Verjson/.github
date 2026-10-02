@@ -463,6 +463,10 @@ assert_canonical_clean(
     "the dispatch-only canonical canary accepts only its exact two-label selector",
 )
 assert_undetermined_fixture(
+    "candidate-selector-unbound",
+    "the candidate runner selector is not globally trusted outside its canonical workflow",
+)
+assert_undetermined_fixture(
     "runner-canary-exact",
     "a caller-chosen alternate scan directory cannot rebase canonical path authority",
 )

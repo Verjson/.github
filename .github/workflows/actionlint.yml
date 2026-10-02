@@ -158,6 +158,8 @@ jobs:
       - name: Refuse literal hosted selectors in Verjson callers
         if: github.repository_owner == 'Verjson'
         env:
+          # The policy checkout follows this workflow's source revision so a new
+          # reviewed selector cannot run against a stale allowlist.
           VERJSON_HOSTED_SELECTOR_POLICY_SHA: ${{ job.workflow_sha }}
         run: |
           set -euo pipefail
@@ -175,12 +177,14 @@ jobs:
             exit 1
           fi
           policy_mode=(--consumer-policy)
-          repository="${GITHUB_REPOSITORY:?repository identity is unavailable}"
-          if [ "${repository,,}" = "verjson/.github" ]; then
+          case "${GITHUB_REPOSITORY:?repository identity is unavailable}" in
+            [Vv][Ee][Rr][Jj][Ss][Oo][Nn]/[.][Gg][Ii][Tt][Hh][Uu][Bb])
             # This repository retains ADR 0089's two exact, fixed-hosted
-            # security boundaries. Consumers have no such exception.
+            # security boundaries. Only ASCII case variants match; consumers
+            # and Unicode-confusable identities have no such exception.
             policy_mode=(--visibility public)
-          fi
+            ;;
+          esac
           PYTHONPATH="$policy_dir/python" \
             PYTHONNOUSERSITE=1 \
             python3 -S \

@@ -163,7 +163,12 @@ jobs:
         run: rm -rf "$SOURCE_PATH"
 
   acquire-private-node-dependencies:
-    if: needs.prepare.outputs.has-private-node-packages == 'true'
+    if: >-
+      always() &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main' && github.event.repository.default_branch == 'main') ||
+      (github.event_name == 'workflow_dispatch' && github.repository == 'Verjson/.github' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) &&
+      needs.prepare.result == 'success' &&
+      needs.prepare.outputs.has-private-node-packages == 'true'
     needs: prepare
     runs-on: ubuntu-24.04
     timeout-minutes: 30
