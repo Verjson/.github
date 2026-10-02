@@ -126,9 +126,13 @@ if grep -Eq 'secrets: inherit|registry-namespace:|environment:' "\$caller"; then
 fi
 if [ "$private_packages" = true ]; then
   [ "\$(grep -cF 'NODE_AUTH_TOKEN: \${{ secrets.NODE_AUTH_TOKEN }}' "\$caller")" -eq 1 ] || fail "private-package caller must route its acquisition token only to trusted publication"
-  if sed -n '/^  validate:/,/^  publish:/p' "\$caller" | grep -Eq 'packages: read|secrets:|NODE_AUTH_TOKEN'; then
+validation_job="\$(mktemp)"
+awk '/^  validate:/{copy=1} /^  publish:/{copy=0} copy' "\$caller" > "\$validation_job"
+if grep -Eq 'packages: read|secrets:|NODE_AUTH_TOKEN' "\$validation_job"; then
+    rm -f "\$validation_job"
     fail "private-package pull-request validation exposes package credentials or contents"
   fi
+  rm -f "\$validation_job"
 else
   ! grep -q 'NODE_AUTH_TOKEN\|packages: read' "\$caller" || fail "public-only caller exposes package credentials or read authority"
 fi

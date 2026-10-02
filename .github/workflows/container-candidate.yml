@@ -148,7 +148,7 @@ jobs:
     needs: prepare
     permissions:
       contents: read
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') || fromJSON(vars.CI_LANE_UNTRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     steps:
       - name: Explain skipped private-package candidate build
         run: echo "::notice::pull-request candidate build skipped because privateNodePackages is configured; trusted publication builds it from the protected default branch"
