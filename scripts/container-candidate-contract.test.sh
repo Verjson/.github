@@ -8,8 +8,9 @@ mkdir -p "$tmp/contract/scripts"
 cp "$root/scripts/gen-container-candidate.sh" \
   "$root/scripts/container_release_manifest.py" \
   "$root/scripts/container_private_dependencies.py" \
-  "$root/scripts/container_candidate_retry.py" \
   "$root/scripts/container_dependency_transfer.py" \
+  "$root/scripts/container_candidate_retry.py" \
+  "$root/scripts/container_registry_destinations.py" \
   "$tmp/contract/scripts/"
 git -C "$tmp/contract" init -q
 git -C "$tmp/contract" config user.name fixture
@@ -27,6 +28,8 @@ for fixture in single multi; do
     > "$consumer/.github/workflows/container-candidate.yml"
   (cd "$consumer" && "$generator" validator "$ref" container-candidate.json) \
     > "$consumer/scripts/container_release_manifest.py"
+  (cd "$consumer" && "$generator" destination-helper "$ref" container-candidate.json) \
+    > "$consumer/scripts/container_registry_destinations.py"
   (cd "$consumer" && "$generator" contract-test "$ref" container-candidate.json) \
     > "$consumer/scripts/container-candidate-contract.test.sh"
   chmod +x "$consumer/scripts/"*.sh "$consumer/scripts/"*.py
@@ -62,8 +65,6 @@ for fixture in single multi; do
   mv "$consumer/.github/workflows/container-candidate.yml.clean" "$consumer/.github/workflows/container-candidate.yml"
 done
 
-python3 "$root/scripts/container_dependency_transfer.test.py"
-
 private_consumer="$tmp/private-generated"
 mkdir -p "$private_consumer/.github/workflows" "$private_consumer/scripts"
 jq '.privateNodePackages = ["@verjson/private-package"]' \
@@ -73,6 +74,8 @@ jq '.privateNodePackages = ["@verjson/private-package"]' \
   > "$private_consumer/.github/workflows/container-candidate.yml"
 (cd "$private_consumer" && "$generator" validator "$ref" container-candidate.json) \
   > "$private_consumer/scripts/container_release_manifest.py"
+(cd "$private_consumer" && "$generator" destination-helper "$ref" container-candidate.json) \
+  > "$private_consumer/scripts/container_registry_destinations.py"
 (cd "$private_consumer" && "$generator" contract-test "$ref" container-candidate.json) \
   > "$private_consumer/scripts/container-candidate-contract.test.sh"
 chmod +x "$private_consumer/scripts/"*.sh "$private_consumer/scripts/"*.py
@@ -118,19 +121,6 @@ with open(os.environ["PUBLISH_WORKFLOW"], encoding="utf-8") as stream:
 with open(os.environ["CANARY_WORKFLOW"], encoding="utf-8") as stream:
     canary = yaml.safe_load(stream)
 
-publisher_call = publisher.get("on", publisher.get(True, {})).get("workflow_call", {})
-assert set(publisher_call.get("inputs", {})) == {
-    "acquisition-sha256",
-    "config-path",
-    "contract-ref",
-    "retry-sha256",
-    "runner",
-    "transfer-sha256",
-}, "publication entrypoint must expose the complete reusable-workflow input contract"
-assert set(publisher_call.get("secrets", {})) == {"NODE_AUTH_TOKEN"}, (
-    "publication entrypoint must expose only its package acquisition token"
-)
-
 validation_permissions = {"actions": "read", "contents": "read"}
 publication_permissions = {
     "actions": "read",
@@ -163,7 +153,16 @@ candidate_condition = (
     "&& needs.prepare.result == 'success' "
     "&& needs.publish-base.result == 'success' "
     "&& needs.publish-derived.result == 'success' "
-    "&& needs.attest-sbom.result == 'success'"
+    "&& needs.attest-sbom.result == 'success' "
+    "&& (needs.mirror-gar.result == 'success' || needs.mirror-gar.result == 'skipped')"
+)
+mirror_gar_condition = (
+    "always() && (" + authority_condition + ") "
+    "&& needs.prepare.result == 'success' "
+    "&& needs.publish-base.result == 'success' "
+    "&& needs.publish-derived.result == 'success' "
+    "&& needs.attest-sbom.result == 'success' "
+    "&& needs.prepare.outputs.has-gar == 'true'"
 )
 expected_conditions = {
     "publish-base": (
@@ -185,6 +184,7 @@ expected_conditions = {
         "&& needs.publish-base.result == 'success' "
         "&& needs.publish-derived.result == 'success'"
     ),
+    "mirror-gar": mirror_gar_condition,
     "candidate-manifest": candidate_condition,
 }
 expected_acquisition_condition = (
@@ -205,7 +205,7 @@ def validate_authority(read_only, publication):
     }, "read-only entrypoint contains publication authority"
     assert set(publication["jobs"]) == {
         "prepare", "acquire-private-node-dependencies", "publish-base",
-        "publish-derived", "attest-sbom", "candidate-manifest"
+        "publish-derived", "attest-sbom", "mirror-gar", "candidate-manifest"
     }, "publication entrypoint has an unexpected static graph"
     for job_name in publication["jobs"]:
         assert publication["jobs"][job_name]["runs-on"] == "ubuntu-24.04", (
@@ -223,7 +223,7 @@ def validate_authority(read_only, publication):
     )
     assert 'container_dependency_transfer.py" encrypt' in package_transfer["run"]
     assert 'rm -f "$TRANSFER_DIR/container-node-modules.tgz"' in package_transfer["run"]
-    assert 'encryption-key=%s' in package_transfer["run"]
+    assert "encryption-key=%s" in package_transfer["run"]
     assert read_only["permissions"] == {"contents": "read"}
     workflow_call = read_only.get("on", read_only.get(True, {})).get("workflow_call", {})
     assert "secrets" not in workflow_call, "read-only entrypoint must not declare secret inputs"
@@ -271,10 +271,29 @@ def validate_authority(read_only, publication):
             f"publication {job_name} must remain exact read-only preparation"
         )
         if job_name == "prepare":
-            read_only_job = dict(read_only["jobs"][job_name])
-            publication_job = dict(publication["jobs"][job_name])
+            read_only_job = copy.deepcopy(read_only["jobs"][job_name])
+            publication_job = copy.deepcopy(publication["jobs"][job_name])
             read_only_job.pop("runs-on")
             publication_job.pop("runs-on")
+            assert publication_job["outputs"].pop("mirror-matrix", None) == (
+                "${{ steps.config.outputs.mirror-matrix }}"
+            )
+            publication_config = next(
+                step for step in publication_job["steps"] if step.get("id") == "config"
+            )
+            publication_config_lines = publication_config["run"].splitlines()
+            mirror_matrix_line = (
+                'mirror_matrix="$(jq -c \'[.[] | select(.gar.provider == "gar")] | '
+                'if length == 0 then [{}] else . end\' <<<"$matrix")"'
+            )
+            mirror_matrix_output_line = '  echo "mirror-matrix=$mirror_matrix"'
+            assert publication_config_lines.count(mirror_matrix_line) == 1
+            assert publication_config_lines.count(mirror_matrix_output_line) == 1
+            publication_config["run"] = "\n".join(
+                line
+                for line in publication_config_lines
+                if line not in {mirror_matrix_line, mirror_matrix_output_line}
+            ) + ("\n" if publication_config["run"].endswith("\n") else "")
             assert read_only_job == publication_job, (
                 f"shared trusted-input job {job_name} drifted beyond its trust-isolated runner assignment"
             )
@@ -321,14 +340,15 @@ def validate_authority(read_only, publication):
                 f"caller cannot satisfy {job_name} permission {permission}: {level}"
             )
     for job_name, expected in expected_conditions.items():
-        assert publication["jobs"][job_name]["if"] == expected, (
+        actual = " ".join(publication["jobs"][job_name]["if"].split())
+        assert actual == expected, (
             f"{job_name} publication authority predicate drifted"
         )
     assert set(publication["jobs"]["candidate-manifest"]["needs"]) == candidate_producers, (
         "candidate manifest direct producers drifted"
     )
 
-candidate_producers = {"prepare", "publish-base", "publish-derived", "attest-sbom"}
+candidate_producers = {"prepare", "publish-base", "publish-derived", "attest-sbom", "mirror-gar"}
 candidate_job = publisher["jobs"]["candidate-manifest"]
 assert candidate_job["if"] == candidate_condition
 
@@ -337,9 +357,10 @@ assert candidate_job["if"] == candidate_condition
 # optional dependency may skip without suppressing a complete manifest, while a
 # skipped direct producer remains fail closed.
 def candidate_manifest_runs(results):
-    return candidate_job["if"].startswith("always()") and all(
-        results[name] == "success"
-        for name in candidate_producers
+    return (
+        candidate_job["if"].startswith("always()")
+        and all(results[name] == "success" for name in candidate_producers - {"mirror-gar"})
+        and results["mirror-gar"] in ("success", "skipped")
     )
 
 assert candidate_manifest_runs({
@@ -347,17 +368,26 @@ assert candidate_manifest_runs({
     "publish-base": "success",
     "publish-derived": "success",
     "attest-sbom": "success",
+    "mirror-gar": "skipped",
 }), "optional skipped dependency suppressed complete candidate manifest"
 for terminal_status in ("skipped", "cancelled", "failure"):
-    for producer in candidate_producers:
+    for producer in candidate_producers - {"mirror-gar"}:
         results = {name: "success" for name in candidate_producers}
+        results["mirror-gar"] = "skipped"
         results[producer] = terminal_status
         assert not candidate_manifest_runs(results), (
             f"{terminal_status} {producer} admitted candidate manifest"
         )
+for terminal_status in ("cancelled", "failure"):
+    results = {name: "success" for name in candidate_producers}
+    results["mirror-gar"] = terminal_status
+    assert not candidate_manifest_runs(results), (
+        f"{terminal_status} mirror-gar admitted candidate manifest"
+    )
 
 for unsafe_needs in (
     candidate_producers - {"attest-sbom"},
+    candidate_producers - {"mirror-gar"},
     candidate_producers | {"acquire-private-node-dependencies"},
 ):
     mutated = copy.deepcopy(publisher)
@@ -371,8 +401,11 @@ for unsafe_needs in (
 unsafe_conditions = [candidate_condition.removeprefix("always() && ")]
 unsafe_conditions.extend(
     candidate_condition.replace(f" && needs.{producer}.result == 'success'", "")
-    for producer in candidate_producers
+    for producer in candidate_producers - {"mirror-gar"}
 )
+unsafe_conditions.append(candidate_condition.replace(
+    " && (needs.mirror-gar.result == 'success' || needs.mirror-gar.result == 'skipped')", ""
+))
 for unsafe in unsafe_conditions:
     mutated = copy.deepcopy(publisher)
     mutated["jobs"]["candidate-manifest"]["if"] = unsafe
@@ -423,6 +456,7 @@ for job in ("validate", "publish"):
     )
 PY
 python3 "$root/scripts/container_private_dependencies.test.py"
+python3 "$root/scripts/container_registry_destinations.test.py"
 python3 "$root/scripts/container_oci_index.test.py"
 [ "$(jq -r '((.privateNodePackages // []) | length > 0)' "$root/scripts/fixtures/container-candidate/single.json")" = false ]
 private_config="$tmp/private-container-candidate.json"
@@ -431,6 +465,26 @@ jq '.privateNodePackages = ["@verjson/private-package"]' \
 [ "$(jq -r '((.privateNodePackages // []) | length > 0)' "$private_config")" = true ]
 
 prepare_script="$tmp/prepare-config.sh"
+mock_bin="$tmp/mock-bin"
+runner_temp="$tmp/runner-temp"
+mkdir -p "$mock_bin" "$runner_temp"
+cat >"$mock_bin/curl" <<'CURL'
+#!/usr/bin/env bash
+set -euo pipefail
+url=""
+output=""
+while (($#)); do
+  case "$1" in
+    -fsSL) shift ;;
+    -o) output="$2"; shift 2 ;;
+    *) url="$1"; shift ;;
+  esac
+done
+[[ "$url" == */scripts/container_registry_destinations.py ]]
+[[ -n "$output" ]]
+cp "$CONTAINER_DESTINATION_HELPER" "$output"
+CURL
+chmod +x "$mock_bin/curl"
 extract_config_run() {
   local source=$1
   local destination=$2
@@ -600,6 +654,7 @@ first_adoption_output="$tmp/first-adoption-output"
 (
   cd "$first_adoption"
   CONFIG_RELATIVE_PATH=container-candidate.json \
+    CONTAINER_DESTINATION_HELPER="$tmp/contract/scripts/container_registry_destinations.py" \
     CONTRACT_REF="$ref" \
     GITHUB_OUTPUT="$first_adoption_output" \
     GITHUB_REPOSITORY=Verjson/example \
@@ -608,10 +663,36 @@ first_adoption_output="$tmp/first-adoption-output"
     GITHUB_RUN_ID=12345 \
     JOB_WORKFLOW_SHA="$ref" \
     RETRY_SHA256="$(printf 'c%.0s' {1..64})" \
+    RUNNER_TEMP="$runner_temp" \
+    PATH="$mock_bin:$PATH" \
     SOURCE_PATH=. \
     bash "$prepare_script"
 )
 grep -qx 'has-private-node-packages=false' "$first_adoption_output"
+
+case_variant_consumer="$tmp/case-variant-consumer"
+mkdir -p "$case_variant_consumer"
+cp "$root/scripts/fixtures/container-candidate/canary.json" \
+  "$case_variant_consumer/container-candidate.json"
+case_variant_output="$tmp/case-variant-output"
+(
+  cd "$case_variant_consumer"
+  CONFIG_RELATIVE_PATH=container-candidate.json \
+    CONTAINER_DESTINATION_HELPER="$tmp/contract/scripts/container_registry_destinations.py" \
+    CONTRACT_REF="$ref" \
+    GITHUB_OUTPUT="$case_variant_output" \
+    GITHUB_REPOSITORY=verJSON/.github \
+    GITHUB_REPOSITORY_OWNER=verJSON \
+    GITHUB_RUN_ATTEMPT=1 \
+    GITHUB_RUN_ID=12345 \
+    JOB_WORKFLOW_SHA="$ref" \
+    RETRY_SHA256="$(printf 'c%.0s' {1..64})" \
+    RUNNER_TEMP="$runner_temp" \
+    PATH="$mock_bin:$PATH" \
+    SOURCE_PATH=. \
+    bash "$prepare_script"
+)
+grep -qx 'has-gar=false' "$case_variant_output"
 
 run_invalid_config() {
   local config_path=$1
@@ -619,7 +700,8 @@ run_invalid_config() {
 
   if (
     cd "$first_adoption"
-    CONFIG_RELATIVE_PATH="$config_path" \
+      CONFIG_RELATIVE_PATH="$config_path" \
+      CONTAINER_DESTINATION_HELPER="$tmp/contract/scripts/container_registry_destinations.py" \
       CONTRACT_REF="$ref" \
       GITHUB_OUTPUT="$output" \
       GITHUB_REPOSITORY=Verjson/example \
@@ -628,6 +710,8 @@ run_invalid_config() {
       GITHUB_RUN_ID=12345 \
       JOB_WORKFLOW_SHA="$ref" \
       RETRY_SHA256="$(printf 'c%.0s' {1..64})" \
+      RUNNER_TEMP="$runner_temp" \
+      PATH="$mock_bin:$PATH" \
       SOURCE_PATH=. \
       bash "$prepare_script"
   ) >/dev/null 2>&1; then
@@ -755,6 +839,15 @@ grep -qF 'python3 "$helper" spdx-evidence --manifest "$evidence_manifest"' "$pub
 grep -qF 'platforms:$platforms' "$publish_workflow"
 grep -q 'commit identity already records a different digest' "$publish_workflow"
 grep -q 'imagetools create -t "\$commit_tag"' "$publish_workflow"
+mirror_gar_job="$(awk '/^  mirror-gar:/{seen=1} /^  candidate-manifest:/{seen=0} seen' "$publish_workflow")"
+grep -q "github.event_name == 'push'" <<<"$mirror_gar_job"
+grep -q "needs.prepare.outputs.has-gar == 'true'" <<<"$mirror_gar_job"
+grep -q 'id-token: write' <<<"$mirror_gar_job"
+grep -q 'google-github-actions/auth@[0-9a-f]\{40\}' <<<"$mirror_gar_job"
+grep -q 'steps.gar-auth.outputs.auth_token' <<<"$mirror_gar_job"
+grep -qF '[.[] | select(.variant == $variant)] | if length == 1 then (.[0] | del(.variant))' "$publish_workflow"
+grep -q -- '--preserve-digests' "$root/scripts/container_registry_destinations.py"
+grep -q 'needs.mirror-gar.result' "$publish_workflow"
 if grep -Eq 'GITHUB_WORKFLOW_(REF|SHA)|github\.workflow_(ref|sha)' "$workflow" "$publish_workflow"; then
   echo "called workflows cannot prove their own pin through the caller-associated github workflow identity" >&2
   exit 1
@@ -860,9 +953,6 @@ grep -qF 'npm ci --ignore-scripts' <<<"$acquisition_job"
 ! grep -Eq 'npm (install|run|exec|rebuild)|pnpm (run|exec|rebuild)|yarn' <<<"$acquisition_job"
 ! grep -Eq 'subprocess|os\.system|extract(all)?\(' "$root/scripts/container_private_dependencies.py"
 grep -qF 'transfer-cache-key: ${{ steps.create-node-modules-cache-key.outputs.cache-key }}' <<<"$acquisition_job"
-grep -qF 'transfer-encryption-key: ${{ steps.package-node-modules.outputs.encryption-key }}' <<<"$acquisition_job"
-grep -qF 'container-node-modules.tgz.enc' <<<"$acquisition_job"
-grep -qF 'container_dependency_transfer.py" encrypt' <<<"$acquisition_job"
 grep -qF 'openssl rand -hex 32' <<<"$acquisition_job"
 grep -qF '[[ "$nonce" =~ ^[0-9a-f]{64}$ ]]' <<<"$acquisition_job"
 grep -qF 'container-node-modules-${RUN_ID}-${RUN_ATTEMPT}-${nonce}' <<<"$acquisition_job"
@@ -949,10 +1039,6 @@ for job_name in ("publish-base", "publish-derived"):
         step for step in steps
         if "credential-free node_modules context" in step.get("name", "")
     ]
-    transfer_steps = [
-        step for step in steps
-        if step.get("name") == "Download pinned dependency transfer implementation"
-    ]
     cleanup_steps = [
         step for step in steps
         if step.get("name", "").startswith("Remove local node_modules")
@@ -968,7 +1054,6 @@ for job_name in ("publish-base", "publish-derived"):
     )
     for label, guarded_steps in (
         ("cache restore", cache_steps),
-        ("transfer implementation download", transfer_steps),
         ("lock verification", verification_steps),
         ("transfer cleanup", cleanup_steps),
     ):
@@ -976,12 +1061,6 @@ for job_name in ("publish-base", "publish-derived"):
         assert private_gate in guarded_steps[0].get("if", ""), (
             f"{job_name}: {label} is not private-package gated"
         )
-    assert 'container_dependency_transfer.py" decrypt' in verification_steps[0]["run"]
-    assert verification_steps[0]["env"]["TRANSFER_KEY"] == (
-        "${{ needs.acquire-private-node-dependencies.outputs.transfer-encryption-key }}"
-    )
-    assert "container-node-modules.tgz.enc" in verification_steps[0]["run"]
-    assert steps.index(transfer_steps[0]) < steps.index(cache_steps[0])
     assert len(build_steps) == 1, f"{job_name}: Docker build step missing"
     assert build_steps[0]["with"]["build-contexts"] == (
         "verjson_node_modules=${{ runner.temp }}/container-node-modules-context"

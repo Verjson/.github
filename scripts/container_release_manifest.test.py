@@ -2,9 +2,20 @@
 
 import copy
 import importlib.util
+import json
 import sys
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
+from jsonschema import Draft202012Validator, FormatChecker
+
+import container_registry_destinations as destination_contract
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
 
 MODULE_PATH = Path(__file__).with_name("container_release_manifest.py")
 SPEC = importlib.util.spec_from_file_location("container_release_manifest", MODULE_PATH)
@@ -38,7 +49,7 @@ def config():
 
 def manifest():
     return {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "kind": "container-candidate",
         "candidateVersion": "2.4.0-rc.123.1",
         "source": {
@@ -48,12 +59,22 @@ def manifest():
             "workflow": "Verjson/.github/.github/workflows/container-candidate-publish.yml@" + "b" * 40,
             "runId": "123",
             "runAttempt": "1",
+            "candidatePublishedAt": "2026-10-02T00:00:00Z",
         },
         "images": [
             {
                 "variant": "default",
                 "repository": "ghcr.io/verjson/runner",
                 "indexDigest": "sha256:" + "1" * 64,
+                "destinations": [
+                    {
+                        "provider": "ghcr",
+                        "repository": "ghcr.io/verjson/runner",
+                        "digest": "sha256:" + "1" * 64,
+                        "candidateExpiresAt": "2026-12-29T00:00:00Z",
+                        "verifiedAt": "2026-10-02T00:02:00Z",
+                    }
+                ],
                 "identities": {"commit": "sha-" + "a" * 40, "candidate": "2.4.0-rc.123.1"},
                 "platforms": [
                     {
@@ -98,12 +119,158 @@ def manifest():
 
 
 class ContainerReleaseManifestTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        schema_path = (
+            ROOT
+            / "docs/decisions/0078-container-release-and-runner-deployment-contract/candidate-manifest.schema.json"
+        )
+        cls.schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        Draft202012Validator.check_schema(cls.schema)
+        cls.schema_validator = Draft202012Validator(
+            cls.schema, format_checker=FormatChecker()
+        )
+
     def assert_rejected(self, candidate, expected):
         with self.assertRaisesRegex(manifest_contract.ManifestError, expected):
             manifest_contract.validate_manifest(candidate, config())
 
+    def test_candidate_schema_accepts_v3_and_historical_v2_manifests(self):
+        self.schema_validator.validate(manifest())
+
+        historical = manifest()
+        historical["schemaVersion"] = 2
+        historical["source"].pop("candidatePublishedAt")
+        historical["images"][0].pop("destinations")
+        self.schema_validator.validate(historical)
+
+    def test_candidate_schema_requires_v3_publication_evidence(self):
+        candidate = manifest()
+        candidate["images"][0].pop("destinations")
+        self.assertTrue(
+            any(
+                "destinations" in error.message
+                for error in self.schema_validator.iter_errors(candidate)
+            )
+        )
+
+        candidate = manifest()
+        candidate["source"].pop("candidatePublishedAt")
+        self.assertTrue(
+            any(
+                "candidatePublishedAt" in error.message
+                for error in self.schema_validator.iter_errors(candidate)
+            )
+        )
+
+    def test_candidate_schema_rejects_each_v3_field_on_v2(self):
+        cases = (
+            ("timestamp", "destinations"),
+            ("destinations", "candidatePublishedAt"),
+            ("both fields", None),
+        )
+        for label, field_to_remove in cases:
+            with self.subTest(label=label):
+                candidate = manifest()
+                candidate["schemaVersion"] = 2
+                if field_to_remove == "destinations":
+                    candidate["images"][0].pop("destinations")
+                elif field_to_remove == "candidatePublishedAt":
+                    candidate["source"].pop("candidatePublishedAt")
+                self.assertTrue(list(self.schema_validator.iter_errors(candidate)))
+
+    def test_candidate_schema_accepts_gar_destination_receipt(self):
+        candidate = manifest()
+        receipt = candidate["images"][0]["destinations"][0]
+        receipt["provider"] = "gar"
+        receipt["repository"] = (
+            "us-central1-docker.pkg.dev/verjson-artifacts/containers/runner"
+        )
+        self.schema_validator.validate(candidate)
+
     def test_accepts_complete_manifest_bound_to_reviewed_identity(self):
         manifest_contract.validate_manifest(manifest(), config())
+
+    def test_rejects_legacy_v2_candidate_with_rebuild_guidance(self):
+        candidate = manifest()
+        candidate["schemaVersion"] = 2
+        candidate["source"].pop("candidatePublishedAt")
+        candidate["images"][0].pop("destinations")
+        self.assert_rejected(
+            candidate,
+            "manifest.schemaVersion must be 3; rebuild candidates published with schema v2",
+        )
+
+    def test_accepts_case_insensitive_github_repository_identity(self):
+        candidate = manifest()
+        candidate["source"]["repository"] = "verjson/VERJSON-GITHUB-RUNNER"
+        manifest_contract.validate_manifest(candidate, config())
+
+    def test_rejects_non_ascii_repository_casefolding(self):
+        reviewed = config()
+        reviewed["repository"] = "VerjoK/verjson-github-runner"
+        candidate = manifest()
+        candidate["source"]["repository"] = "VerjoK/verjson-github-runner"
+        with self.assertRaisesRegex(manifest_contract.ManifestError, "source repository"):
+            manifest_contract.validate_manifest(candidate, reviewed)
+
+    def test_accepts_destination_receipt_generated_by_candidate_readback(self):
+        reviewed = config()
+        candidate = manifest()
+        published_at = (datetime.now(timezone.utc) - timedelta(seconds=5)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        candidate["source"]["candidatePublishedAt"] = published_at
+        digest = candidate["images"][0]["indexDigest"]
+        with TemporaryDirectory() as directory:
+            authfile = Path(directory) / "auth.json"
+            authfile.write_text("{}", encoding="utf-8")
+            with patch.object(destination_contract, "_remote_digest", return_value=digest):
+                receipt = destination_contract.verify_candidate(
+                    reviewed, "Verjson", "default", "ghcr", candidate["candidateVersion"],
+                    digest, authfile, published_at,
+                )
+        candidate["images"][0]["destinations"] = [receipt]
+        manifest_contract.validate_manifest(candidate, reviewed)
+
+    def test_accepts_verified_multi_registry_destinations(self):
+        reviewed = config()
+        reviewed["registryDestinations"] = [
+            {"provider": "ghcr", "namespace": "ghcr.io/verjson"},
+            {
+                "provider": "gar",
+                "namespace": "us-central1-docker.pkg.dev/verjson-artifacts/containers",
+                "workloadIdentityProvider": "projects/123456789/locations/global/workloadIdentityPools/github/providers/verjson",
+                "serviceAccount": "container-publisher@verjson-artifacts.iam.gserviceaccount.com",
+                "candidateRetentionDays": 30,
+            },
+        ]
+        candidate = manifest()
+        candidate["images"][0]["destinations"].append(
+            {
+                "provider": "gar",
+                "repository": "us-central1-docker.pkg.dev/verjson-artifacts/containers/runner",
+                "digest": "sha256:" + "1" * 64,
+                "candidateExpiresAt": "2026-11-01T00:00:00Z",
+                "verifiedAt": "2026-10-02T00:03:00Z",
+            }
+        )
+        manifest_contract.validate_manifest(candidate, reviewed)
+
+    def test_rejects_missing_registry_receipt(self):
+        reviewed = config()
+        reviewed["registryDestinations"] = [
+            {"provider": "ghcr", "namespace": "ghcr.io/verjson"},
+            {
+                "provider": "gar",
+                "namespace": "us-central1-docker.pkg.dev/verjson-artifacts/containers",
+                "workloadIdentityProvider": "projects/123456789/locations/global/workloadIdentityPools/github/providers/verjson",
+                "serviceAccount": "container-publisher@verjson-artifacts.iam.gserviceaccount.com",
+                "candidateRetentionDays": 30,
+            },
+        ]
+        with self.assertRaisesRegex(manifest_contract.ManifestError, "destination receipts"):
+            manifest_contract.validate_manifest(manifest(), reviewed)
 
     def test_accepts_exact_reviewed_private_node_packages(self):
         reviewed = config()
@@ -226,6 +393,7 @@ class ContainerReleaseManifestTests(unittest.TestCase):
         derived = copy.deepcopy(candidate["images"][0])
         derived["variant"] = "debug"
         derived["indexDigest"] = "sha256:" + "6" * 64
+        derived["destinations"][0]["digest"] = derived["indexDigest"]
         derived["provenance"]["subjectDigest"] = derived["indexDigest"]
         derived["base"] = {"variant": "default", "digest": candidate["images"][0]["indexDigest"]}
         candidate["images"].append(derived)
@@ -241,6 +409,7 @@ class ContainerReleaseManifestTests(unittest.TestCase):
         derived = copy.deepcopy(candidate["images"][0])
         derived["variant"] = "debug"
         derived["indexDigest"] = "sha256:" + "6" * 64
+        derived["destinations"][0]["digest"] = derived["indexDigest"]
         derived["provenance"]["subjectDigest"] = derived["indexDigest"]
         derived["base"] = {"variant": "default", "digest": "sha256:" + "9" * 64}
         candidate["images"].append(derived)

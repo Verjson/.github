@@ -20,8 +20,9 @@ cp \
   "$root/scripts/container_release_promotion.py" \
   "$root/scripts/container_release_manifest.py" \
   "$root/scripts/container_private_dependencies.py" \
-  "$root/scripts/container_candidate_retry.py" \
   "$root/scripts/container_dependency_transfer.py" \
+  "$root/scripts/container_candidate_retry.py" \
+  "$root/scripts/container_registry_destinations.py" \
   "$root/scripts/container_artifact_extract.py" \
   "$root/scripts/container_attestation_verify.py" \
   "$root/scripts/container_deployment_controller.py" \
@@ -53,12 +54,14 @@ release="$contract/scripts/gen-container-release.sh"
 deployment="$contract/scripts/gen-container-deployment.sh"
 (cd "$consumer" && "$candidate" workflow "$ref" container-candidate.json) >"$consumer/.github/workflows/container-candidate.yml"
 "$candidate" validator "$ref" container-candidate.json >"$consumer/scripts/container_release_manifest.py"
+"$candidate" destination-helper "$ref" container-candidate.json >"$consumer/scripts/container_registry_destinations.py"
 candidate_validator_digest="$(sha256sum "$consumer/scripts/container_release_manifest.py")"
 (cd "$consumer" && "$candidate" contract-test "$ref" container-candidate.json) >"$consumer/scripts/container-candidate-contract.test.sh"
 
 "$release" workflow "$ref" container-candidate.json >"$consumer/.github/workflows/container-release.yml"
 "$release" validator "$ref" container-candidate.json >"$consumer/scripts/container_release_promotion.py"
 "$release" manifest-validator "$ref" container-candidate.json >"$consumer/scripts/container_release_manifest.py"
+"$release" destination-helper "$ref" container-candidate.json >"$consumer/scripts/container_registry_destinations.py"
 release_validator_digest="$(sha256sum "$consumer/scripts/container_release_manifest.py")"
 "$release" artifact-extractor "$ref" container-candidate.json >"$consumer/scripts/container_artifact_extract.py"
 "$release" attestation-verifier "$ref" container-candidate.json >"$consumer/scripts/container_attestation_verify.py"
