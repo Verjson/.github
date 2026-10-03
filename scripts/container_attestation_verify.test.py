@@ -40,7 +40,7 @@ def config():
 
 def candidate():
     return {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "kind": "container-candidate",
         "candidateVersion": "1.2.3-rc.123.1",
         "source": {
