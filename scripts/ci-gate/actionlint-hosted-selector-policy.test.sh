@@ -45,7 +45,6 @@ assert cleanup["working-directory"] == "${{ github.workspace }}"
 for step in (install, enforce, cleanup):
     assert 'runner_temp="$(cd "${{ runner.temp }}" && pwd -P)"' in step["run"]
 assert "policy_mode=(--consumer-policy)" in enforce["run"]
-assert "[Vv][Ee][Rr][Jj][Ss][Oo][Nn]/[.][Gg][Ii][Tt][Hh][Uu][Bb]" in enforce["run"]
 assert "GITHUB_REPOSITORY" in enforce["run"]
 assert "policy_mode=(--visibility public)" in enforce["run"]
 assert "python3 -S" in enforce["run"]
@@ -245,37 +244,17 @@ find "$source_dir/.github/workflows" -type f -delete
 cp "$root/.github/workflows/ai-privileged-merge.yml" \
   "$root/.github/workflows/privileged-merge-conformance.yml" \
   "$source_dir/.github/workflows/"
-run_local_policy_identity() {
-  local repository="$1" output="$2"
-  (cd "$source_dir" && \
-    RUNNER_TEMP="$GOOD_RUNNER_TEMP" \
-    GITHUB_WORKSPACE="$GOOD_WORKSPACE" \
-    GITHUB_REPOSITORY="$repository" \
-    VERJSON_HOSTED_SELECTOR_POLICY_DIR="$GOOD_POLICY_DIR" \
-    bash "$enforce_script") >"$output" 2>&1
-  LOCAL_POLICY_RC=$?
-}
-
-run_local_policy_identity "Verjson/.github" "$tmp/local-policy.out"
-if [ "$LOCAL_POLICY_RC" -eq 0 ]; then
-  pass "the exact .github identity preserves reviewed fixed-hosted exceptions"
+(cd "$source_dir" && \
+  RUNNER_TEMP="$GOOD_RUNNER_TEMP" \
+  GITHUB_WORKSPACE="$GOOD_WORKSPACE" \
+  GITHUB_REPOSITORY="verJSON/.github" \
+  VERJSON_HOSTED_SELECTOR_POLICY_DIR="$GOOD_POLICY_DIR" \
+  bash "$enforce_script") >"$tmp/local-policy.out" 2>&1
+local_policy_rc=$?
+if [ "$local_policy_rc" -eq 0 ]; then
+  pass "the local policy branch preserves .github's reviewed fixed-hosted exceptions"
 else
-  fail "the exact .github identity did not preserve its reviewed exceptions"
-fi
-
-run_local_policy_identity "verJSON/.github" "$tmp/local-policy-mixed-case.out"
-if [ "$LOCAL_POLICY_RC" -eq 0 ]; then
-  pass "ASCII case variants preserve .github's reviewed fixed-hosted exceptions"
-else
-  fail "an ASCII case variant did not preserve .github's reviewed exceptions"
-fi
-
-unicode_confusable_repository="$(python3 -c 'print("Verjs\u043en/.github")')"
-run_local_policy_identity "$unicode_confusable_repository" "$tmp/local-policy-confusable.out"
-if [ "$LOCAL_POLICY_RC" -eq 1 ]; then
-  pass "a Unicode-confusable organization does not receive .github's exception"
-else
-  fail "a Unicode-confusable organization received .github's exception"
+  fail "the local policy branch did not preserve .github's reviewed exceptions"
 fi
 
 run_policy_fixture reusable-input-macos

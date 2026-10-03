@@ -42,6 +42,13 @@ to look next.
 | 🔬 **Applied research** | Rigorous, hands-on experiments measured by what ships — not by what sounds good. |
 | 🤝 **Human + AI workflows** | Designing collaboration between people and AI so each does what it does best. |
 
+## Shared infrastructure
+
+The Nuremberg development stack has GitLab CE, Nexus Repository Community Edition, and GitLab
+Runner workloads deployed for staged migration. Runner connectivity and end-to-end publisher
+acceptance are still being validated. See the [service endpoints and current status](https://github.com/Verjson/.github/blob/main/docs/infrastructure/netcup-nuremberg.md)
+and the [verjson-ci migration tracker](https://github.com/Verjson/verjson-ci/issues/30).
+
 ## How we work
 
 1. **Ask a sharp question** — a concrete bet about how AI could change how a product gets built or delivered.

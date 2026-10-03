@@ -48,7 +48,8 @@ jq -e --argjson run_id "$ARM_RUN_ID" --argjson attempt "$ARM_RUN_ATTEMPT" --arg 
   .id == $run_id and .run_attempt == $attempt and
   .event == "pull_request_target" and
   (.path == ".github/workflows/gate-rearm.yml" or .path == ".github/workflows/ai-review-label-rearm.yml" or .path == ".github/workflows/ai-review-lifecycle-rearm.yml") and
-  .head_repository.full_name == $repo and .repository.full_name == $repo
+  (.head_repository.full_name | ascii_downcase) == ($repo | ascii_downcase) and
+  (.repository.full_name | ascii_downcase) == ($repo | ascii_downcase)
 ' <<<"$arm_run" >/dev/null || { echo "::error::arm run provenance mismatch"; exit 1; }
 arm_run_path="$(jq -r '.path' <<<"$arm_run")"
 required_workflow_url="https://api.github.com/repos/$TARGET_REPO/actions/required_workflows/$arm_workflow_id"
@@ -73,7 +74,7 @@ if [ "$arm_run_path" = .github/workflows/gate-rearm.yml ] && [ "$(jq -r '.workfl
       | {source_type: $rule.ruleset_source_type, source: $rule.ruleset_source,
          repository_id, ref}]
      | length > 0 and all(.[];
-         .source_type == "Organization" and .source == "Verjson" and
+         .source_type == "Organization" and (.source | ascii_downcase) == "verjson" and
          .repository_id == 1269388380 and .ref == "refs/heads/main"))
   ' "$tmp/arm-rules-pages.json" >/dev/null || {
     echo "::error::arm run provenance mismatch"; exit 1;

@@ -1,7 +1,6 @@
 # Nuremberg development services
 
-Last verified: **2026-09-07**. Provisioning implementation:
-[Verjson/verjson-cli](https://github.com/Verjson/verjson-cli).
+Service endpoint and registry checks last verified: **2026-09-07**.
 
 ## Endpoints
 
@@ -21,6 +20,16 @@ Last verified: **2026-09-07**. Provisioning implementation:
 HTTPS checks use normal certificate validation. Health checks establish
 reachability only; they do not verify authentication, persistence, or backups.
 
+## Migration status snapshot (2026-10-02, 23:13 UTC)
+
+A read-only Kubernetes deployment inventory, queried through the Netcup
+administration host at the time above, showed GitLab CE, Nexus CE, MinIO, and
+both GitLab Runner deployments at 1/1 ready. This establishes workload
+readiness only; this inventory did not check runner job execution or DNS, probe
+service endpoints, exercise an isolated runner canary, or publish a
+multi-platform OCI index. Follow [verjson-ci issue #30](https://github.com/Verjson/verjson-ci/issues/30)
+for the remaining migration acceptance work.
+
 ## Registry setup status
 
 The owner authorized acceptance of the Nexus Community Edition EULA on
@@ -35,12 +44,12 @@ an existing one. Docker and npm authentication realms are enabled. Existing
 default Maven and NuGet repositories retain their previous anonymous read
 access; that access does not extend to these hosted registries.
 
-Registry readiness and consumer integration are coordinated in
-[#1264](https://github.com/Verjson/.github/issues/1264). Documentation updates
-started in [#1266](https://github.com/Verjson/.github/issues/1266). The deployed
-authentication configuration still needs to be incorporated into the generated
-bootstrap in [verjson-cli#214](https://github.com/Verjson/verjson-cli/issues/214)
-so future deployments reproduce it.
+Registry readiness and consumer integration remain coordinated in
+[#1264](https://github.com/Verjson/.github/issues/1264). Documentation work began
+in [#1266](https://github.com/Verjson/.github/issues/1266). The generated
+bootstrap includes the authenticated Nexus registry configuration. That code
+change did not validate a live deployment; environment rollout and endpoint
+verification remain part of #1264.
 
 ## Client settings
 

@@ -132,10 +132,113 @@ assert inputs["secretless-compatibility-ranges"]["default"] == ""
 jobs = doc["jobs"]
 steps = {step.get("name"): step for job in jobs.values()
          for step in job.get("steps", []) if step.get("name")}
+acquire_steps = jobs["acquire-secretless-dependencies"]["steps"]
+build_steps = jobs["build-test"]["steps"]
+acquire_download = next(
+    step for step in acquire_steps
+    if step.get("name") == "Download pinned secretless dependency transfer implementation"
+)
+package = next(step for step in acquire_steps
+               if step.get("name") == "Package bounded credential-free npm cache")
+build_download = next(
+    step for step in build_steps
+    if step.get("name") == "Download pinned secretless dependency transfer implementation"
+)
+decrypt = next(step for step in build_steps
+               if step.get("name") == "Decrypt run-scoped secretless dependency payload")
+install = next(step for step in build_steps
+               if step.get("name") == "Install from verified secretless npm cache")
+def assert_step_order(job_steps, *names):
+    positions = [next(i for i, step in enumerate(job_steps)
+                      if step.get("name") == name) for name in names]
+    assert positions == sorted(positions), (names, positions)
+
+assert_step_order(
+    acquire_steps,
+    "Download pinned secretless dependency transfer implementation",
+    "Package bounded credential-free npm cache",
+)
+assert_step_order(
+    build_steps,
+    "Download pinned secretless dependency transfer implementation",
+    "Decrypt run-scoped secretless dependency payload",
+    "Install from verified secretless npm cache",
+)
+workflow_sha = "${{ fromJSON(toJSON(job)).workflow_sha }}"
+for download in (acquire_download, build_download):
+    assert download["env"]["JOB_WORKFLOW_SHA"] == workflow_sha
+    assert "${JOB_WORKFLOW_SHA}/scripts/container_dependency_transfer.py" in download["run"]
+assert "container_dependency_transfer.py" in package["run"]
+assert "container_dependency_transfer.py" in decrypt["run"]
+assert decrypt["env"]["TRANSFER_KEY"] == (
+    "${{ needs.acquire-secretless-dependencies.outputs.transfer-encryption-key }}"
+)
+assert jobs["acquire-secretless-dependencies"]["outputs"]["transfer-encryption-key"] == (
+    "${{ steps.package-secretless-transfer.outputs.encryption-key }}"
+)
+protected_doc = yaml.safe_load(Path(sys.argv[3]).read_text(encoding="utf-8"))
+protected_jobs = protected_doc["jobs"]
+protected_acquire = protected_jobs["acquire-secretless-dependencies"]
+protected_build = protected_jobs["build-test"]
+protected_acquire_steps = protected_acquire["steps"]
+protected_build_steps = protected_build["steps"]
+protected_package = next(
+    step for step in protected_acquire_steps
+    if step.get("name") == "Package bounded credential-free npm cache"
+)
+identity_guard_index = next(
+    index for index, step in enumerate(protected_acquire_steps)
+    if step.get("name") == "Revalidate protected pull-request identity"
+)
+transfer_download_index = next(
+    index for index, step in enumerate(protected_acquire_steps)
+    if step.get("name") == "Download pinned secretless dependency transfer implementation"
+)
+assert protected_acquire_steps[identity_guard_index - 1].get("uses", "").startswith(
+    "actions/checkout@"
+), "protected identity guard must immediately follow the admitted checkout"
+assert identity_guard_index < transfer_download_index, (
+    "protected identity guard must run before downloading transfer code"
+)
+protected_decrypt = next(
+    step for step in protected_build_steps
+    if step.get("name") == "Decrypt run-scoped secretless dependency payload"
+)
+assert_step_order(
+    protected_build_steps,
+    "Download pinned secretless dependency transfer implementation",
+    "Decrypt run-scoped secretless dependency payload",
+    "Install from verified secretless npm cache",
+)
+assert protected_package["run"] == package["run"]
+assert protected_decrypt["run"] == decrypt["run"]
+assert protected_decrypt["env"]["TRANSFER_KEY"] == (
+    "${{ needs.acquire-secretless-dependencies.outputs.transfer-encryption-key }}"
+)
+assert protected_acquire["outputs"]["transfer-encryption-key"] == (
+    "${{ steps.package-secretless-transfer.outputs.encryption-key }}"
+)
+assert "npm-private-cache.tar.enc" in protected_package["run"]
+assert 'TRANSFER_KEY="$encryption_key" python3 "$RUNNER_TEMP/container_dependency_transfer.py" encrypt' in protected_package["run"]
+assert '--destination "$TRANSFER_DIR/npm-private-cache.tar.enc"' in protected_package["run"]
+assert 'rm -f "$TRANSFER_DIR/npm-private-cache.tar"' in protected_package["run"]
+assert protected_package["run"].index("npm-private-cache.tar.enc") < protected_package["run"].index(
+    'rm -f "$TRANSFER_DIR/npm-private-cache.tar"'
+)
+transfer_cache_saves = [
+    (index, step) for index, step in enumerate(protected_acquire_steps)
+    if step.get("uses", "").startswith("actions/cache/save@")
+    and step.get("with", {}).get("path") == ".verjson-secretless-transfer-${{ github.run_id }}"
+]
+assert len(transfer_cache_saves) == 1, "protected transfer cache must have one run-scoped save"
+assert protected_acquire_steps.index(protected_package) < transfer_cache_saves[0][0], (
+    "encrypted package step must remove its plaintext archive before caching the transfer directory"
+)
 for name, filename in {
     "Validate approved internal dependency lock": "validate.sh",
     "Resolve approved compatibility ranges without lifecycle execution": "resolve.sh",
     "Package bounded credential-free npm cache": "package.sh",
+    "Decrypt run-scoped secretless dependency payload": "decrypt.sh",
     "Install from verified secretless npm cache": "install.sh",
     "Run runtime-resolved compatibility lanes without credentials": "run-lanes.sh",
 }.items():
@@ -471,7 +574,7 @@ done
 if [ "$#" -eq 4 ] && { [ "${4:-}" = version ] || [ "${3:-}" = versions ]; }; then
   printf '%s\n' '["0.2.1","0.2.2"]'
 else
-  printf '%s\n' "{\"name\":\"@verjson/identity-contracts\",\"version\":\"0.2.2\",\"dist.integrity\":\"$NPM_STUB_INTEGRITY\",\"dist.tarball\":\"https://npm.pkg.github.com/download/@verjson/identity-contracts/0.2.2/archive\"}"
+  printf '%s\n' "{\"name\":\"@verjson/identity-contracts\",\"version\":\"0.2.2\",\"dist.integrity\":\"$NPM_STUB_INTEGRITY\",\"dist.tarball\":\"${NPM_STUB_TARBALL:-https://npm.pkg.github.com/download/@verJSON/identity-contracts/0.2.2/archive}\"}"
 fi
 SH
 chmod +x "$tmp/resolve/bin/npm"
@@ -479,7 +582,7 @@ run_resolver() {
   rm -rf "$tmp/resolve/runner/_compatibility"
   : > "$tmp/resolve/private-entries"
   (cd "$tmp/resolve" && PATH="$tmp/resolve/bin:$PATH" NPM_STUB_LOG="$tmp/resolve/npm.log" \
-    NPM_STUB_INTEGRITY="$fixture_integrity" NPM_STUB_FAILURE="${3:-}" \
+    NPM_STUB_INTEGRITY="$fixture_integrity" NPM_STUB_FAILURE="${3:-}" NPM_STUB_TARBALL="${4:-https://npm.pkg.github.com/download/@verJSON/identity-contracts/0.2.2/archive}" \
     NODE_AUTH_TOKEN=runtime-package-token \
     APPROVED_INTERNAL_SCOPES=@verjson COMPATIBILITY_RANGES="$1" \
     COMPATIBILITY_PROVENANCE="$tmp/resolve/runner/_compatibility/provenance.json" \
@@ -492,6 +595,15 @@ import json,sys
 p=json.load(open(sys.argv[1],encoding="utf-8"));assert p["lanes"][0]["version"]=="0.2.2"
 PY
 then pass "trusted acquisition records runtime-resolved version, integrity, and provenance"; else fail "trusted acquisition did not record runtime-resolved provenance"; fi
+confusable_tarball='https://npm.pkg.github.com/download/@vеrjson/identity-contracts/0.2.2/archive'
+if run_resolver "$request" "$tmp/resolve/confusable.log" "" "$confusable_tarball"; then
+  fail "registry provenance accepted a Unicode lookalike package path"
+elif grep -qF 'invalid GitHub Packages URL' "$tmp/resolve/confusable.log"; then
+  pass "registry provenance accepts API casing variants and rejects Unicode lookalikes"
+else
+  fail "registry provenance returned an unexpected error for a Unicode lookalike"
+fi
+
 outside_range='{"package":"@verjson/identity-contracts","ranges":["^9.0.0"],"script":"test:compat"}'
 if run_resolver "$outside_range" "$tmp/resolve/outside-range.log"; then
   fail "registry-selected version outside the declared bounded range was accepted"
@@ -513,7 +625,8 @@ for case_name in auth-fail access-fail missing empty; do
   fi
 done
 
-mkdir -p "$tmp/e2e/acquire/cache/_cacache/content-v2/sha512" "$tmp/e2e/acquire/compat/_compatibility" "$tmp/e2e/acquire/work"
+mkdir -p "$tmp/e2e/acquire/cache/_cacache/content-v2/sha512" "$tmp/e2e/acquire/compat/_compatibility" "$tmp/e2e/acquire/work" "$tmp/e2e/acquire/runner-temp"
+cp "$root/scripts/container_dependency_transfer.py" "$tmp/e2e/acquire/runner-temp/container_dependency_transfer.py"
 printf '%s\n' '{"name":"@verjson/identity-contracts","version":"0.2.2"}' > "$tmp/e2e/acquire/work/package.json"
 tar -C "$tmp/e2e/acquire/work" --transform='s#^#package/#' -czf "$tmp/e2e/acquire/lane.tgz" package.json
 lane_digest="$(sha512sum "$tmp/e2e/acquire/lane.tgz" | cut -d' ' -f1)"
@@ -530,18 +643,38 @@ PY
 (cd "$tmp/e2e/acquire" && AUXILIARY_COMMIT='' AUXILIARY_CONTENT_PATH='' AUXILIARY_REPOSITORY='' \
   CACHE_DIR="$tmp/e2e/acquire/cache" COMPATIBILITY_ROOT="$tmp/e2e/acquire/compat" COMPATIBILITY_RANGES="$request" \
   GITHUB_OUTPUT="$tmp/e2e/acquire/package.output" GITHUB_WORKSPACE="$tmp/e2e/acquire" MAX_PAYLOAD_BYTES=83886080 \
-  PACKAGE_MANAGER=npm RUN_ATTEMPT=1 RUN_ID=1103 TRANSFER_DIR="$tmp/e2e/acquire/transfer" bash "$tmp/package.sh")
-[ "$?" -eq 0 ] && grep -q '^compatibility_provenance_sha256=' "$tmp/e2e/acquire/transfer/manifest" \
-  && pass "compatibility provenance shares the bounded transfer" || fail "compatibility provenance was not packaged through the canonical transfer"
+  PACKAGE_MANAGER=npm RUN_ATTEMPT=1 RUN_ID=1103 RUNNER_TEMP="$tmp/e2e/acquire/runner-temp" TRANSFER_DIR="$tmp/e2e/acquire/transfer" bash "$tmp/package.sh")
+[ "$?" -eq 0 ] \
+  && [ -f "$tmp/e2e/acquire/transfer/npm-private-cache.tar.enc" ] \
+  && [ ! -e "$tmp/e2e/acquire/transfer/npm-private-cache.tar" ] \
+  && grep -q '^compatibility_provenance_sha256=' "$tmp/e2e/acquire/transfer/manifest" \
+  && pass "compatibility provenance shares an encrypted bounded transfer" \
+  || fail "compatibility provenance was not packaged as encrypted canonical transfer"
 
 mkdir -p "$tmp/e2e/build/bin"
 cp "$tmp/e2e/acquire/package-lock.json" "$tmp/e2e/build/package-lock.json" && cp -R "$tmp/e2e/acquire/transfer" "$tmp/e2e/build/transfer"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "$*" >> "$NPM_STUB_LOG"' '[ "${1:-}" = ci ]' > "$tmp/e2e/build/bin/npm"
 chmod +x "$tmp/e2e/build/bin/npm"
 provenance_sha="$(sed -n 's/^compatibility_provenance_sha256=//p' "$tmp/e2e/build/transfer/manifest")"
+decrypt_transfer() {
+  local fixture="$1"
+  local runner_temp="$fixture/runner-temp"
+  local transfer_key
+  transfer_key="$(sed -n 's/^encryption-key=//p' "$tmp/e2e/acquire/package.output")"
+  [ -f "$fixture/transfer/npm-private-cache.tar.enc" ] \
+    && [ ! -e "$fixture/transfer/npm-private-cache.tar" ] || return 1
+  mkdir -p "$runner_temp"
+  cp "$root/scripts/container_dependency_transfer.py" "$runner_temp/container_dependency_transfer.py"
+  (cd "$fixture" && RUNNER_TEMP="$runner_temp" TRANSFER_DIR="$fixture/transfer" \
+    TRANSFER_KEY="$transfer_key" bash "$tmp/decrypt.sh") || return 1
+  [ -f "$fixture/transfer/npm-private-cache.tar" ] \
+    && [ ! -e "$runner_temp/container_dependency_transfer.py" ]
+}
+
 run_install() {
   local fixture="$1"
-  (cd "$fixture" && PATH="$tmp/e2e/build/bin:$PATH" NPM_STUB_LOG="$fixture/npm.log" APPROVED_INTERNAL_SCOPES=@verjson \
+  local runner_temp="$fixture/runner-temp"
+  (cd "$fixture" && RUNNER_TEMP="$runner_temp" PATH="$tmp/e2e/build/bin:$PATH" NPM_STUB_LOG="$fixture/npm.log" APPROVED_INTERNAL_SCOPES=@verjson \
     COMPATIBILITY_RANGES="$request" COMPATIBILITY_ARTIFACT_DIR="$fixture/artifacts" EXPECTED_AUXILIARY_COMMIT='' \
     EXPECTED_AUXILIARY_CONTENT_PATH='' EXPECTED_AUXILIARY_REPOSITORY='' EXPECTED_COMPATIBILITY_PROVENANCE_SHA256="$provenance_sha" \
     EXPECTED_PAYLOAD_BYTES="$(sed -n 's/^payload_bytes=//p' "$fixture/transfer/manifest")" EXPECTED_PAYLOAD_SHA256="$(sed -n 's/^payload_sha256=//p' "$fixture/transfer/manifest")" \
@@ -549,10 +682,19 @@ run_install() {
     NPM_CONFIG_USERCONFIG="$fixture/user.npmrc" PACKAGE_MANAGER=npm SECRETLESS_CACHE_DIR="$fixture/secretless-cache" TRANSFER_DIR="$fixture/transfer" \
     MAX_PAYLOAD_BYTES=83886080 RUN_ATTEMPT=1 RUN_ID=1103 bash "$tmp/install.sh")
 }
-if run_install "$tmp/e2e/build" && [ -f "$tmp/e2e/build/artifacts/lane-0.tgz" ]; then pass "credentialless restore reconstructs the exact compatibility tarball"; else fail "credentialless restore did not reconstruct the compatibility tarball"; fi
+if decrypt_transfer "$tmp/e2e/build" && run_install "$tmp/e2e/build" \
+    && [ -f "$tmp/e2e/build/artifacts/lane-0.tgz" ]; then
+  pass "credentialless restore decrypts before reconstructing the exact compatibility tarball"
+else
+  fail "credentialless restore did not decrypt and reconstruct the compatibility tarball"
+fi
 
 for mutation in provenance payload; do
   fixture="$tmp/e2e/tampered-$mutation"; mkdir -p "$fixture"; cp "$tmp/e2e/acquire/package-lock.json" "$fixture/package-lock.json"; cp -R "$tmp/e2e/acquire/transfer" "$fixture/transfer"
+  if ! decrypt_transfer "$fixture"; then
+    fail "the $mutation fixture could not decrypt the bounded transfer"
+    continue
+  fi
   python3 - "$fixture/transfer/npm-private-cache.tar" "$mutation" <<'PY'
 import json,pathlib,tarfile,tempfile,sys
 p=pathlib.Path(sys.argv[1]);m=sys.argv[2]
@@ -1234,6 +1376,7 @@ if [ "${VERJSON_DIAGNOSTIC_MUTATION_CHILD:-false}" != true ]; then
   mkdir -p "$mutation_root/.github/workflows" "$mutation_root/scripts/ci-gate" \
     "$mutation_root/docs"
   cp "$0" "$mutation_root/scripts/ci-gate/node-ci-secretless-compatibility.test.sh"
+  cp "$root/scripts/container_dependency_transfer.py" "$mutation_root/scripts/container_dependency_transfer.py"
   cp "$protected_workflow" "$mutation_root/.github/workflows/node-ci-protected.yml"
   cp "$documentation" "$mutation_root/docs/node-workflows.md"
   python3 - "$workflow" "$mutation_root/.github/workflows/node-ci.yml" <<'PY'
@@ -1275,6 +1418,7 @@ PY
   mkdir -p "$cache_mutation_root/.github/workflows" "$cache_mutation_root/scripts/ci-gate" \
     "$cache_mutation_root/docs"
   cp "$0" "$cache_mutation_root/scripts/ci-gate/node-ci-secretless-compatibility.test.sh"
+  cp "$root/scripts/container_dependency_transfer.py" "$cache_mutation_root/scripts/container_dependency_transfer.py"
   cp "$protected_workflow" "$cache_mutation_root/.github/workflows/node-ci-protected.yml"
   cp "$documentation" "$cache_mutation_root/docs/node-workflows.md"
   python3 - "$workflow" "$cache_mutation_root/.github/workflows/node-ci.yml" <<'PY'
@@ -1315,6 +1459,7 @@ PY
   mkdir -p "$mask_mutation_root/.github/workflows" "$mask_mutation_root/scripts/ci-gate" \
     "$mask_mutation_root/docs"
   cp "$0" "$mask_mutation_root/scripts/ci-gate/node-ci-secretless-compatibility.test.sh"
+  cp "$root/scripts/container_dependency_transfer.py" "$mask_mutation_root/scripts/container_dependency_transfer.py"
   cp "$protected_workflow" "$mask_mutation_root/.github/workflows/node-ci-protected.yml"
   cp "$documentation" "$mask_mutation_root/docs/node-workflows.md"
   python3 - "$workflow" "$mask_mutation_root/.github/workflows/node-ci.yml" <<'PY'
@@ -1355,6 +1500,7 @@ PY
   mkdir -p "$symlink_mutation_root/.github/workflows" \
     "$symlink_mutation_root/scripts/ci-gate" "$symlink_mutation_root/docs"
   cp "$0" "$symlink_mutation_root/scripts/ci-gate/node-ci-secretless-compatibility.test.sh"
+  cp "$root/scripts/container_dependency_transfer.py" "$symlink_mutation_root/scripts/container_dependency_transfer.py"
   cp "$protected_workflow" "$symlink_mutation_root/.github/workflows/node-ci-protected.yml"
   cp "$documentation" "$symlink_mutation_root/docs/node-workflows.md"
   python3 - "$workflow" "$symlink_mutation_root/.github/workflows/node-ci.yml" <<'PY'
@@ -1386,6 +1532,7 @@ PY
   mkdir -p "$public_cache_link_mutation_root/.github/workflows" \
     "$public_cache_link_mutation_root/scripts/ci-gate" "$public_cache_link_mutation_root/docs"
   cp "$0" "$public_cache_link_mutation_root/scripts/ci-gate/node-ci-secretless-compatibility.test.sh"
+  cp "$root/scripts/container_dependency_transfer.py" "$public_cache_link_mutation_root/scripts/container_dependency_transfer.py"
   cp "$protected_workflow" "$public_cache_link_mutation_root/.github/workflows/node-ci-protected.yml"
   cp "$documentation" "$public_cache_link_mutation_root/docs/node-workflows.md"
   python3 - "$workflow" "$public_cache_link_mutation_root/.github/workflows/node-ci.yml" <<'PY'
@@ -1420,6 +1567,7 @@ PY
   mkdir -p "$absent_cache_mutation_root/.github/workflows" \
     "$absent_cache_mutation_root/scripts/ci-gate" "$absent_cache_mutation_root/docs"
   cp "$0" "$absent_cache_mutation_root/scripts/ci-gate/node-ci-secretless-compatibility.test.sh"
+  cp "$root/scripts/container_dependency_transfer.py" "$absent_cache_mutation_root/scripts/container_dependency_transfer.py"
   cp "$protected_workflow" "$absent_cache_mutation_root/.github/workflows/node-ci-protected.yml"
   cp "$documentation" "$absent_cache_mutation_root/docs/node-workflows.md"
   python3 - "$workflow" "$absent_cache_mutation_root/.github/workflows/node-ci.yml" <<'PY'

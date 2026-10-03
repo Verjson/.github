@@ -8,6 +8,7 @@ mkdir -p "$tmp/contract/scripts"
 cp "$root/scripts/gen-container-candidate.sh" \
   "$root/scripts/container_release_manifest.py" \
   "$root/scripts/container_private_dependencies.py" \
+  "$root/scripts/container_dependency_transfer.py" \
   "$root/scripts/container_candidate_retry.py" \
   "$root/scripts/container_registry_destinations.py" \
   "$tmp/contract/scripts/"
@@ -214,6 +215,15 @@ def validate_authority(read_only, publication):
     assert acquisition["if"] == expected_acquisition_condition, (
         "private dependency acquisition must run only on trusted publication events"
     )
+    assert acquisition["outputs"]["transfer-encryption-key"] == (
+        "${{ steps.package-node-modules.outputs.encryption-key }}"
+    )
+    package_transfer = next(
+        step for step in acquisition["steps"] if step.get("id") == "package-node-modules"
+    )
+    assert 'container_dependency_transfer.py" encrypt' in package_transfer["run"]
+    assert 'rm -f "$TRANSFER_DIR/container-node-modules.tgz"' in package_transfer["run"]
+    assert "encryption-key=%s" in package_transfer["run"]
     assert read_only["permissions"] == {"contents": "read"}
     workflow_call = read_only.get("on", read_only.get(True, {})).get("workflow_call", {})
     assert "secrets" not in workflow_call, "read-only entrypoint must not declare secret inputs"
@@ -989,7 +999,7 @@ for build_job in publish-base publish-derived; do
   grep -qF 'key: ${{ needs.acquire-private-node-dependencies.outputs.transfer-cache-key }}' <<<"$build_block"
   grep -qF 'fail-on-cache-miss: true' <<<"$build_block"
   grep -qF 'name: Remove local node_modules transfer state' <<<"$build_block"
-  [ "$(grep -cF "needs.prepare.outputs.has-private-node-packages == 'true'" <<<"$build_block")" -eq 3 ]
+  [ "$(grep -cF "needs.prepare.outputs.has-private-node-packages == 'true'" <<<"$build_block")" -eq 4 ]
   grep -qF 'run: rm -rf "$TRANSFER_DIR"' <<<"$build_block"
   if grep -qF 'restore-keys:' <<<"$build_block" || grep -qF 'actions/download-artifact@' <<<"$build_block"; then
     echo "$build_job permits an inexact cache restore or still uses artifact storage" >&2

@@ -618,3 +618,14 @@ secrets, and any additional job surface. A live run is accepted only with retain
 run/job logs showing the guard passed and the fixed next-step rejection; an overall
 successful run, artifact API request, App-token mint, registry mutation, or release
 mutation is a canary failure.
+## Amendment (2026-10-02, #1682) — compare deployment-review repository identity safely
+
+The reusable deployment-review producer accepts GitHub's ASCII case variants for
+the canonical `Verjson/.github` repository in `job.workflow_repository` and its
+receipt validation. Restrict the value to an ASCII owner/repository slug before
+case folding; retain the exact producer workflow path, immutable 40-character
+workflow SHA, and publisher-environment policy digest. This corrects API casing
+without allowing a different repository or changing review authority. The
+producer tests cover mixed-case identity and reject a Unicode lookalike.
+
+The identity correction is tracked in [#1682](https://github.com/Verjson/.github/issues/1682).

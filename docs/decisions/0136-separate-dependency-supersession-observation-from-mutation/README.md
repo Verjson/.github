@@ -148,3 +148,12 @@ Disable the terminal reconciler or uninstall/revoke the supersession App. The re
 detector may continue operating. Reopen any pull request named in a retained reconciler
 receipt if adjudication proves the closure incorrect; do not delete the comment or
 receipt, because they are the forensic record.
+
+## Amendment (2026-10-02, #1682) — compare API repository casing safely
+
+The reconciliation workflow compares API `repository.full_name` and
+`head_repository.full_name` to the Actions repository context using ASCII
+case-insensitive equality for the complete owner/repository slug. The event,
+workflow path, successful completion, default-branch head, and comparison ancestry
+checks remain exact. This accepts GitHub's casing variation without widening the
+repository scope. See [#1682](https://github.com/Verjson/.github/issues/1682).

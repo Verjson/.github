@@ -79,6 +79,8 @@ was confirmed, since inspection-only claims go stale silently).
 
 - [#1669](https://github.com/Verjson/.github/issues/1669) — Node 26 places npm’s CLI under the validated tool prefix’s `lib` tree while the launcher looks below `bin`; the registered credentialless consumer script plan regression and protected identity harness pass locally on 2026-10-01, pending canonical CI.
 
+- [#1682](https://github.com/verJSON/.github/issues/1682) — GitHub's `verJSON/.github` casing exposed case-sensitive repository checks in Node CI, hosted-selector policy selection, required-workflow receipts, API-backed run provenance in gate re-arm, post-merge authorization, dependency supersession, zero-provider recovery, private GitHub Packages tarball provenance, and the container deployment-review producer. Reproduced in verjson-ai-gguf#139 CI attempt 2 and the live branch-rules API on 2026-10-02; fixes are in [PR #1683](https://github.com/verJSON/.github/pull/1683).
+
 - [#1665](https://github.com/Verjson/.github/issues/1665) — The generated gate caller requires a typed reusable environment input and directly handles only head transitions; lifecycle and label events remain on their dedicated callers. Verified 2026-10-01 with `bash scripts/ci-gate/gate-rearm-caller-contract.test.sh` and actionlint 1.7.7.
 - [#1675](https://github.com/Verjson/.github/issues/1675) — The required reusable input does not select a different role environment: ADR 0166 fixes generated callers to `ai-review-app`, and the generated-caller contract test pins that value. Verified 2026-10-01 against the caller contract test and ADR 0166.
 

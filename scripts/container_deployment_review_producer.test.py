@@ -124,11 +124,11 @@ class ProducerBehaviorTest(unittest.TestCase):
                 producer.validate_workflow_identity(workflow_ref, workflow_sha, PRODUCER)
 
     def test_serialized_job_authority_ignores_hostile_caller_workflow_fields_and_contract_input(self):
-        job_context = {"workflow_repository": "Verjson/.github", "workflow_ref": f"Verjson/.github/.github/workflows/container-deployment-review-producer.yml@{PRODUCER}", "workflow_sha": PRODUCER}
+        job_context = {"workflow_repository": "verJSON/.github", "workflow_ref": f"verJSON/.github/.github/workflows/container-deployment-review-producer.yml@{PRODUCER}", "workflow_sha": PRODUCER}
         caller = {"github_workflow_ref": f"Verjson/example/.github/workflows/hostile.yml@{'0' * 40}", "contract_ref": "0" * 40}
-        self.assertEqual(("Verjson/.github", job_context["workflow_ref"], PRODUCER), producer.validate_serialized_job_context(job_context))
+        self.assertEqual(("verJSON/.github", job_context["workflow_ref"], PRODUCER), producer.validate_serialized_job_context(job_context))
         self.assertNotIn(caller["contract_ref"], producer.validate_serialized_job_context(job_context))
-        for mutation in ({"workflow_repository": "Verjson/example"}, {"workflow_ref": caller["github_workflow_ref"]}, {"workflow_sha": "0" * 40}):
+        for mutation in ({"workflow_repository": "Verjson/example"}, {"workflow_repository": "v\u0435rJSON/.github"}, {"workflow_ref": caller["github_workflow_ref"]}, {"workflow_sha": "0" * 40}):
             hostile = dict(job_context, **mutation)
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 producer.validate_serialized_job_context(hostile)

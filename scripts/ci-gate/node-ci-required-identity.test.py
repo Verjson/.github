@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 LEGACY = ROOT / ".github/workflows/node-ci.yml"
 PROTECTED = ROOT / ".github/workflows/node-ci-protected.yml"
 HEAD = "a" * 40
-LEGACY_SHA256 = "c265e7bc48a1e45559c7dad522075ec9f104bba6c4e1f25349e3f4daebe2dc17"
+LEGACY_SHA256 = "b1bc6755e421372655e14dc10b0a092f12ae081b3af4b93477e17092e14bad3a"
 
 
 class RequiredWorkflowIdentityTest(unittest.TestCase):
@@ -383,7 +383,14 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
         first = next(i for i, step in enumerate(acquisition)
                      if step.get("name") == "Revalidate protected pull-request identity")
         self.assertTrue(str(acquisition[first - 1].get("uses", "")).startswith("actions/checkout@"))
-        self.assertEqual("Reject consumer-controlled npm configuration", acquisition[first + 1]["name"])
+        self.assertEqual(
+            "Download pinned secretless dependency transfer implementation",
+            acquisition[first + 1]["name"],
+        )
+        self.assertEqual(
+            "Reject consumer-controlled npm configuration",
+            acquisition[first + 2]["name"],
+        )
         acquisition_verifiers = [i for i, step in enumerate(acquisition)
                                  if step.get("name") == "Revalidate protected pull-request identity"]
         self.assertEqual(3, len(acquisition_verifiers))
