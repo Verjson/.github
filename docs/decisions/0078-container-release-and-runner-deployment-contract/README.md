@@ -69,7 +69,8 @@ The candidate and release schemas validate both historical schema-v2 records and
 schema-v3 records so immutable releases remain readable. Schema v3 requires a candidate
 publication timestamp and verified destination receipts on every image. Validation of a
 historical v2 candidate does not make it eligible for promotion; the release validator
-requires v3 and directs callers to rebuild candidates without the recorded evidence.
+requires v3 and directs callers to rebuild candidates without the recorded evidence. The
+candidate schema also rejects v3-only fields when `schemaVersion` is 2.
 
 Convenience tags such as `candidate`, `stable`, a major line, or `latest` may remain for
 humans and development tools. They are mutable aliases, are excluded from manifests,

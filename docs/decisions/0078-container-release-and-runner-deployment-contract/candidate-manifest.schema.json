@@ -309,6 +309,35 @@
       "if": {
         "properties": {
           "schemaVersion": {
+            "const": 2
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "not": {
+              "required": [
+                "candidatePublishedAt"
+              ]
+            }
+          },
+          "images": {
+            "items": {
+              "not": {
+                "required": [
+                  "destinations"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "schemaVersion": {
             "const": 3
           }
         }

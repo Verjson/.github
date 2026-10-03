@@ -163,6 +163,11 @@ class ContainerReleaseManifestTests(unittest.TestCase):
             )
         )
 
+    def test_candidate_schema_rejects_v2_with_v3_publication_fields(self):
+        candidate = manifest()
+        candidate["schemaVersion"] = 2
+        self.assertTrue(list(self.schema_validator.iter_errors(candidate)))
+
     def test_candidate_schema_accepts_gar_destination_receipt(self):
         candidate = manifest()
         receipt = candidate["images"][0]["destinations"][0]
