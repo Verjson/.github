@@ -176,6 +176,64 @@ assert decrypt["env"]["TRANSFER_KEY"] == (
 assert jobs["acquire-secretless-dependencies"]["outputs"]["transfer-encryption-key"] == (
     "${{ steps.package-secretless-transfer.outputs.encryption-key }}"
 )
+protected_doc = yaml.safe_load(Path(sys.argv[3]).read_text(encoding="utf-8"))
+protected_jobs = protected_doc["jobs"]
+protected_acquire = protected_jobs["acquire-secretless-dependencies"]
+protected_build = protected_jobs["build-test"]
+protected_acquire_steps = protected_acquire["steps"]
+protected_build_steps = protected_build["steps"]
+protected_package = next(
+    step for step in protected_acquire_steps
+    if step.get("name") == "Package bounded credential-free npm cache"
+)
+identity_guard_index = next(
+    index for index, step in enumerate(protected_acquire_steps)
+    if step.get("name") == "Revalidate protected pull-request identity"
+)
+transfer_download_index = next(
+    index for index, step in enumerate(protected_acquire_steps)
+    if step.get("name") == "Download pinned secretless dependency transfer implementation"
+)
+assert protected_acquire_steps[identity_guard_index - 1].get("uses", "").startswith(
+    "actions/checkout@"
+), "protected identity guard must immediately follow the admitted checkout"
+assert identity_guard_index < transfer_download_index, (
+    "protected identity guard must run before downloading transfer code"
+)
+protected_decrypt = next(
+    step for step in protected_build_steps
+    if step.get("name") == "Decrypt run-scoped secretless dependency payload"
+)
+assert_step_order(
+    protected_build_steps,
+    "Download pinned secretless dependency transfer implementation",
+    "Decrypt run-scoped secretless dependency payload",
+    "Install from verified secretless npm cache",
+)
+assert protected_package["run"] == package["run"]
+assert protected_decrypt["run"] == decrypt["run"]
+assert protected_decrypt["env"]["TRANSFER_KEY"] == (
+    "${{ needs.acquire-secretless-dependencies.outputs.transfer-encryption-key }}"
+)
+assert protected_acquire["outputs"]["transfer-encryption-key"] == (
+    "${{ steps.package-secretless-transfer.outputs.encryption-key }}"
+)
+assert "npm-private-cache.tar.enc" in protected_package["run"]
+assert 'TRANSFER_KEY="$encryption_key" python3 "$RUNNER_TEMP/container_dependency_transfer.py" encrypt' in protected_package["run"]
+assert '--destination "$TRANSFER_DIR/npm-private-cache.tar.enc"' in protected_package["run"]
+assert 'rm -f "$TRANSFER_DIR/npm-private-cache.tar"' in protected_package["run"]
+assert protected_package["run"].index("npm-private-cache.tar.enc") < protected_package["run"].index(
+    'rm -f "$TRANSFER_DIR/npm-private-cache.tar"'
+)
+transfer_cache_saves = [
+    (index, step) for index, step in enumerate(protected_acquire_steps)
+    if step.get("uses", "").startswith("actions/cache/save@")
+    and step.get("with", {}).get("path") == ".verjson-secretless-transfer-${{ github.run_id }}"
+]
+assert len(transfer_cache_saves) == 1, "protected transfer cache must have one run-scoped save"
+assert protected_acquire_steps.index(protected_package) < transfer_cache_saves[0][0], (
+    "encrypted package step must remove its plaintext archive before caching the transfer directory"
+)
 for name, filename in {
     "Validate approved internal dependency lock": "validate.sh",
     "Resolve approved compatibility ranges without lifecycle execution": "resolve.sh",

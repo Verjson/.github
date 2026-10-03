@@ -1743,7 +1743,18 @@ def render() -> str:
         "          [ -z \"$SCHEMA_DIR\" ] || {\n            echo \"::error::protected node-ci does not support schema-dir\"\n            exit 1\n          }\n",
     )
     document = replace_once(document, "        with:\n          persist-credentials: false\n", "        with:\n          ref: ${{ inputs.head-sha }}\n          persist-credentials: false\n")
-    document = replace_once(document, "          ref: ${{ inputs.head-sha }}\n          persist-credentials: false\n      - name: Reject consumer-controlled npm configuration\n", "          ref: ${{ inputs.head-sha }}\n          persist-credentials: false\n" + verifier_step() + "      - name: Reject consumer-controlled npm configuration\n")
+    acquisition_end = document.index("  build-test:\n")
+    acquisition = document[:acquisition_end]
+    build = document[acquisition_end:]
+    transfer_download = "      - name: Download pinned secretless dependency transfer implementation\n"
+    if acquisition.count(transfer_download) != 1:
+        raise SystemExit("protected node-ci acquisition transfer download boundary drifted")
+    acquisition = acquisition.replace(
+        transfer_download,
+        verifier_step() + transfer_download,
+        1,
+    )
+    document = acquisition + build
     auxiliary_if = "inputs.secretless-auxiliary-source != ''"
     document = replace_once(document, "      - name: Acquire immutable auxiliary source\n", verifier_step(auxiliary_if) + "      - name: Acquire immutable auxiliary source\n")
     document = replace_once(document, "      - name: Populate verified private dependency cache\n", verifier_step() + "      - name: Populate verified private dependency cache\n")
