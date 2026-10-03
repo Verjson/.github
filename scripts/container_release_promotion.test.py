@@ -24,7 +24,7 @@ class PromotionTest(unittest.TestCase):
         digest = "sha256:" + "1" * 64
         workflow = "Verjson/.github/.github/workflows/container-candidate-publish.yml@" + "b" * 40
         self.config["images"][0]["provenance"]["builderIdentity"] = workflow
-        self.candidate = {"schemaVersion": 2, "kind": "container-candidate", "candidateVersion": "1.2.3-rc.12345.1", "source": {"repository": "Verjson/example", "commit": "a" * 40, "ref": "refs/heads/main", "workflow": workflow, "runId": "12345", "runAttempt": "1"}, "images": [{"variant": "default", "repository": "ghcr.io/verjson/example", "indexDigest": digest, "identities": {"commit": "sha-" + "a" * 40, "candidate": "1.2.3-rc.12345.1"}, "platforms": [{"os": "linux", "architecture": "amd64", "digest": "sha256:" + "2" * 64}], "provenance": {"predicateType": "https://slsa.dev/provenance/v1", "builderIdentity": workflow, "subjectDigest": digest, "attestationId": "attestation-1"}, "sbom": {"predicateType": "https://spdx.dev/Document/v2.3", "attestations": [{"os": "linux", "architecture": "amd64", "digest": "sha256:" + "2" * 64, "attestationId": "attestation-2"}]}}]}
+        self.candidate = {"schemaVersion": 3, "kind": "container-candidate", "candidateVersion": "1.2.3-rc.12345.1", "source": {"repository": "Verjson/example", "commit": "a" * 40, "ref": "refs/heads/main", "workflow": workflow, "runId": "12345", "runAttempt": "1"}, "images": [{"variant": "default", "repository": "ghcr.io/verjson/example", "indexDigest": digest, "identities": {"commit": "sha-" + "a" * 40, "candidate": "1.2.3-rc.12345.1"}, "platforms": [{"os": "linux", "architecture": "amd64", "digest": "sha256:" + "2" * 64}], "provenance": {"predicateType": "https://slsa.dev/provenance/v1", "builderIdentity": workflow, "subjectDigest": digest, "attestationId": "attestation-1"}, "sbom": {"predicateType": "https://spdx.dev/Document/v2.3", "attestations": [{"os": "linux", "architecture": "amd64", "digest": "sha256:" + "2" * 64, "attestationId": "attestation-2"}]}}]}
         self.candidate["source"]["candidatePublishedAt"] = "2026-08-09T00:00:00Z"
         self.candidate["images"][0]["destinations"] = [
             {
@@ -46,7 +46,7 @@ class PromotionTest(unittest.TestCase):
         result = self.release(self.candidate, self.config, self.state, "1.2.3")
         self.assertEqual(sorted(i["indexDigest"] for i in self.candidate["images"]), sorted(i["indexDigest"] for i in result["images"]))
         self.assertEqual("1.2.3", result["releaseVersion"])
-        self.assertEqual(2, result["schemaVersion"])
+        self.assertEqual(3, result["schemaVersion"])
         self.assertEqual(self.state["candidateManifestDigest"], result["candidateManifestDigest"])
         self.assertRegex(result["candidateManifestDigest"], r"^sha256:[0-9a-f]{64}$")
         self.assertEqual(sorted(result["promotion"]["operationOrder"]), result["promotion"]["operationOrder"])

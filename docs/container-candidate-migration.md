@@ -34,6 +34,10 @@ source run start. Promotion checks the GHCR expiry and fails once it has passed;
 does not rebuild or substitute another digest. Nexus remains unavailable until the
 upstream multi-platform OIDC publisher contract is ready.
 
+New candidate manifests use schema v3. Existing v2 candidates lack destination
+receipts and expiry evidence, so rebuild them with the updated publisher before
+promotion; the validator rejects v2 with that cutover guidance.
+
 At one immutable `Verjson/.github` commit, acquire
 `scripts/gen-container-candidate.sh`, then generate and commit all four outputs:
 

@@ -1134,7 +1134,7 @@ jobs:
           jq -s --arg candidate "$CANDIDATE" --arg commit "$GITHUB_SHA" --arg repository "$GITHUB_REPOSITORY" \
             --arg ref "$GITHUB_REF" --arg workflow "Verjson/.github/.github/workflows/container-candidate-publish.yml@$CONTRACT_REF" \
             --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" --arg publishedAt "$candidate_published_at" \
-            '{schemaVersion:2,kind:"container-candidate",candidateVersion:$candidate,
+            '{schemaVersion:3,kind:"container-candidate",candidateVersion:$candidate,
               source:{repository:$repository,commit:$commit,ref:$ref,workflow:$workflow,runId:$run,runAttempt:$attempt,candidatePublishedAt:$publishedAt},images:.}' \
             image-*.json > candidate-manifest.json
           python3 scripts/container_release_manifest.py --manifest candidate-manifest.json --config "$CONFIG_PATH"

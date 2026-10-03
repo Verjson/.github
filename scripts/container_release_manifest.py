@@ -90,8 +90,10 @@ def validate_manifest(manifest: dict[str, Any], config: dict[str, Any]) -> None:
     if config.get("packageManager", "npm") not in ("npm", "pnpm"):
         raise ManifestError("config.packageManager must be npm or pnpm")
 
-    if manifest.get("schemaVersion") != 2:
-        raise ManifestError("manifest.schemaVersion must be 2")
+    if manifest.get("schemaVersion") != 3:
+        raise ManifestError(
+            "manifest.schemaVersion must be 3; rebuild candidates published with schema v2"
+        )
     if manifest.get("kind") != "container-candidate":
         raise ManifestError("manifest.kind must be container-candidate")
 

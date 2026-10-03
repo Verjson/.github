@@ -95,7 +95,7 @@ def release(
     if not workflow.startswith(path_prefix):
         raise ManifestError("candidate workflow is outside the contract repository")
     return {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "releaseVersion": version,
         "candidateVersion": candidate["candidateVersion"],
         "candidateManifestDigest": candidate_digest,

@@ -46,7 +46,7 @@ def config():
 
 def manifest():
     return {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "kind": "container-candidate",
         "candidateVersion": "2.4.0-rc.123.1",
         "source": {
@@ -122,6 +122,16 @@ class ContainerReleaseManifestTests(unittest.TestCase):
 
     def test_accepts_complete_manifest_bound_to_reviewed_identity(self):
         manifest_contract.validate_manifest(manifest(), config())
+
+    def test_rejects_legacy_v2_candidate_with_rebuild_guidance(self):
+        candidate = manifest()
+        candidate["schemaVersion"] = 2
+        candidate["source"].pop("candidatePublishedAt")
+        candidate["images"][0].pop("destinations")
+        self.assert_rejected(
+            candidate,
+            "manifest.schemaVersion must be 3; rebuild candidates published with schema v2",
+        )
 
     def test_accepts_case_insensitive_github_repository_identity(self):
         candidate = manifest()

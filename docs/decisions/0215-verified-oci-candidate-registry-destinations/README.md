@@ -40,3 +40,5 @@ OIDC multi-platform index publisher and live acceptance.
   mismatches, and expired candidate records stop publication or promotion.
 - Registry bytes may remain after their declared expiry, but automation treats them
   as unavailable. No cleanup job is required for correctness.
+- Destination receipts advance candidate and release manifests to schema v3. Existing
+  v2 candidates must be rebuilt; the validator does not infer missing receipts or expiry.

@@ -12,3 +12,6 @@ read-back digests and per-destination expiry; promotion fails closed after the
 canonical candidate expires. Retention values must be integers; booleans are
 rejected. Mirror receipts carry the validated variant for workflow selection;
 it is removed before the strict release-manifest schema is applied.
+
+New candidate and release manifests use schema v3. Existing v2 candidates must be
+rebuilt because they lack destination receipts and verifiable expiry data.
