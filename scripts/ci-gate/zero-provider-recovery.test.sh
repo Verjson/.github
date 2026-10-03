@@ -109,7 +109,7 @@ case "$*" in
   "api repos/$TARGET_REPO/actions/runs/$REVIEW_RUN_ID")
     jq -nc --argjson id "$REVIEW_RUN_ID" --argjson attempt "$REVIEW_RUN_ATTEMPT" \
       --arg title "${RUN_TITLE:-AI review authorization $AUTHORIZATION_CHECK_ID from arm $ARM_RUN_ID.$ARM_RUN_ATTEMPT}" \
-      --arg repo "$TARGET_REPO" --arg branch "$DEFAULT_BRANCH" \
+      --arg repo "${RUN_REPOSITORY:-verJSON/example}" --arg branch "$DEFAULT_BRANCH" \
       --arg actor "${RUN_ACTOR:-github-actions[bot]}" \
       --arg status "${RUN_STATUS:-in_progress}" \
       '{id:$id,run_attempt:$attempt,event:"workflow_dispatch",path:".github/workflows/ai-review-merge.yml",
@@ -132,7 +132,7 @@ case "$*" in
     fi
     jq -nc --argjson id "$REVIEW_RUN_ID" \
       --arg title "${RUN_TITLE:-AI review authorization $AUTHORIZATION_CHECK_ID from arm $ARM_RUN_ID.$ARM_RUN_ATTEMPT}" \
-      --arg repo "$TARGET_REPO" --arg branch "$DEFAULT_BRANCH" \
+      --arg repo "${RUN_REPOSITORY:-verJSON/example}" --arg branch "$DEFAULT_BRANCH" \
       --argjson attempt "${CORRELATED_RUN_ATTEMPT:-1}" \
       --argjson duplicate "${DUPLICATE_CORRELATED_RUN:-false}" '
       [{workflow_runs: ([{
@@ -187,6 +187,8 @@ expect_fail() {
 verify() { bash "$verifier"; }
 
 expect_pass "failed preflight with skipped gate is eligible for same-receipt recovery" verify
+RUN_REPOSITORY=$'v\u0435rJSON/example' \
+  expect_fail "Unicode lookalike repository cannot correlate recovery" "run identity mismatch" verify
 RUN_STATUS=queued expect_pass "queued direct review run remains eligible while a sibling waits" verify
 RUN_STATUS=completed expect_fail "terminal review run cannot be replayed as live" "run identity mismatch" verify
 PREFLIGHT_CONCLUSION=success expect_pass "held preflight with skipped gate is eligible for same-receipt recovery" verify

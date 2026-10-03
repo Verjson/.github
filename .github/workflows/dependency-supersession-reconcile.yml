@@ -47,10 +47,10 @@ jobs:
           [[ "$REPOSITORY_NAME" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo '::error::invalid repository'; exit 1; }
           run="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$OBSERVATION_RUN_ID")"
           jq -e --arg repo "$GITHUB_REPOSITORY" '
-            .repository.full_name == $repo and
+            (.repository.full_name | ascii_downcase) == ($repo | ascii_downcase) and
             .path == ".github/workflows/dependency-supersession-observe.yml" and
             .event == "workflow_dispatch" and .status == "completed" and .conclusion == "success" and
-            .head_repository.full_name == $repo
+            (.head_repository.full_name | ascii_downcase) == ($repo | ascii_downcase)
           ' <<<"$run" >/dev/null
           default_branch="$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch)"
           run_head="$(jq -er '.head_sha | select(test("^[0-9a-f]{40}$"))' <<<"$run")"

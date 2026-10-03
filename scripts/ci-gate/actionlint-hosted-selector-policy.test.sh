@@ -247,7 +247,7 @@ cp "$root/.github/workflows/ai-privileged-merge.yml" \
 (cd "$source_dir" && \
   RUNNER_TEMP="$GOOD_RUNNER_TEMP" \
   GITHUB_WORKSPACE="$GOOD_WORKSPACE" \
-  GITHUB_REPOSITORY="Verjson/.github" \
+  GITHUB_REPOSITORY="verJSON/.github" \
   VERJSON_HOSTED_SELECTOR_POLICY_DIR="$GOOD_POLICY_DIR" \
   bash "$enforce_script") >"$tmp/local-policy.out" 2>&1
 local_policy_rc=$?

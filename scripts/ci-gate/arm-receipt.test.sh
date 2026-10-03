@@ -9,7 +9,7 @@ fails=0
 pass() { printf 'ok   - %s\n' "$1"; }
 fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 
-export TARGET_REPO=Verjson/example PR_NUMBER=7
+export TARGET_REPO=Verjson/example API_REPO=verJSON/example PR_NUMBER=7
 export EXPECTED_HEAD_SHA=0123456789abcdef0123456789abcdef01234567
 export AUTHORIZATION_CHECK_ID=9001 ARM_RUN_ID=7001 ARM_RUN_ATTEMPT=2
 export EXPECTED_APP_ID=4242 EXPECTED_APP_SLUG=verjson-ai-review
@@ -73,8 +73,8 @@ export PATH="$tmp/bin:$PATH" RUN_FILE="$tmp/run.json" ARTIFACTS_FILE="$tmp/artif
 export CHECK_FILE="$tmp/check.json" ZIP_FILE="$tmp/receipt.zip" RULES_FILE="$tmp/rules.json"
 
 write_base() {
-  printf '%s\n' '[{"type":"workflows","ruleset_source_type":"Organization","ruleset_source":"Verjson","parameters":{"workflows":[{"path":".github/workflows/gate-rearm.yml","ref":"refs/heads/main","repository_id":1269388380}]}}]' >"$RULES_FILE"
-  jq -nc --argjson id "$ARM_RUN_ID" --argjson attempt "$ARM_RUN_ATTEMPT" --arg repo "$TARGET_REPO" \
+  printf '%s\n' '[{"type":"workflows","ruleset_source_type":"Organization","ruleset_source":"verJSON","parameters":{"workflows":[{"path":".github/workflows/gate-rearm.yml","ref":"refs/heads/main","repository_id":1269388380}]}}]' >"$RULES_FILE"
+  jq -nc --argjson id "$ARM_RUN_ID" --argjson attempt "$ARM_RUN_ATTEMPT" --arg repo "$API_REPO" \
     --arg workflow_url "https://api.github.com/repos/$TARGET_REPO/actions/workflows/77" \
     '{id:$id,run_attempt:$attempt,workflow_id:77,event:"pull_request_target",path:".github/workflows/gate-rearm.yml",workflow_url:$workflow_url,head_branch:"main",head_repository:{full_name:$repo},repository:{full_name:$repo},actor:{login:"maintainer"}}' >"$RUN_FILE"
   jq -nc --argjson id "$AUTHORIZATION_CHECK_ID" --arg head "$EXPECTED_HEAD_SHA" --arg external "$external_id" \
@@ -199,6 +199,9 @@ LOCAL_WORKFLOW_MISSING=true expect_provenance_fail "matching-path required workf
 write_ruleset_run
 jq '.[0].ruleset_source="OtherOrg"' "$RULES_FILE" >"$tmp/x" && mv "$tmp/x" "$RULES_FILE"
 LOCAL_WORKFLOW_MISSING=true expect_provenance_fail "matching-path required workflow from the wrong organization is rejected" verify
+write_ruleset_run
+jq '.[0].ruleset_source="v\u0435rJSON"' "$RULES_FILE" >"$tmp/x" && mv "$tmp/x" "$RULES_FILE"
+LOCAL_WORKFLOW_MISSING=true expect_provenance_fail "confusable workflow-source name is rejected" verify
 write_ruleset_run
 jq '.[0].parameters.workflows[0].repository_id=999' "$RULES_FILE" >"$tmp/x" && mv "$tmp/x" "$RULES_FILE"
 LOCAL_WORKFLOW_MISSING=true expect_provenance_fail "matching-path required workflow from the wrong canonical repository is rejected" verify

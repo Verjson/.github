@@ -175,7 +175,8 @@ jobs:
             exit 1
           fi
           policy_mode=(--consumer-policy)
-          if [ "${GITHUB_REPOSITORY:?repository identity is unavailable}" = "Verjson/.github" ]; then
+          repository_normalized="$(printf '%s' "${GITHUB_REPOSITORY:?repository identity is unavailable}" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+          if [ "$repository_normalized" = "verjson/.github" ]; then
             # This repository retains ADR 0089's two exact, fixed-hosted
             # security boundaries. Consumers have no such exception.
             policy_mode=(--visibility public)

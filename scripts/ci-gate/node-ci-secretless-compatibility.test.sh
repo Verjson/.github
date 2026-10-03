@@ -471,7 +471,7 @@ done
 if [ "$#" -eq 4 ] && { [ "${4:-}" = version ] || [ "${3:-}" = versions ]; }; then
   printf '%s\n' '["0.2.1","0.2.2"]'
 else
-  printf '%s\n' "{\"name\":\"@verjson/identity-contracts\",\"version\":\"0.2.2\",\"dist.integrity\":\"$NPM_STUB_INTEGRITY\",\"dist.tarball\":\"https://npm.pkg.github.com/download/@verjson/identity-contracts/0.2.2/archive\"}"
+  printf '%s\n' "{\"name\":\"@verjson/identity-contracts\",\"version\":\"0.2.2\",\"dist.integrity\":\"$NPM_STUB_INTEGRITY\",\"dist.tarball\":\"${NPM_STUB_TARBALL:-https://npm.pkg.github.com/download/@verJSON/identity-contracts/0.2.2/archive}\"}"
 fi
 SH
 chmod +x "$tmp/resolve/bin/npm"
@@ -479,7 +479,7 @@ run_resolver() {
   rm -rf "$tmp/resolve/runner/_compatibility"
   : > "$tmp/resolve/private-entries"
   (cd "$tmp/resolve" && PATH="$tmp/resolve/bin:$PATH" NPM_STUB_LOG="$tmp/resolve/npm.log" \
-    NPM_STUB_INTEGRITY="$fixture_integrity" NPM_STUB_FAILURE="${3:-}" \
+    NPM_STUB_INTEGRITY="$fixture_integrity" NPM_STUB_FAILURE="${3:-}" NPM_STUB_TARBALL="${4:-https://npm.pkg.github.com/download/@verJSON/identity-contracts/0.2.2/archive}" \
     NODE_AUTH_TOKEN=runtime-package-token \
     APPROVED_INTERNAL_SCOPES=@verjson COMPATIBILITY_RANGES="$1" \
     COMPATIBILITY_PROVENANCE="$tmp/resolve/runner/_compatibility/provenance.json" \
@@ -492,6 +492,15 @@ import json,sys
 p=json.load(open(sys.argv[1],encoding="utf-8"));assert p["lanes"][0]["version"]=="0.2.2"
 PY
 then pass "trusted acquisition records runtime-resolved version, integrity, and provenance"; else fail "trusted acquisition did not record runtime-resolved provenance"; fi
+confusable_tarball='https://npm.pkg.github.com/download/@vеrjson/identity-contracts/0.2.2/archive'
+if run_resolver "$request" "$tmp/resolve/confusable.log" "" "$confusable_tarball"; then
+  fail "registry provenance accepted a Unicode lookalike package path"
+elif grep -qF 'invalid GitHub Packages URL' "$tmp/resolve/confusable.log"; then
+  pass "registry provenance accepts API casing variants and rejects Unicode lookalikes"
+else
+  fail "registry provenance returned an unexpected error for a Unicode lookalike"
+fi
+
 outside_range='{"package":"@verjson/identity-contracts","ranges":["^9.0.0"],"script":"test:compat"}'
 if run_resolver "$outside_range" "$tmp/resolve/outside-range.log"; then
   fail "registry-selected version outside the declared bounded range was accepted"
