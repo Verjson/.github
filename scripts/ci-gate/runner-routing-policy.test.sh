@@ -1014,6 +1014,7 @@ generated-artifacts.yml validate
 changelog-release.yml release
 container-candidate.yml prepare
 container-candidate.yml pull-request-build
+container-candidate.yml skip-private-node-build
 TARGETS
 }
 

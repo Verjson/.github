@@ -1,10 +1,10 @@
 # Immutable container candidate adoption
 
 Adoption publishes an attested candidate from `main`; it does not create a stable
-release or deploy anything. First commit a reviewed `container-candidate.json` with
-the repository, its exact `ghcr.io/<owner>` namespace, `nextStableVersion`, and the
-complete image/variant/platform matrix. A derived image names `baseVariant`; the
-candidate manifest then binds it to the base index digest produced by that same run.
+release or deploy anything. Commit a reviewed `container-candidate.json` with the
+repository, its exact `ghcr.io/<owner>` namespace, `nextStableVersion`, and the
+complete image, variant, and platform matrix. A derived image names `baseVariant`;
+the candidate manifest binds it to the base index digest produced by that run.
 
 At one immutable `Verjson/.github` commit, acquire
 `scripts/gen-container-candidate.sh`, then generate and commit all three outputs:
@@ -16,61 +16,53 @@ scripts/gen-container-candidate.sh contract-test <contract-sha> container-candid
 chmod +x scripts/container_release_manifest.py scripts/container-candidate-contract.test.sh
 ```
 
-The generated caller binds pull-request validation to
-`container-candidate.yml` and trusted publication to
-`container-candidate-publish.yml` at the same immutable SHA. Do not collapse
-the two calls or grant publication permissions to the validation job: GitHub
-validates each complete reusable graph before runtime conditions are evaluated.
-
+The generated caller binds pull-request validation to `container-candidate.yml`
+and trusted publication to `container-candidate-publish.yml` at the same immutable
+SHA. Do not collapse the two calls or grant publication permissions to validation:
+GitHub validates the complete reusable graph before evaluating runtime conditions.
 Each image's `provenance.builderIdentity` must name the publishing entrypoint,
 `Verjson/.github/.github/workflows/container-candidate-publish.yml@<contract-sha>`.
-Regenerate and review configuration together with the caller when changing the
-contract SHA.
+Regenerate the workflow, validator, and contract test together when changing the
+contract SHA, and run the generated test in CI.
 
-The workflow, validator, and generated contract test must share that exact pin.
-Run the generated test in CI. Pull requests execute only the credential-free build
-path. Default-branch pushes publish commit-addressed and
-`<nextStableVersion>-rc.<run_id>.<run_attempt>` identities, then retain the complete
+Default-branch pushes publish commit-addressed and
+`<nextStableVersion>-rc.<run_id>.<run_attempt>` identities and retain a complete
 candidate manifest. Downstream automation consumes its digests, never its tags.
 
-Consumers whose lockfile resolves private scoped packages list every exact
-package name in `privateNodePackages`. The canonical acquisition job validates the
-allowlist against `package-lock.json`, accepts only canonical registry URLs with exact
-SHA-512 integrity, and runs `npm ci --ignore-scripts` with isolated npm configuration.
-The resulting `node_modules` tree is bound to the workflow run, attempt, and lockfile
-digest. The trusted job saves it under an unguessable exact-attempt repository cache
-key; build jobs use no restore prefix and fail on a miss. BuildKit receives only that
-credential-free tree as the named context `verjson_node_modules`; it never receives the
-acquisition token or npm configuration.
+## Private Node packages
+
+List every exact private scoped package in `privateNodePackages`. The trusted
+publication entrypoint validates the allowlist against the selected lockfile,
+accepts only canonical registry URLs with exact integrity, and runs installation
+with lifecycle scripts disabled. The resulting `node_modules` tree is bound to
+the workflow run, attempt, and lockfile digest. Trusted build jobs restore it by
+an exact, unguessable cache key and fail on a miss. BuildKit receives the tree as
+the named context `verjson_node_modules`; it never receives the acquisition token
+or npm configuration.
+
+Pull-request validation never acquires private packages or receives
+`NODE_AUTH_TOKEN`. When `privateNodePackages` is non-empty, the read-only entrypoint
+reports that it skipped the candidate Docker builds; the trusted publisher builds
+the candidate from the protected default branch after merge. For a public-only
+configuration, pull-request builds remain credential-free and receive an empty
+`verjson_node_modules` context. Private-package adoption can therefore use one
+reviewed PR without making its PR-controlled Dockerfile able to read package
+contents.
 
 The optional `packageManager` field accepts `npm` (the default, with
 `package-lock.json`) or `pnpm` (with `pnpm-lock.yaml` version 9.0 and an
-integrity-pinned `packageManager` field in `package.json`). Registry scope mappings are
-derived from the exact scoped names in `privateNodePackages`; do not add a repository
-`.npmrc` or a parallel npm lockfile for a pnpm project. Lifecycle scripts remain
-disabled during acquisition for both managers.
-Such a consumer uses the context explicitly, for example:
+integrity-pinned `packageManager` field in `package.json`). Registry scopes derive
+from the exact names in `privateNodePackages`; do not add a repository `.npmrc` or
+a parallel npm lockfile for a pnpm project. Bundled npm lock entries marked
+`inBundle: true` are covered by the integrity-pinned containing tarball and are
+not downloaded separately. The planner still rejects ordinary entries without
+exact registry URLs and integrity.
 
-```Dockerfile
-COPY --from=verjson_node_modules /node_modules ./node_modules
-```
-
-Private-package adoption requires two reviewed pull requests. First merge the
-`container-candidate.json` and lockfile containing the complete
-`privateNodePackages` allowlist **without enabling the generated candidate caller**.
-Then generate and enable the candidate caller in a second pull request. The second
-pull request may use package credentials because its requested allowlist exactly
-matches the already reviewed base-branch configuration. A single pull request that
-both introduces `privateNodePackages` and enables the caller intentionally fails
-closed; PR-head configuration cannot authorize its own credential use.
-
-An absent `privateNodePackages` field preserves the existing build path. A fork PR
-that requests private packages fails before credential use, as does an unapproved
-package, a non-registry URL, a stale integrity, or a PR-controlled `.npmrc`.
-If dependency lifecycle scripts are required, run them later inside credential-free
-Docker execution after copying the context; credentialed acquisition never executes them.
-
-This contract is separate from the repository changelog contract. Continue to use
+An absent `privateNodePackages` field preserves pull-request builds with an empty
+dependency context. Fork pull requests cannot use package credentials. Unapproved
+packages, non-registry URLs, stale integrity, or project-controlled npm
+configuration fail closed. This contract is separate from the repository
+changelog contract; continue using
 `Verjson/.github/scripts/gen-changelog-caller.sh` for the changelog workflow,
-renderer, and contract test at their one immutable contract SHA; do not replace or
-hand-edit those generated artifacts.
+renderer, and contract test at one immutable SHA. Do not replace or hand-edit
+generated artifacts.

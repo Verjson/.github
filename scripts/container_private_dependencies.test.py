@@ -82,6 +82,43 @@ class PrivateDependencyTests(unittest.TestCase):
         candidate["packages"]["node_modules/zod-alias"]["name"] = "zod"
         contract.build_plan(candidate, ["@verjson/pg"])
 
+    def test_accepts_bundled_dependency_without_standalone_download_metadata(self):
+        candidate = lock()
+        candidate["packages"]["node_modules/@tailwindcss/oxide-wasm32-wasi"] = {
+            "version": "1.0.0",
+            "resolved": "https://registry.npmjs.org/@tailwindcss/oxide-wasm32-wasi/-/oxide-wasm32-wasi-1.0.0.tgz",
+            "integrity": VALID_INTEGRITY,
+        }
+        bundled_path = (
+            "node_modules/@tailwindcss/oxide-wasm32-wasi/"
+            "node_modules/@emnapi/core"
+        )
+        candidate["packages"][bundled_path] = {
+            "name": "@emnapi/core",
+            "version": "1.0.0",
+            "inBundle": True,
+        }
+
+        plan = contract.build_plan(candidate, ["@verjson/pg"])
+
+        self.assertEqual(len(plan), 3)
+        self.assertNotIn("@emnapi/core", [item["url"] for item in plan])
+
+    def test_missing_download_metadata_is_still_rejected_for_nonbundled_entries(self):
+        candidate = lock()
+        candidate["packages"]["node_modules/zod"].pop("resolved")
+        with self.assertRaisesRegex(contract.DependencyError, "exact resolved URL and integrity"):
+            contract.build_plan(candidate, ["@verjson/pg"])
+
+    def test_rejects_bundled_entry_without_an_integrity_pinned_parent(self):
+        candidate = lock()
+        candidate["packages"]["node_modules/@emnapi/core"] = {
+            "version": "1.0.0",
+            "inBundle": True,
+        }
+        with self.assertRaisesRegex(contract.DependencyError, "no integrity-pinned parent package"):
+            contract.build_plan(candidate, ["@verjson/pg"])
+
     def test_rejects_lockfile_v1_and_malformed_packages(self):
         candidate = lock()
         candidate["lockfileVersion"] = 1
