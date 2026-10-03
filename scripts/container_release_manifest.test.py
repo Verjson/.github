@@ -163,10 +163,21 @@ class ContainerReleaseManifestTests(unittest.TestCase):
             )
         )
 
-    def test_candidate_schema_rejects_v2_with_v3_publication_fields(self):
-        candidate = manifest()
-        candidate["schemaVersion"] = 2
-        self.assertTrue(list(self.schema_validator.iter_errors(candidate)))
+    def test_candidate_schema_rejects_each_v3_field_on_v2(self):
+        cases = (
+            ("timestamp", "destinations"),
+            ("destinations", "candidatePublishedAt"),
+            ("both fields", None),
+        )
+        for label, field_to_remove in cases:
+            with self.subTest(label=label):
+                candidate = manifest()
+                candidate["schemaVersion"] = 2
+                if field_to_remove == "destinations":
+                    candidate["images"][0].pop("destinations")
+                elif field_to_remove == "candidatePublishedAt":
+                    candidate["source"].pop("candidatePublishedAt")
+                self.assertTrue(list(self.schema_validator.iter_errors(candidate)))
 
     def test_candidate_schema_accepts_gar_destination_receipt(self):
         candidate = manifest()
