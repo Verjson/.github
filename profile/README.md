@@ -46,9 +46,8 @@ to look next.
 
 The Nuremberg development stack has GitLab CE, Nexus Repository Community Edition, and GitLab
 Runner workloads deployed for staged migration. Runner connectivity and end-to-end publisher
-acceptance are still being validated. See the [service endpoints and current status](https://github.com/Verjson/.github/blob/main/docs/infrastructure/netcup-nuremberg.md),
-the [deployment implementation](https://github.com/Verjson/verjson-cli), and the
-[verjson-ci migration tracker](https://github.com/Verjson/verjson-ci/issues/30).
+acceptance are still being validated. See the [service endpoints and current status](https://github.com/Verjson/.github/blob/main/docs/infrastructure/netcup-nuremberg.md)
+and the [verjson-ci migration tracker](https://github.com/Verjson/verjson-ci/issues/30).
 
 ## How we work
 

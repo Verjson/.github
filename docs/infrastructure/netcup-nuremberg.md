@@ -1,7 +1,6 @@
 # Nuremberg development services
 
-Last verified: **2026-09-07**. Provisioning implementation:
-[Verjson/verjson-cli](https://github.com/Verjson/verjson-cli).
+Service endpoint and registry checks last verified: **2026-09-07**.
 
 ## Endpoints
 
@@ -21,7 +20,7 @@ Last verified: **2026-09-07**. Provisioning implementation:
 HTTPS checks use normal certificate validation. Health checks establish
 reachability only; they do not verify authentication, persistence, or backups.
 
-## Current migration status (2026-10-02, 23:13 UTC)
+## Migration status snapshot (2026-10-02, 23:13 UTC)
 
 A read-only Kubernetes deployment inventory, queried through the Netcup
 administration host at the time above, showed GitLab CE, Nexus CE, MinIO, and
@@ -48,10 +47,8 @@ access; that access does not extend to these hosted registries.
 Registry readiness and consumer integration remain coordinated in
 [#1264](https://github.com/Verjson/.github/issues/1264). Documentation work began
 in [#1266](https://github.com/Verjson/.github/issues/1266). The generated
-bootstrap now reproduces the authenticated Nexus registry configuration through
-merged [verjson-cli#216](https://github.com/Verjson/verjson-cli/pull/216), which
-closed [verjson-cli#214](https://github.com/Verjson/verjson-cli/issues/214). That
-code change did not validate a live deployment; environment rollout and endpoint
+bootstrap includes the authenticated Nexus registry configuration. That code
+change did not validate a live deployment; environment rollout and endpoint
 verification remain part of #1264.
 
 ## Client settings
