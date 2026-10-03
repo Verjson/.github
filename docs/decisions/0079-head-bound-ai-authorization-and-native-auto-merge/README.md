@@ -390,3 +390,21 @@ carries it now; none of that changes.
 ## Amendment (2026-09-20, #1504) — authorize every hold removal
 
 Only a repository `maintain` or `admin` actor, determined from GitHub's `role_name` field, may clear a draft hold through `ready_for_review`, remove an existing `DO NOT MERGE` title marker, remove a recognized `hold` / `DO NOT MERGE` label, or add an `ai-review` / `re-review` label. The authorization check runs before minting the dedicated review App token. A permissionless untrusted-runner filter skips protected jobs for unrelated label additions and removals. Recognized hold-label additions still reach the protected arm because it must disable native auto-merge. A title edit that adds the marker reaches the trusted arm without hold-clear authorization so it can disable native auto-merge; a title edit that removes the marker requires maintainer/admin authorization. Title edits that leave held state unchanged skip the protected arm. All hold-clear paths retain the exact-head receipt requirement.
+
+## Amendment (2026-10-02, #1682) — compare required-workflow source casing safely
+
+GitHub's live branch-rules response reports the organization source as `verJSON`,
+while the gate had required the spelling `Verjson`; run metadata can also report
+the repository name with different casing from `TARGET_REPO`. Compare these GitHub
+identity strings with ASCII case folding. Continue requiring an organization
+ruleset, the canonical `.github` repository ID, `.github/workflows/gate-rearm.yml`,
+and the exact `refs/heads/main` source ref. The arm receipt suite covers both live
+casing shapes, wrong IDs, foreign organizations, workflow paths, protected refs,
+and a Unicode confusable source. This clarifies the identity invariant tracked in
+[#1682](https://github.com/Verjson/.github/issues/1682).
+
+The same API casing rule applies to API-backed run provenance in `gate-rearm.yml`,
+`ai-post-merge.yml`, and `verify-zero-provider-recovery.sh`: compare only the full
+repository slug with ASCII case folding, while retaining exact run and attempt,
+workflow path, head, protected branch, and repository-ID checks. Mixed-case fixtures
+exercise those paths; Unicode lookalikes remain rejected.

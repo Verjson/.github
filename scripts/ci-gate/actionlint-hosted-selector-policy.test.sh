@@ -245,20 +245,15 @@ find "$source_dir/.github/workflows" -type f -delete
 cp "$root/.github/workflows/ai-privileged-merge.yml" \
   "$root/.github/workflows/privileged-merge-conformance.yml" \
   "$source_dir/.github/workflows/"
-run_local_policy_identity() {
-  local repository="$1" output="$2"
-  (cd "$source_dir" && \
-    RUNNER_TEMP="$GOOD_RUNNER_TEMP" \
-    GITHUB_WORKSPACE="$GOOD_WORKSPACE" \
-    GITHUB_REPOSITORY="$repository" \
-    VERJSON_HOSTED_SELECTOR_POLICY_DIR="$GOOD_POLICY_DIR" \
-    bash "$enforce_script") >"$output" 2>&1
-  LOCAL_POLICY_RC=$?
-}
-
-run_local_policy_identity "Verjson/.github" "$tmp/local-policy.out"
-if [ "$LOCAL_POLICY_RC" -eq 0 ]; then
-  pass "the exact .github identity preserves reviewed fixed-hosted exceptions"
+(cd "$source_dir" && \
+  RUNNER_TEMP="$GOOD_RUNNER_TEMP" \
+  GITHUB_WORKSPACE="$GOOD_WORKSPACE" \
+  GITHUB_REPOSITORY="verJSON/.github" \
+  VERJSON_HOSTED_SELECTOR_POLICY_DIR="$GOOD_POLICY_DIR" \
+  bash "$enforce_script") >"$tmp/local-policy.out" 2>&1
+local_policy_rc=$?
+if [ "$local_policy_rc" -eq 0 ]; then
+  pass "the local policy branch preserves .github's reviewed fixed-hosted exceptions"
 else
   fail "the exact .github identity did not preserve its reviewed exceptions"
 fi

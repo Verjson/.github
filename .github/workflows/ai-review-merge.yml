@@ -90,7 +90,9 @@ on:
       ai_review_environment:
         description: Main-only environment containing the ai-review App private key
         required: true
-        type: string
+        type: choice
+        options:
+          - ai-review-app
         default: ai-review-app
       pr_number:
         description: PR number to review
@@ -221,6 +223,9 @@ env:
 
 jobs:
   app-key-policy:
+    if: >-
+      github.event_name != 'workflow_dispatch' ||
+      inputs.ai_review_environment == 'ai-review-app'
     uses: ./.github/workflows/app-key-environment.yml
     secrets:
       AI_REVIEW_APP_PRIVATE_KEY: ${{ secrets.AI_REVIEW_APP_PRIVATE_KEY }}
@@ -260,21 +265,32 @@ jobs:
     # conflict still holds and comments (can't auto-resolve). Renovate owns its
     # own rebases, so its branches are left untouched. Same opt-out guard as
     # classify.
-    if: >
+    if: >-
       github.event_name != 'pull_request_target' &&
-      (github.event_name == 'workflow_dispatch' ||
       (
+        github.event_name != 'workflow_dispatch' ||
         (
-          (github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
-          (github.event.action == 'labeled' && github.event.label.name == 're-review') ||
-          (github.event.action == 'unlabeled' &&
-            (github.event.label.name == 'hold' || github.event.label.name == 'DO NOT MERGE'))
-        ) &&
-        !github.event.pull_request.draft &&
-        !contains(github.event.pull_request.labels.*.name, 'hold') &&
-        !contains(github.event.pull_request.labels.*.name, 'DO NOT MERGE') &&
-        needs.title-policy.outputs.title_held != 'true'
-      ))
+          github.ref == 'refs/heads/main' &&
+          github.event.repository.default_branch == 'main' &&
+          github.ref_protected &&
+          inputs.ai_review_environment == 'ai-review-app'
+        )
+      ) &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        (
+          (
+            (github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
+            (github.event.action == 'labeled' && github.event.label.name == 're-review') ||
+            (github.event.action == 'unlabeled' &&
+              (github.event.label.name == 'hold' || github.event.label.name == 'DO NOT MERGE'))
+          ) &&
+          !github.event.pull_request.draft &&
+          !contains(github.event.pull_request.labels.*.name, 'hold') &&
+          !contains(github.event.pull_request.labels.*.name, 'DO NOT MERGE') &&
+          needs.title-policy.outputs.title_held != 'true'
+        )
+      )
     # A workflow_call consumer sets its own fleet via `with.runner_labels`; the
     # org direct paths (pull_request/workflow_dispatch) leave it empty and route
     # org-aware (#175, ADR 0030): non-Verjson callers to GitHub-hosted
@@ -366,7 +382,7 @@ jobs:
         id: trusted-revision
         env:
           CONTRACT_REF: ${{ inputs.contract_ref }}
-          EXECUTING_WORKFLOW_SHA: ${{ job.workflow_sha }}
+          EXECUTING_WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: |
           set -euo pipefail
           trusted_review_sha="${CONTRACT_REF:-$EXECUTING_WORKFLOW_SHA}"
@@ -2033,7 +2049,7 @@ jobs:
   complete-authorization:
     environment: ${{ inputs.ai_review_environment }}
     needs: [preflight, gate, app-key-policy]
-    if: ${{ always() && inputs.authorization_check_id != '' }}
+    if: ${{ always() && inputs.authorization_check_id != '' && (github.event_name != 'workflow_dispatch' || inputs.ai_review_environment == 'ai-review-app') }}
     outputs:
       ai_authorized: ${{ steps.complete.outputs.ai_authorized }}
     runs-on: ${{ fromJSON(vars.CI_RUNNER_FASTLANE || '["ubuntu-24.04"]') }}

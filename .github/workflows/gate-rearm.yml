@@ -258,8 +258,8 @@ jobs:
               --arg path "$local_delivery_path" --arg head "$EVENT_HEAD_SHA" --arg actor "$REQUEST_ACTOR" '
                 .id == $run_id and .event == "pull_request_target" and .path == $path and
                 .run_attempt == 1 and .head_sha == $head and
-                .head_repository.full_name == $repo and .repository.id == $repo_id and
-                .repository.full_name == $repo and .actor.login == $actor
+                (.head_repository.full_name | ascii_downcase) == ($repo | ascii_downcase) and .repository.id == $repo_id and
+                (.repository.full_name | ascii_downcase) == ($repo | ascii_downcase) and .actor.login == $actor
               ' <<<"$source_run" >/dev/null || {
                 echo "::error::local arm delivery source, repository, or actor is not trusted"; exit 1;
               }
@@ -516,7 +516,7 @@ jobs:
               --argjson run_id "$source_run_id" --argjson attempt "$source_attempt" '
                 .id == $run_id and .run_attempt == $attempt and .status == "completed" and
                 .event == "pull_request_target" and (.path == ".github/workflows/gate-rearm.yml" or .path == ".github/workflows/ai-review-label-rearm.yml" or .path == ".github/workflows/ai-review-lifecycle-rearm.yml") and
-                .head_repository.full_name == $repo and .repository.id == $repo_id and
+                (.head_repository.full_name | ascii_downcase) == ($repo | ascii_downcase) and .repository.id == $repo_id and
                 # GitHub can report a completed run with completed_at still null
                 # (an observed API anomaly, not evidence it might still be
                 # active); accept updated_at as the terminal timestamp then.
@@ -543,7 +543,7 @@ jobs:
               jq -e --arg head "$head_sha" --arg repo "$TARGET_REPO" --argjson repo_id "$REPOSITORY_ID" \
                 --argjson attempt "$source_attempt" '
                   .run_attempt == 1 and .run_attempt == $attempt and .head_sha == $head and
-                  .head_repository.full_name == $repo and .repository.id == $repo_id and
+                  (.head_repository.full_name | ascii_downcase) == ($repo | ascii_downcase) and .repository.id == $repo_id and
                   (.actor.login | type == "string" and length > 0)
                 ' <<<"$source_run" >/dev/null || return 1
               source_workflow_id="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/actions/workflows/$source_file" --jq '.id')" || return 1
@@ -617,7 +617,7 @@ jobs:
               [.[].workflow_runs[] | select(
                 .display_title == $title and .event == "workflow_dispatch" and
                 .path == ".github/workflows/ai-review-merge.yml" and .head_branch == $branch and
-                .head_repository.full_name == $repo and .repository.full_name == $repo
+                (.head_repository.full_name | ascii_downcase) == ($repo | ascii_downcase) and (.repository.full_name | ascii_downcase) == ($repo | ascii_downcase)
               )]
             ' <<<"$review_pages")" || return 1
             owned_count="$(jq -r 'length' <<<"$owned_reviews")"
@@ -733,7 +733,7 @@ jobs:
                 if jq -e --arg repo "$TARGET_REPO" '
                     .event == "pull_request_target" and
                     (.path == ".github/workflows/gate-rearm.yml" or .path == ".github/workflows/ai-review-label-rearm.yml" or .path == ".github/workflows/ai-review-lifecycle-rearm.yml") and
-                    .head_repository.full_name == $repo and
+                    (.head_repository.full_name | ascii_downcase) == ($repo | ascii_downcase) and
                     (.run_attempt | type == "number")
                   ' <<<"$arm_run" >/dev/null && [ "$receipt_count" = 1 ]; then
                   notice_body="$(printf '<!-- ai-review-hold-clear:%s -->\n%s' "$head_sha" "$pending_guidance")"

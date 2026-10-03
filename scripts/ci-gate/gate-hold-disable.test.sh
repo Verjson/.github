@@ -52,7 +52,7 @@ case "$*" in
   "api graphql "*) cat "$GRAPHQL_FILE" ;;
   *"commits/"*"/check-runs "*) cat "$LATEST_FILE" ;;
   *"actions/runs/7001 --jq"*) printf '2\n' ;;
-  *"actions/runs/7001") printf '{"event":"pull_request_target","path":".github/workflows/gate-rearm.yml","head_repository":{"full_name":"Verjson/example"},"run_attempt":2}\n' ;;
+  *"actions/runs/7001") printf '{"event":"pull_request_target","path":".github/workflows/gate-rearm.yml","head_repository":{"full_name":"verJSON/example"},"run_attempt":2}\n' ;;
   *"actions/runs/8000") jq -nc --arg path "${SOURCE_RUN_PATH:-.github/workflows/ai-review-label-rearm.yml}" --arg actor "${SOURCE_RUN_ACTOR:-maintainer}" --arg branch "${SOURCE_RUN_BRANCH:-main}" --argjson run_id "${SOURCE_RUN_ID:-8000}" --argjson repo_id "${SOURCE_REPO_ID:-1234}" --arg head_repo "${SOURCE_HEAD_REPO:-Verjson/example}" --arg repo_full "${SOURCE_REPO_FULL:-Verjson/example}" --argjson workflow_id "${SOURCE_WORKFLOW_ID:-77}" '{id:$run_id,event:"pull_request_target",path:$path,workflow_id:$workflow_id,run_attempt:1,head_sha:"0123456789abcdef0123456789abcdef01234567",head_branch:$branch,head_repository:{full_name:$head_repo},repository:{id:$repo_id,full_name:$repo_full},actor:{login:$actor}}' ;;
   *"actions/workflows/ai-review-lifecycle-rearm.yml"*"--jq"*) printf '88\n' ;;
   *"contents/.github/workflows/ai-review-label-rearm.yml?ref="*) printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' ;;
@@ -168,8 +168,8 @@ run_arm(){
     SOURCE_WORKFLOW_ID="${SOURCE_WORKFLOW_ID_OVERRIDE:-$workflow_id}" \
     SOURCE_RUN_ID="${SOURCE_RUN_ID_OVERRIDE:-8000}" \
     SOURCE_REPO_ID="${SOURCE_REPO_ID_OVERRIDE:-1234}" \
-    SOURCE_HEAD_REPO="${SOURCE_HEAD_REPO_OVERRIDE:-Verjson/example}" \
-    SOURCE_REPO_FULL="${SOURCE_REPO_FULL_OVERRIDE:-Verjson/example}" \
+    SOURCE_HEAD_REPO="${SOURCE_HEAD_REPO_OVERRIDE:-verJSON/example}" \
+    SOURCE_REPO_FULL="${SOURCE_REPO_FULL_OVERRIDE:-verJSON/example}" \
     SOURCE_RUN_ACTOR="${SOURCE_RUN_ACTOR_OVERRIDE:-maintainer}" \
     WORKFLOW_REF="${WORKFLOW_REF_OVERRIDE:-Verjson/example/.github/workflows/$caller@refs/heads/main}" \
     bash "${ARM_SCRIPT:-$tmp/arm.sh}")
