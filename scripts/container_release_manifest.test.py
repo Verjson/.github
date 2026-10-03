@@ -2,12 +2,15 @@
 
 import copy
 import importlib.util
+import json
 import sys
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
+
+from jsonschema import Draft202012Validator, FormatChecker
 
 import container_registry_destinations as destination_contract
 
@@ -116,9 +119,58 @@ def manifest():
 
 
 class ContainerReleaseManifestTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        schema_path = (
+            ROOT
+            / "docs/decisions/0078-container-release-and-runner-deployment-contract/candidate-manifest.schema.json"
+        )
+        cls.schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        Draft202012Validator.check_schema(cls.schema)
+        cls.schema_validator = Draft202012Validator(
+            cls.schema, format_checker=FormatChecker()
+        )
+
     def assert_rejected(self, candidate, expected):
         with self.assertRaisesRegex(manifest_contract.ManifestError, expected):
             manifest_contract.validate_manifest(candidate, config())
+
+    def test_candidate_schema_accepts_v3_and_historical_v2_manifests(self):
+        self.schema_validator.validate(manifest())
+
+        historical = manifest()
+        historical["schemaVersion"] = 2
+        historical["source"].pop("candidatePublishedAt")
+        historical["images"][0].pop("destinations")
+        self.schema_validator.validate(historical)
+
+    def test_candidate_schema_requires_v3_publication_evidence(self):
+        candidate = manifest()
+        candidate["images"][0].pop("destinations")
+        self.assertTrue(
+            any(
+                "destinations" in error.message
+                for error in self.schema_validator.iter_errors(candidate)
+            )
+        )
+
+        candidate = manifest()
+        candidate["source"].pop("candidatePublishedAt")
+        self.assertTrue(
+            any(
+                "candidatePublishedAt" in error.message
+                for error in self.schema_validator.iter_errors(candidate)
+            )
+        )
+
+    def test_candidate_schema_accepts_gar_destination_receipt(self):
+        candidate = manifest()
+        receipt = candidate["images"][0]["destinations"][0]
+        receipt["provider"] = "gar"
+        receipt["repository"] = (
+            "us-central1-docker.pkg.dev/verjson-artifacts/containers/runner"
+        )
+        self.schema_validator.validate(candidate)
 
     def test_accepts_complete_manifest_bound_to_reviewed_identity(self):
         manifest_contract.validate_manifest(manifest(), config())

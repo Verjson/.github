@@ -6,6 +6,8 @@ import sys
 import unittest
 from pathlib import Path
 
+from jsonschema import Draft202012Validator, FormatChecker
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 spec = importlib.util.spec_from_file_location("promotion", ROOT / "scripts/container_release_promotion.py")
@@ -15,6 +17,15 @@ spec.loader.exec_module(promotion)
 
 class PromotionTest(unittest.TestCase):
     def setUp(self):
+        schema_path = (
+            ROOT
+            / "docs/decisions/0078-container-release-and-runner-deployment-contract/release-manifest.schema.json"
+        )
+        self.schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        Draft202012Validator.check_schema(self.schema)
+        self.schema_validator = Draft202012Validator(
+            self.schema, format_checker=FormatChecker()
+        )
         self.config = {
             "repository": "Verjson/example",
             "registryNamespace": "ghcr.io/verjson",
@@ -44,12 +55,34 @@ class PromotionTest(unittest.TestCase):
 
     def test_exact_digests_form_deterministic_release(self):
         result = self.release(self.candidate, self.config, self.state, "1.2.3")
+        self.schema_validator.validate(result)
         self.assertEqual(sorted(i["indexDigest"] for i in self.candidate["images"]), sorted(i["indexDigest"] for i in result["images"]))
         self.assertEqual("1.2.3", result["releaseVersion"])
         self.assertEqual(3, result["schemaVersion"])
         self.assertEqual(self.state["candidateManifestDigest"], result["candidateManifestDigest"])
         self.assertRegex(result["candidateManifestDigest"], r"^sha256:[0-9a-f]{64}$")
         self.assertEqual(sorted(result["promotion"]["operationOrder"]), result["promotion"]["operationOrder"])
+
+    def test_release_schema_preserves_v2_and_requires_v3_destinations(self):
+        current = self.release(self.candidate, self.config, self.state, "1.2.3")
+        historical = copy.deepcopy(current)
+        historical["schemaVersion"] = 2
+        for image in historical["images"]:
+            image.pop("destinations")
+        self.schema_validator.validate(historical)
+
+        current["images"][0].pop("destinations")
+        self.assertTrue(
+            any(
+                "destinations" in error.message
+                for error in self.schema_validator.iter_errors(current)
+            )
+        )
+
+    def test_release_schema_rejects_v2_with_v3_destination_fields(self):
+        historical = self.release(self.candidate, self.config, self.state, "1.2.3")
+        historical["schemaVersion"] = 2
+        self.assertTrue(list(self.schema_validator.iter_errors(historical)))
 
     def test_exact_partial_alias_is_idempotent(self):
         image = self.candidate["images"][0]

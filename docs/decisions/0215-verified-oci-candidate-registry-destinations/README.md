@@ -42,3 +42,6 @@ OIDC multi-platform index publisher and live acceptance.
   as unavailable. No cleanup job is required for correctness.
 - Destination receipts advance candidate and release manifests to schema v3. Existing
   v2 candidates must be rebuilt; the validator does not infer missing receipts or expiry.
+- The published candidate and release JSON Schemas continue to validate immutable v2
+  records for readers. Schema v3 requires publication timestamps and destination receipts;
+  release promotion still rejects v2 candidates because they do not prove those facts.

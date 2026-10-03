@@ -4,24 +4,65 @@
   "title": "Verjson immutable container candidate manifest",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "kind", "candidateVersion", "source", "images"],
+  "required": [
+    "schemaVersion",
+    "kind",
+    "candidateVersion",
+    "source",
+    "images"
+  ],
   "properties": {
-    "schemaVersion": {"const": 2},
-    "kind": {"const": "container-candidate"},
+    "schemaVersion": {
+      "enum": [
+        2,
+        3
+      ]
+    },
+    "kind": {
+      "const": "container-candidate"
+    },
     "candidateVersion": {
       "type": "string",
       "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)-rc\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
     },
     "source": {
       "type": "object",
-      "required": ["repository", "commit", "ref", "workflow", "runId", "runAttempt"],
+      "required": [
+        "repository",
+        "commit",
+        "ref",
+        "workflow",
+        "runId",
+        "runAttempt"
+      ],
       "properties": {
-        "repository": {"type": "string", "pattern": "^[^/]+/[^/]+$"},
-        "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
-        "ref": {"const": "refs/heads/main"},
-        "workflow": {"type": "string"},
-        "runId": {"type": "string", "pattern": "^[0-9]+$"},
-        "runAttempt": {"type": "string", "pattern": "^[0-9]+$"}
+        "repository": {
+          "type": "string",
+          "pattern": "^[^/]+/[^/]+$"
+        },
+        "commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "ref": {
+          "const": "refs/heads/main"
+        },
+        "workflow": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "runAttempt": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "candidatePublishedAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
+        }
       }
     },
     "images": {
@@ -29,72 +70,265 @@
       "minItems": 1,
       "items": {
         "type": "object",
-        "required": ["variant", "repository", "indexDigest", "identities", "platforms", "provenance", "sbom"],
+        "required": [
+          "variant",
+          "repository",
+          "indexDigest",
+          "identities",
+          "platforms",
+          "provenance",
+          "sbom"
+        ],
         "properties": {
-          "variant": {"type": "string"},
-          "repository": {"type": "string"},
-          "indexDigest": {"$ref": "#/$defs/digest"},
+          "variant": {
+            "type": "string"
+          },
+          "repository": {
+            "type": "string"
+          },
+          "indexDigest": {
+            "$ref": "#/$defs/digest"
+          },
           "identities": {
             "type": "object",
-            "required": ["commit", "candidate"],
-            "properties": {"commit": {"type": "string"}, "candidate": {"type": "string"}}
+            "required": [
+              "commit",
+              "candidate"
+            ],
+            "properties": {
+              "commit": {
+                "type": "string"
+              },
+              "candidate": {
+                "type": "string"
+              }
+            }
           },
           "platforms": {
             "type": "array",
             "minItems": 1,
             "items": {
               "type": "object",
-              "required": ["os", "architecture", "digest"],
+              "required": [
+                "os",
+                "architecture",
+                "digest"
+              ],
               "properties": {
-                "os": {"type": "string"}, "architecture": {"type": "string"},
-                "variant": {"type": "string"}, "digest": {"$ref": "#/$defs/digest"}
+                "os": {
+                  "type": "string"
+                },
+                "architecture": {
+                  "type": "string"
+                },
+                "variant": {
+                  "type": "string"
+                },
+                "digest": {
+                  "$ref": "#/$defs/digest"
+                }
               }
             }
           },
-          "provenance": {"$ref": "#/$defs/provenance"},
-          "sbom": {"$ref": "#/$defs/sbom"},
+          "provenance": {
+            "$ref": "#/$defs/provenance"
+          },
+          "sbom": {
+            "$ref": "#/$defs/sbom"
+          },
           "base": {
             "type": "object",
-            "required": ["variant", "digest"],
-            "properties": {"variant": {"type": "string"}, "digest": {"$ref": "#/$defs/digest"}}
+            "required": [
+              "variant",
+              "digest"
+            ],
+            "properties": {
+              "variant": {
+                "type": "string"
+              },
+              "digest": {
+                "$ref": "#/$defs/digest"
+              }
+            }
+          },
+          "destinations": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "provider",
+                "repository",
+                "digest",
+                "candidateExpiresAt",
+                "verifiedAt"
+              ],
+              "properties": {
+                "provider": {
+                  "enum": [
+                    "ghcr",
+                    "gar"
+                  ]
+                },
+                "repository": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "digest": {
+                  "$ref": "#/$defs/digest"
+                },
+                "candidateExpiresAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
+                },
+                "verifiedAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
+                }
+              },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "provider": {
+                        "const": "ghcr"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "repository": {
+                        "pattern": "^ghcr\\.io/[a-z0-9][a-z0-9._-]*(?:/[a-z0-9][a-z0-9._-]*)+$"
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "provider": {
+                        "const": "gar"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "repository": {
+                        "pattern": "^[a-z]+(?:-[a-z0-9]+)*-docker\\.pkg\\.dev/[a-z][a-z0-9-]{4,28}[a-z0-9]/[a-z][a-z0-9-]{0,62}[a-z0-9](?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)+$"
+                      }
+                    }
+                  }
+                }
+              ]
+            }
           }
         }
       }
     }
   },
   "$defs": {
-    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
     "provenance": {
       "type": "object",
-      "required": ["predicateType", "builderIdentity", "subjectDigest", "attestationId"],
+      "required": [
+        "predicateType",
+        "builderIdentity",
+        "subjectDigest",
+        "attestationId"
+      ],
       "properties": {
-        "predicateType": {"type": "string", "format": "uri"},
-        "builderIdentity": {"type": "string", "minLength": 1},
-        "subjectDigest": {"$ref": "#/$defs/digest"},
-        "attestationId": {"type": "string", "minLength": 1}
+        "predicateType": {
+          "type": "string",
+          "format": "uri"
+        },
+        "builderIdentity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "subjectDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "attestationId": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     },
     "sbom": {
       "type": "object",
-      "required": ["predicateType", "attestations"],
+      "required": [
+        "predicateType",
+        "attestations"
+      ],
       "properties": {
-        "predicateType": {"const": "https://spdx.dev/Document/v2.3"},
+        "predicateType": {
+          "const": "https://spdx.dev/Document/v2.3"
+        },
         "attestations": {
           "type": "array",
           "minItems": 1,
           "items": {
             "type": "object",
-            "required": ["os", "architecture", "digest", "attestationId"],
+            "required": [
+              "os",
+              "architecture",
+              "digest",
+              "attestationId"
+            ],
             "properties": {
-              "os": {"type": "string"},
-              "architecture": {"type": "string"},
-              "variant": {"type": "string"},
-              "digest": {"$ref": "#/$defs/digest"},
-              "attestationId": {"type": "string", "minLength": 1}
+              "os": {
+                "type": "string"
+              },
+              "architecture": {
+                "type": "string"
+              },
+              "variant": {
+                "type": "string"
+              },
+              "digest": {
+                "$ref": "#/$defs/digest"
+              },
+              "attestationId": {
+                "type": "string",
+                "minLength": 1
+              }
             }
           }
         }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "schemaVersion": {
+            "const": 3
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "required": [
+              "candidatePublishedAt"
+            ]
+          },
+          "images": {
+            "items": {
+              "required": [
+                "destinations"
+              ]
+            }
+          }
+        }
+      }
+    }
+  ]
 }
