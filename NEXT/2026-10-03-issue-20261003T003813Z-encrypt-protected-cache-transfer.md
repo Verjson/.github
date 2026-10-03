@@ -1,6 +1,7 @@
 ---
 date: 2026-10-03
-issue: 1679
+id: 20261003T003813Z
+refs: 1679
 impact: patch
 title: Encrypt private dependency cache transfers in protected builds
 ---
